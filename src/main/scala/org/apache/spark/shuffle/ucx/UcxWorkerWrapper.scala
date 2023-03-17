@@ -221,7 +221,8 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
         }).setName(s"Endpoint to $executorId")
 
       logDebug(s"Worker $this connecting to Executor($executorId, " +
-        s"${SerializationUtils.deserializeInetAddress(address)}")
+        s"${SerializationUtils.deserializeInetAddress(address)}, " +
+        s"${System.currentTimeMillis() - startTime}ms")
       val ep = worker.newEndpoint(endpointParams)
       val header = Platform.allocateDirectBuffer(UnsafeUtils.LONG_SIZE)
       header.putLong(id)
