@@ -117,7 +117,7 @@ private[spark] class UcxShuffleReader[K, C](handle: BaseShuffleHandle[K, _, C],
       override def next(): (BlockId, InputStream) = {
         val startTime = System.nanoTime()
         while (resultQueue.isEmpty) {
-          transport.progress()
+          shuffleClient.progress()
         }
         val fetchWaitTime = System.nanoTime() - startTime
         readMetrics.incFetchWaitTime(TimeUnit.NANOSECONDS.toMillis(fetchWaitTime))

@@ -5,8 +5,8 @@
 package org.apache.spark.shuffle.ucx
 
 import java.io.Closeable
-import java.util.concurrent.ConcurrentLinkedQueue
-import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.{Future, Callable, ExecutorService, TimeUnit, Semaphore, ConcurrentLinkedQueue}
+import java.util.concurrent.atomic.{AtomicInteger, AtomicBoolean}
 import scala.collection.concurrent.TrieMap
 import scala.util.Random
 import org.openucx.jucx.ucp._
@@ -22,7 +22,6 @@ import org.apache.spark.util.ThreadUtils
 
 import java.nio.ByteBuffer
 import scala.collection.parallel.ForkJoinTaskSupport
-
 
 class UcxFailureOperationResult(errorMsg: String) extends OperationResult {
   override def getStatus: OperationStatus.Value = OperationStatus.FAILURE
@@ -68,9 +67,21 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
   private val tag = new AtomicInteger(Random.nextInt())
   private val flushRequests = new ConcurrentLinkedQueue[UcpRequest]()
 
-  private val ioThreadPool = ThreadUtils.newForkJoinPool("IO threads",
-    transport.ucxShuffleConf.numIoThreads)
-  private val ioTaskSupport = new ForkJoinTaskSupport(ioThreadPool)
+  private val ioThreadPool =
+    ((!isClientWorker) && (transport.ucxShuffleConf.numIoThreads > 1)) match {
+    case true => Some(ThreadUtils.newForkJoinPool("IO threads", transport.ucxShuffleConf.numIoThreads))
+    case false => None
+  }
+  private val ioTaskSupport = ioThreadPool match {
+    case Some(pool) => Some(new ForkJoinTaskSupport(pool))
+    case None => None
+  }
+
+  private var future: Option[Future[Unit]] = None
+  private var stopping: AtomicBoolean = _
+  private var outstandingPermits: Semaphore = _; 
+  private var outstandingRequests: ConcurrentLinkedQueue[UcpRequest] = _
+  private var outstandingHandles: ConcurrentLinkedQueue[Runnable] = _
 
   if (isClientWorker) {
     // Receive block data handler
@@ -145,6 +156,11 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
           UcsConstants.STATUS.UCS_OK
         }
       }, UcpConstants.UCP_AM_FLAG_PERSISTENT_DATA | UcpConstants.UCP_AM_FLAG_WHOLE_MSG)
+  } else {
+    stopping = new AtomicBoolean(false)
+    outstandingRequests = new ConcurrentLinkedQueue[UcpRequest]()
+    outstandingHandles = new ConcurrentLinkedQueue[Runnable]()
+    outstandingPermits = new Semaphore(0)
   }
 
   override def close(): Unit = {
@@ -154,9 +170,77 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
     while (!closeRequests.forall(_.isCompleted)) {
       progress()
     }
-    ioThreadPool.shutdown()
+    ioThreadPool match {
+      case Some(pool) => pool.shutdown()
+      case None => ()
+    }
+    if (!isClientWorker) {
+      logDebug(s"server worker $id stopping")
+      stopping.set(true)
+      future match {
+        case Some(f) => f.get()
+        case None => ()
+      }
+    }
     connections.clear()
     worker.close()
+  }
+
+  def start(executor: ExecutorService): Unit = {
+    val result = executor.submit(new Callable[Unit] {
+      override def call(): Unit = {
+        logDebug(s"server worker $id started")
+        while (!stopping.get()) {
+          if (outstandingPermits.tryAcquire(1, TimeUnit.MILLISECONDS)) {
+            while(!processHandle() && !processRequest()) {}
+          }
+        }
+        logDebug(s"server worker $id stopped")
+      }
+    })
+    future = Some(result)
+  }
+
+  def processHandle(): Boolean = {
+    Option(outstandingHandles.poll()) match {
+      case Some(handle) => {
+        handle.run()
+        logDebug(s"worker $id finish $handle")
+        true
+      }
+      case None => {
+        false
+      }
+    }    
+  }
+
+  def processRequest(): Boolean = {
+    Option(outstandingRequests.peek()) match {
+      case Some(req) => {
+        while (worker.progress() != 0) {
+        }
+        if (req.isCompleted) {
+          outstandingRequests.poll()
+          logDebug(s"worker $id finish $req")
+        }
+        req.isCompleted
+      }
+      case None => {
+        false
+      }
+    }
+  }
+
+  def submit(handle: Runnable): Unit = {
+    outstandingHandles.offer(handle)
+    outstandingPermits.release()
+    logDebug(s"worker $id submit $handle")
+  }
+
+  def submit(request: UcpRequest): Unit = {
+    outstandingRequests.offer(request)
+    outstandingPermits.release()
+    logDebug(s"worker $id submit $request")
   }
 
   /**
@@ -221,7 +305,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
       header.rewind()
       val workerAddress = worker.getAddress
 
-      ep.sendAmNonBlocking(1, UcxUtils.getAddress(header), UnsafeUtils.LONG_SIZE,
+      val req = ep.sendAmNonBlocking(1, UcxUtils.getAddress(header), UnsafeUtils.LONG_SIZE,
         UcxUtils.getAddress(workerAddress), workerAddress.capacity().toLong, UcpConstants.UCP_AM_SEND_FLAG_EAGER,
         new UcxCallback() {
           override def onSuccess(request: UcpRequest): Unit = {
@@ -229,24 +313,23 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
             workerAddress.clear()
           }
         }, MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
-      flushRequests.add(ep.flushNonBlocking(null))
+      flushRequests.add(req)
       ep
     })
   }
 
-  def fetchBlocksByBlockIds(executorId: transport.ExecutorId, blockIds: Seq[BlockId],
-                            resultBufferAllocator: transport.BufferAllocator,
-                            callbacks: Seq[OperationCallback]): Seq[Request] = {
+  def fetchBlocksByBlockIdsNonBlocking(ep: UcpEndpoint, blockIds: Seq[BlockId],
+                                       resultBufferAllocator: transport.BufferAllocator,
+                                       callbacks: Seq[OperationCallback]): Seq[Request] = {
     val startTime = System.nanoTime()
     val headerSize = UnsafeUtils.INT_SIZE + UnsafeUtils.LONG_SIZE
-    val ep = getConnection(executorId)
 
     if (worker.getMaxAmHeaderSize <=
       headerSize + UnsafeUtils.INT_SIZE * blockIds.length) {
       val (b1, b2) = blockIds.splitAt(blockIds.length / 2)
       val (c1, c2) = callbacks.splitAt(callbacks.length / 2)
-      val r1 = fetchBlocksByBlockIds(executorId, b1, resultBufferAllocator, c1)
-      val r2 = fetchBlocksByBlockIds(executorId, b2, resultBufferAllocator, c2)
+      val r1 = fetchBlocksByBlockIdsNonBlocking(ep, b1, resultBufferAllocator, c1)
+      val r2 = fetchBlocksByBlockIdsNonBlocking(ep, b2, resultBufferAllocator, c2)
       return r1 ++ r2
     }
 
@@ -269,13 +352,23 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
       UcpConstants.UCP_AM_SEND_FLAG_EAGER, new UcxCallback() {
        override def onSuccess(request: UcpRequest): Unit = {
          buffer.clear()
-         logDebug(s"Sent message on $ep to $executorId to fetch ${blockIds.length} blocks on tag $t id $id" +
+         logDebug(s"Sent message on $ep to fetch ${blockIds.length} blocks on tag $t id $id" +
            s"in ${System.nanoTime() - startTime} ns")
        }
      }, MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
 
-    worker.progressRequest(ep.flushNonBlocking(null))
     Seq(request)
+  }
+
+  
+  def fetchBlocksByBlockIds(executorId: transport.ExecutorId, blockIds: Seq[BlockId],
+                            resultBufferAllocator: transport.BufferAllocator,
+                            callbacks: Seq[OperationCallback]): Seq[Request] = {
+    val ep = getConnection(executorId)
+    logDebug(s"Sent message on $ep to $executorId to fetch ${blockIds.length} blocks id $id")
+    val r = fetchBlocksByBlockIdsNonBlocking(ep, blockIds, resultBufferAllocator, callbacks)
+    worker.progressRequest(ep.flushNonBlocking(null))
+    r
   }
 
   def handleFetchBlockRequest(blocks: Seq[Block], replyTag: Int, replyExecutor: Long): Unit = try {
@@ -297,12 +390,15 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
         localBuffer
     }
     // Do parallel read of blocks
-    val blocksCollection = if (transport.ucxShuffleConf.numIoThreads > 1) {
-      val parCollection = blocks.indices.par
-      parCollection.tasksupport = ioTaskSupport
-      parCollection
-    } else {
-      blocks.indices
+    val blocksCollection = ioTaskSupport match {
+      case Some(tasksupport) => {
+        val parCollection = blocks.indices.par
+        parCollection.tasksupport = tasksupport
+        parCollection
+      }
+      case None => {
+        blocks.indices
+      }
     }
 
     for (i <- blocksCollection) {
@@ -323,10 +419,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
         }
       }, new UcpRequestParams().setMemoryType(UcsConstants.MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
         .setMemoryHandle(resultMemory.memory))
-
-    while (!req.isCompleted) {
-      progress()
-    }
+    submit(req)
   } catch {
     case ex: Throwable => logError(s"Failed to read and send data: $ex")
   }
