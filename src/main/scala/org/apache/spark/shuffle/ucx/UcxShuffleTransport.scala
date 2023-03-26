@@ -16,7 +16,7 @@ import org.openucx.jucx.ucs.UcsConstants
 
 import java.net.InetSocketAddress
 import java.nio.ByteBuffer
-import java.util.concurrent.AtomicInteger
+import java.util.concurrent.atomic.AtomicInteger
 import scala.collection.concurrent.TrieMap
 import scala.collection.mutable
 
@@ -212,6 +212,7 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
 
   def preConnect(): Unit = {
     allocatedClientWorkers.foreach(_.preconnect())
+    progressConnect()
   }
 
   /**

@@ -182,7 +182,6 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
    */
   def preconnect(): Unit = {
     transport.executorAddresses.keys.foreach(getConnection)
-    progressConnect()
   }
 
   def connectByWorkerAddress(executorId: transport.ExecutorId, workerAddress: ByteBuffer): Unit = {
@@ -221,7 +220,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
       header.rewind()
       val workerAddress = worker.getAddress
 
-      ep.sendAmNonBlocking(1, UcxUtils.getAddress(header), UnsafeUtils.LONG_SIZE,
+      val req = ep.sendAmNonBlocking(1, UcxUtils.getAddress(header), UnsafeUtils.LONG_SIZE,
         UcxUtils.getAddress(workerAddress), workerAddress.capacity().toLong, UcpConstants.UCP_AM_SEND_FLAG_EAGER,
         new UcxCallback() {
           override def onSuccess(request: UcpRequest): Unit = {
@@ -229,7 +228,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
             workerAddress.clear()
           }
         }, MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
-      flushRequests.add(ep.flushNonBlocking(null))
+      flushRequests.add(req)
       ep
     })
   }
