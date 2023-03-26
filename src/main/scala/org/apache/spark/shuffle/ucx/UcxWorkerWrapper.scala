@@ -5,8 +5,8 @@
 package org.apache.spark.shuffle.ucx
 
 import java.io.Closeable
-import java.util.concurrent.ConcurrentLinkedQueue
-import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.{Future, Callable, ExecutorService, TimeUnit, Semaphore, ConcurrentLinkedQueue}
+import java.util.concurrent.atomic.{AtomicInteger, AtomicBoolean}
 import scala.collection.concurrent.TrieMap
 import scala.util.Random
 import org.openucx.jucx.ucp._
@@ -71,6 +71,12 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
   private val ioThreadPool = ThreadUtils.newForkJoinPool("IO threads",
     transport.ucxShuffleConf.numIoThreads)
   private val ioTaskSupport = new ForkJoinTaskSupport(ioThreadPool)
+
+  private var future: Option[Future[Unit]] = None
+  private var stopping: AtomicBoolean = _
+  private var outstandingPermits: Semaphore = _; 
+  private var outstandingRequests: ConcurrentLinkedQueue[UcpRequest] = _
+  private var outstandingHandles: ConcurrentLinkedQueue[Runnable] = _
 
   if (isClientWorker) {
     // Receive block data handler
@@ -145,6 +151,11 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
           UcsConstants.STATUS.UCS_OK
         }
       }, UcpConstants.UCP_AM_FLAG_PERSISTENT_DATA | UcpConstants.UCP_AM_FLAG_WHOLE_MSG)
+  } else {
+    stopping = new AtomicBoolean(false)
+    outstandingRequests = new ConcurrentLinkedQueue[UcpRequest]()
+    outstandingHandles = new ConcurrentLinkedQueue[Runnable]()
+    outstandingPermits = new Semaphore(0)
   }
 
   override def close(): Unit = {
@@ -154,9 +165,74 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
     while (!closeRequests.forall(_.isCompleted)) {
       progress()
     }
+    if (!isClientWorker) {
+      logDebug(s"server worker $id stopping")
+      stopping.set(true)
+      future match {
+        case Some(f) => f.get()
+        case None => ()
+      }
+    }
     ioThreadPool.shutdown()
     connections.clear()
     worker.close()
+  }
+
+  def start(executor: ExecutorService): Unit = {
+    val result = executor.submit(new Callable[Unit] {
+      override def call(): Unit = {
+        logDebug(s"server worker $id started")
+        while (!stopping.get()) {
+          if (outstandingPermits.tryAcquire(1, TimeUnit.MILLISECONDS)) {
+            while(!processHandle() && !processRequest()) {}
+          }
+        }
+        logDebug(s"server worker $id stopped")
+      }
+    })
+    future = Some(result)
+  }
+
+  def processHandle(): Boolean = {
+    Option(outstandingHandles.poll()) match {
+      case Some(handle) => {
+        handle.run()
+        logDebug(s"worker $id finish $handle")
+        true
+      }
+      case None => {
+        false
+      }
+    }    
+  }
+
+  def processRequest(): Boolean = {
+    Option(outstandingRequests.peek()) match {
+      case Some(req) => {
+        while (worker.progress() != 0) {
+        }
+        if (req.isCompleted) {
+          outstandingRequests.poll()
+          logDebug(s"worker $id finish $req")
+        }
+        req.isCompleted
+      }
+      case None => {
+        false
+      }
+    }
+  }
+
+  def submit(handle: Runnable): Unit = {
+    logDebug(s"worker $id submit $handle")
+    outstandingHandles.offer(handle)
+    outstandingPermits.release()
+  }
+
+  def submit(request: UcpRequest): Unit = {
+    logDebug(s"worker $id submit $request")
+    outstandingRequests.offer(request)
+    outstandingPermits.release()
   }
 
   /**
@@ -324,9 +400,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
       }, new UcpRequestParams().setMemoryType(UcsConstants.MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
         .setMemoryHandle(resultMemory.memory))
 
-    while (!req.isCompleted) {
-      progress()
-    }
+    submit(req)
   } catch {
     case ex: Throwable => logError(s"Failed to read and send data: $ex")
   }
