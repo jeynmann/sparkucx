@@ -16,6 +16,7 @@ import org.openucx.jucx.ucs.UcsConstants
 
 import java.net.InetSocketAddress
 import java.nio.ByteBuffer
+import java.util.concurrent.AtomicInteger
 import scala.collection.concurrent.TrieMap
 import scala.collection.mutable
 
@@ -83,6 +84,7 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
 
   private var allocatedClientWorkers: Array[UcxWorkerWrapper] = _
   private var allocatedServerWorkers: Array[UcxWorkerWrapper] = _
+  private val clientWorkersId = new AtomicInteger()
 
   private val registeredBlocks = new TrieMap[BlockId, Block]
   private var progressThread: Thread = _
@@ -272,6 +274,13 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
       .fetchBlocksByBlockIds(executorId, blockIds, resultBufferAllocator, callbacks)
   }
 
+  def fetchBlocksByBlockIds(workerId: Int, executorId: ExecutorId, blockIds: Seq[BlockId],
+                            resultBufferAllocator: BufferAllocator,
+                            callbacks: Seq[OperationCallback]): Seq[Request] = {
+    allocatedClientWorkers(workerId)
+      .fetchBlocksByBlockIds(executorId, blockIds, resultBufferAllocator, callbacks)
+  }
+
   def connectServerWorkers(executorId: ExecutorId, workerAddress: ByteBuffer): Unit = {
     executorAddresses.put(executorId, workerAddress)
     allocatedServerWorkers.foreach(w => w.connectByWorkerAddress(executorId, workerAddress))
@@ -296,6 +305,13 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
       .handleFetchBlockRequest(blocks, replyTag, replyExecutor)
   }
 
+  def allocateClientWorkerId(): Int = {
+    clientWorkersId.incrementAndGet().abs % allocatedClientWorkers.length
+  }
+
+  def progressClient(workerId: Int): Int = {
+    allocatedClientWorkers(workerId).progress()
+  }
 
   /**
    * Progress outstanding operations. This routine is blocking (though may poll for event).

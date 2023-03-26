@@ -8,6 +8,7 @@ import org.apache.spark.shuffle.utils.UnsafeUtils
 import org.apache.spark.storage.{BlockId => SparkBlockId, ShuffleBlockId => SparkShuffleBlockId}
 
 class UcxShuffleClient(val transport: UcxShuffleTransport) extends ShuffleClient{
+  val clientWorkerId = transport.allocateClientWorkerId()
   override def fetchBlocks(host: String, port: Int, execId: String, blockIds: Array[String],
                            listener: BlockFetchingListener,
                            downloadFileManager: DownloadFileManager): Unit = {
@@ -28,10 +29,14 @@ class UcxShuffleClient(val transport: UcxShuffleTransport) extends ShuffleClient
       }
     }
     val resultBufferAllocator = (size: Long) => transport.hostBounceBufferMemoryPool.get(size)
-    transport.fetchBlocksByBlockIds(execId.toLong, ucxBlockIds, resultBufferAllocator, callbacks)
+    transport.fetchBlocksByBlockIds(clientWorkerId, execId.toLong, ucxBlockIds, resultBufferAllocator, callbacks)
   }
 
   override def close(): Unit = {
 
+  }
+
+  def progress(): Int = {
+    transport.progressClient(clientWorkerId)
   }
 }
