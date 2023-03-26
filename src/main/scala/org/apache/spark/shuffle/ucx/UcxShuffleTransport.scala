@@ -10,12 +10,15 @@ import org.apache.spark.shuffle.ucx.memory.UcxHostBounceBuffersPool
 import org.apache.spark.shuffle.ucx.rpc.GlobalWorkerRpcThread
 import org.apache.spark.shuffle.ucx.utils.{SerializableDirectBuffer, SerializationUtils}
 import org.apache.spark.shuffle.utils.UnsafeUtils
+import org.apache.spark.util.ThreadUtils
 import org.openucx.jucx.UcxException
 import org.openucx.jucx.ucp._
 import org.openucx.jucx.ucs.UcsConstants
 
 import java.net.InetSocketAddress
 import java.nio.ByteBuffer
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.atomic.AtomicInteger
 import scala.collection.concurrent.TrieMap
 import scala.collection.mutable
 
@@ -83,6 +86,9 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
 
   private var allocatedClientWorkers: Array[UcxWorkerWrapper] = _
   private var allocatedServerWorkers: Array[UcxWorkerWrapper] = _
+  private var replyWorkersThreadPool: ExecutorService = _
+  private val serverWorkersId = new AtomicInteger()
+  private val clientWorkersId = new AtomicInteger()
 
   private val registeredBlocks = new TrieMap[BlockId, Block]
   private var progressThread: Thread = _
@@ -122,11 +128,14 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
     globalWorker = ucxContext.newWorker(ucpWorkerParams)
     hostBounceBufferMemoryPool = new UcxHostBounceBuffersPool(ucxShuffleConf, ucxContext)
 
+    replyWorkersThreadPool = ThreadUtils.newDaemonFixedThreadPool(ucxShuffleConf.numListenerThreads,
+      "UcxListenerThread")
     allocatedServerWorkers = new Array[UcxWorkerWrapper](ucxShuffleConf.numListenerThreads)
     logInfo(s"Allocating ${ucxShuffleConf.numListenerThreads} server workers")
     for (i <- 0 until ucxShuffleConf.numListenerThreads) {
       val worker = ucxContext.newWorker(ucpWorkerParams)
       allocatedServerWorkers(i) = UcxWorkerWrapper(worker, this, isClientWorker = false)
+      allocatedServerWorkers(i).start(replyWorkersThreadPool)
     }
 
     val Array(host, port) = ucxShuffleConf.listenerAddress.split(":")
@@ -200,12 +209,16 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
       w.getConnection(executorId)
       w.progressConnect()
     })
+    // val ss = Thread.currentThread().getStackTrace()
+    // logDebug(ss.mkString("\n"));
   }
 
   def addExecutors(executorIdsToAddress: Map[ExecutorId, SerializableDirectBuffer]): Unit = {
     executorIdsToAddress.foreach {
       case (executorId, address) => executorAddresses.put(executorId, address.value)
     }
+    // val ss = Thread.currentThread().getStackTrace()
+    // logDebug(ss.mkString("\n"));
   }
 
   def preConnect(): Unit = {
@@ -272,30 +285,45 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
       .fetchBlocksByBlockIds(executorId, blockIds, resultBufferAllocator, callbacks)
   }
 
+  def fetchBlocksByWorkerId(workerId: Int, executorId: ExecutorId, blockIds: Seq[BlockId],
+                            resultBufferAllocator: BufferAllocator,
+                            callbacks: Seq[OperationCallback]): Seq[Request] = {
+    allocatedClientWorkers(workerId)
+      .fetchBlocksByBlockIds(executorId, blockIds, resultBufferAllocator, callbacks)
+  }
+
   def connectServerWorkers(executorId: ExecutorId, workerAddress: ByteBuffer): Unit = {
     executorAddresses.put(executorId, workerAddress)
-    allocatedServerWorkers.foreach(w => w.connectByWorkerAddress(executorId, workerAddress))
+    allocatedServerWorkers.foreach(w => w.submit(new Runnable {
+      override def run(): Unit = {
+        w.connectByWorkerAddress(executorId, workerAddress)
+      }
+    }))
   }
 
   def handleFetchBlockRequest(replyTag: Int, amData: UcpAmData, replyExecutor: Long): Unit = {
-    val buffer = UnsafeUtils.getByteBufferView(amData.getDataAddress, amData.getLength.toInt)
-    val blockIds = mutable.ArrayBuffer.empty[BlockId]
+    val workerId = allocateServerWorkerId()
+    val worker = allocatedServerWorkers(workerId)
+    worker.submit(new Runnable {
+      override def run(): Unit = {
+        val buffer = UnsafeUtils.getByteBufferView(amData.getDataAddress, amData.getLength.toInt)
+        val blockIds = mutable.ArrayBuffer.empty[BlockId]
 
-    // 1. Deserialize blockIds from header
-    while (buffer.remaining() > 0) {
-      val blockId = UcxShuffleBockId.deserialize(buffer)
-      if (!registeredBlocks.contains(blockId)) {
-        throw new UcxException(s"$blockId is not registered")
+        // 1. Deserialize blockIds from header
+        while (buffer.remaining() > 0) {
+          val blockId = UcxShuffleBockId.deserialize(buffer)
+          if (!registeredBlocks.contains(blockId)) {
+            throw new UcxException(s"$blockId is not registered")
+          }
+          blockIds += blockId
+        }
+
+        val blocks = blockIds.map(bid => registeredBlocks(bid))
+        amData.close()
+        worker.handleFetchBlockRequest(blocks, replyTag, replyExecutor)
       }
-      blockIds += blockId
-    }
-
-    val blocks = blockIds.map(bid => registeredBlocks(bid))
-    amData.close()
-    allocatedServerWorkers((Thread.currentThread().getId % allocatedServerWorkers.length).toInt)
-      .handleFetchBlockRequest(blocks, replyTag, replyExecutor)
+    })
   }
-
 
   /**
    * Progress outstanding operations. This routine is blocking (though may poll for event).
@@ -305,10 +333,22 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
    * But not guaranteed that at least one [[ fetchBlocksByBlockIds ]] completed!
    */
   override def progress(): Unit = {
-    allocatedClientWorkers((Thread.currentThread().getId % allocatedClientWorkers.length).toInt).progress()
+    logDebug(s"progress")
   }
 
-  def progressConnect(): Unit = {
-    allocatedClientWorkers.par.foreach(_.progressConnect())
+  def allocateClientWorkerId(): Int = {
+    clientWorkersId.incrementAndGet().abs % allocatedClientWorkers.length
   }
+
+  def allocateServerWorkerId(): Int = {
+    serverWorkersId.incrementAndGet().abs % allocatedServerWorkers.length
+  }
+
+  def progressClient(workerId: Int): Int = {
+    allocatedClientWorkers(workerId).progress()
+  }
+
+  // def progressConnect(): Unit = {
+  //   allocatedClientWorkers.par.foreach(_.progressConnect())
+  // }
 }

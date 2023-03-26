@@ -26,7 +26,7 @@ class UcxExecutorRpcEndpoint(override val rpcEnv: RpcEnv, transport: UcxShuffleT
         }
       })
     case IntroduceAllExecutors(executorIdToWorkerAdresses: Map[Long, SerializableDirectBuffer]) =>
-      logDebug(s"Received IntroduceAllExecutors(${executorIdToWorkerAdresses.keys.mkString(",")}")
+      logDebug(s"Received IntroduceAllExecutors(${executorIdToWorkerAdresses.keys.mkString("\n")}")
       executorService.submit(new Runnable() {
         override def run(): Unit = {
           transport.addExecutors(executorIdToWorkerAdresses)
