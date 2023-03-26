@@ -68,9 +68,15 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
   private val tag = new AtomicInteger(Random.nextInt())
   private val flushRequests = new ConcurrentLinkedQueue[UcpRequest]()
 
-  private val ioThreadPool = ThreadUtils.newForkJoinPool("IO threads",
-    transport.ucxShuffleConf.numIoThreads)
-  private val ioTaskSupport = new ForkJoinTaskSupport(ioThreadPool)
+  private val ioThreadPool =
+    ((!isClientWorker) && (transport.ucxShuffleConf.numIoThreads > 1)) match {
+    case true => Some(ThreadUtils.newForkJoinPool("IO threads", transport.ucxShuffleConf.numIoThreads))
+    case false => None
+  }
+  private val ioTaskSupport = ioThreadPool match {
+    case Some(pool) => Some(new ForkJoinTaskSupport(pool))
+    case None => None
+  }
 
   if (isClientWorker) {
     // Receive block data handler
@@ -154,7 +160,10 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
     while (!closeRequests.forall(_.isCompleted)) {
       progress()
     }
-    ioThreadPool.shutdown()
+    ioThreadPool match {
+      case Some(pool) => pool.shutdown()
+      case None => ()
+    }
     connections.clear()
     worker.close()
   }
@@ -297,12 +306,15 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
         localBuffer
     }
     // Do parallel read of blocks
-    val blocksCollection = if (transport.ucxShuffleConf.numIoThreads > 1) {
-      val parCollection = blocks.indices.par
-      parCollection.tasksupport = ioTaskSupport
-      parCollection
-    } else {
-      blocks.indices
+    val blocksCollection = ioTaskSupport match {
+      case Some(tasksupport) => {
+        val parCollection = blocks.indices.par
+        parCollection.tasksupport = tasksupport
+        parCollection
+      }
+      case None => {
+        blocks.indices
+      }
     }
 
     for (i <- blocksCollection) {
