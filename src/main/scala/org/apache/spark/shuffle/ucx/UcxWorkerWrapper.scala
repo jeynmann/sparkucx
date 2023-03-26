@@ -234,19 +234,18 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
     })
   }
 
-  def fetchBlocksByBlockIds(executorId: transport.ExecutorId, blockIds: Seq[BlockId],
-                            resultBufferAllocator: transport.BufferAllocator,
-                            callbacks: Seq[OperationCallback]): Seq[Request] = {
+  def fetchBlocksByBlockIdsNonBlocking(ep: UcpEndpoint, blockIds: Seq[BlockId],
+                                       resultBufferAllocator: transport.BufferAllocator,
+                                       callbacks: Seq[OperationCallback]): Seq[Request] = {
     val startTime = System.nanoTime()
     val headerSize = UnsafeUtils.INT_SIZE + UnsafeUtils.LONG_SIZE
-    val ep = getConnection(executorId)
 
     if (worker.getMaxAmHeaderSize <=
       headerSize + UnsafeUtils.INT_SIZE * blockIds.length) {
       val (b1, b2) = blockIds.splitAt(blockIds.length / 2)
       val (c1, c2) = callbacks.splitAt(callbacks.length / 2)
-      val r1 = fetchBlocksByBlockIds(executorId, b1, resultBufferAllocator, c1)
-      val r2 = fetchBlocksByBlockIds(executorId, b2, resultBufferAllocator, c2)
+      val r1 = fetchBlocksByBlockIdsNonBlocking(executorId, b1, resultBufferAllocator, c1)
+      val r2 = fetchBlocksByBlockIdsNonBlocking(executorId, b2, resultBufferAllocator, c2)
       return r1 ++ r2
     }
 
@@ -269,13 +268,23 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
       UcpConstants.UCP_AM_SEND_FLAG_EAGER, new UcxCallback() {
        override def onSuccess(request: UcpRequest): Unit = {
          buffer.clear()
-         logDebug(s"Sent message on $ep to $executorId to fetch ${blockIds.length} blocks on tag $t id $id" +
+         logDebug(s"Sent message on $ep to fetch ${blockIds.length} blocks on tag $t id $id" +
            s"in ${System.nanoTime() - startTime} ns")
        }
      }, MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
 
     worker.progressRequest(ep.flushNonBlocking(null))
     Seq(request)
+  }
+
+  def fetchBlocksByBlockIds(executorId: transport.ExecutorId, blockIds: Seq[BlockId],
+                            resultBufferAllocator: transport.BufferAllocator,
+                            callbacks: Seq[OperationCallback]): Seq[Request] = {
+    val ep = getConnection(executorId)
+    logDebug(s"Sent message on $ep to $executorId to fetch ${blockIds.length} blocks id $id")
+    val r = fetchBlocksByBlockIdsNonBlocking(ep, blockIds, resultBufferAllocator, callbacks)
+    worker.progressRequest(ep.flushNonBlocking(null))
+    r
   }
 
   def handleFetchBlockRequest(blocks: Seq[Block], replyTag: Int, replyExecutor: Long): Unit = try {
