@@ -47,7 +47,7 @@ class UcxShuffleClient(val transport: UcxShuffleTransport, mapId2PartitionId: Ma
 
   }
 
-  def progress(): Int = {
+  def progress(): Unit = {
     transport.progressClient(clientWorkerId)
   }
 }

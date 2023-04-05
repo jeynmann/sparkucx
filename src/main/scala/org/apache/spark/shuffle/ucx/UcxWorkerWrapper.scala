@@ -5,7 +5,7 @@
 package org.apache.spark.shuffle.ucx
 
 import java.io.Closeable
-import java.util.concurrent.{Future, Callable, ExecutorService, TimeUnit, Semaphore, ConcurrentLinkedQueue}
+import java.util.concurrent.{Future, Callable, ExecutorService, Semaphore, ConcurrentLinkedQueue}
 import java.util.concurrent.atomic.{AtomicInteger, AtomicBoolean}
 import scala.collection.concurrent.TrieMap
 import scala.util.Random
@@ -176,7 +176,12 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
     }
     if (!isClientWorker) {
       logDebug(s"server worker $id stopping")
-      stopping.set(true)
+      outstandingHandles.offer(new Runnable {
+        override def run(): Unit = {
+          stopping.set(true)
+        }
+      })
+      outstandingPermits.release()
       future match {
         case Some(f) => f.get()
         case None => ()
@@ -191,9 +196,8 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
       override def call(): Unit = {
         logDebug(s"server worker $id started")
         while (!stopping.get()) {
-          if (outstandingPermits.tryAcquire(1, TimeUnit.MILLISECONDS)) {
-            while(!processHandle() && !processRequest()) {}
-          }
+          outstandingPermits.acquire()
+          while(!processHandle() && !processRequest()) {}
         }
         logDebug(s"server worker $id stopped")
       }
@@ -217,7 +221,8 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
   def processRequest(): Boolean = {
     Option(outstandingRequests.peek()) match {
       case Some(req) => {
-        while (worker.progress() != 0) {
+        worker.synchronized {
+          while (worker.progress() != 0) {}
         }
         if (req.isCompleted) {
           outstandingRequests.poll()

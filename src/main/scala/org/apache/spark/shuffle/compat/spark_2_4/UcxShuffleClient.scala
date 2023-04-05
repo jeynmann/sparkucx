@@ -36,7 +36,7 @@ class UcxShuffleClient(val transport: UcxShuffleTransport) extends ShuffleClient
 
   }
 
-  def progress(): Int = {
+  def progress(): Unit = {
     transport.progressClient(clientWorkerId)
   }
 }

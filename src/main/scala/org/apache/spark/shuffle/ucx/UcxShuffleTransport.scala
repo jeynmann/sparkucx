@@ -325,8 +325,11 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
     serverWorkersId.incrementAndGet().abs % allocatedServerWorkers.length
   }
 
-  def progressClient(workerId: Int): Int = {
-    allocatedClientWorkers(workerId).progress()
+  def progressClient(workerId: Int): Unit = {
+    val worker = allocatedClientWorkers(workerId)
+    worker.synchronized {
+      while (worker.progress() != 0) {}
+    }
   }
   /**
    * Progress outstanding operations. This routine is blocking (though may poll for event).
