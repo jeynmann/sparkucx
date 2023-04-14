@@ -8,7 +8,9 @@ import org.apache.spark.shuffle.utils.UnsafeUtils
 import org.apache.spark.storage.{BlockId => SparkBlockId, ShuffleBlockId => SparkShuffleBlockId}
 
 class UcxShuffleClient(val transport: UcxShuffleTransport) extends ShuffleClient{
-  val clientWorkerId = transport.allocateClientWorkerId()
+  val worker = transport.selectLocalWorker()
+  val useWakeup = transport.ucxShuffleConf.useWakeup
+  var finishedRequestNum = 0
   override def fetchBlocks(host: String, port: Int, execId: String, blockIds: Array[String],
                            listener: BlockFetchingListener,
                            downloadFileManager: DownloadFileManager): Unit = {
@@ -26,17 +28,26 @@ class UcxShuffleClient(val transport: UcxShuffleTransport) extends ShuffleClient
             this
           }
         })
+        finishedRequestNum += 1
       }
     }
     val resultBufferAllocator = (size: Long) => transport.hostBounceBufferMemoryPool.get(size)
-    transport.fetchBlocksByBlockIds(clientWorkerId, execId.toLong, ucxBlockIds, resultBufferAllocator, callbacks)
+    worker.fetchBlocksByBlockIds(execId.toLong, ucxBlockIds, resultBufferAllocator, callbacks)
   }
 
   override def close(): Unit = {
-
+    transport.releaseLocalWorker()
   }
 
   def progress(): Unit = {
-    transport.progressClient(clientWorkerId)
+    if (useWakeup) {
+      finishedRequestNum = 0
+      while (worker.worker.progress() != 0) {}
+      if (finishedRequestNum == 0) {
+        worker.worker.waitForEvents()
+      }
+    } else {
+      while (worker.worker.progress() != 0) {}
+    }
   }
 }

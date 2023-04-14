@@ -10,6 +10,7 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.shuffle.ucx.UcxShuffleTransport
 import org.apache.spark.shuffle.utils.UnsafeUtils
 
+
 class GlobalWorkerRpcThread(globalWorker: UcpWorker, transport: UcxShuffleTransport)
   extends Thread with Logging {
   setDaemon(true)
@@ -38,13 +39,12 @@ class GlobalWorkerRpcThread(globalWorker: UcpWorker, transport: UcxShuffleTransp
   override def run(): Unit = {
     if (transport.ucxShuffleConf.useWakeup) {
       while (!isInterrupted) {
-        if (globalWorker.progress() == 0) {
-          globalWorker.waitForEvents()
-        }
+        while(globalWorker.progress() != 0) {}
+        globalWorker.waitForEvents()
       }
     } else {
       while (!isInterrupted) {
-        globalWorker.progress()
+        while(globalWorker.progress() != 0) {}
       }
     }
   }
