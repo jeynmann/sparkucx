@@ -344,6 +344,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
 
 class UcxWorkerThread(val workerWrapper: UcxWorkerWrapper) extends Thread with Logging {
   val id = workerWrapper.id
+  val worker = workerWrapper.worker
   val transport = workerWrapper.transport
   val useWakeup = workerWrapper.transport.ucxShuffleConf.useWakeup
 
