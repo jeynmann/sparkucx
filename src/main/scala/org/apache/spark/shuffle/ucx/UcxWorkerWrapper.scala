@@ -325,8 +325,16 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
       }, new UcpRequestParams().setMemoryType(UcsConstants.MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
         .setMemoryHandle(resultMemory.memory))
 
-    while (!req.isCompleted) {
-      progress()
+    if (transport.ucxShuffleConf.useWakeup) {
+      while (!req.isCompleted) {
+        if (worker.progress() == 0) {
+          worker.waitForEvents()
+        }
+      }
+    } else {
+      while (!req.isCompleted) {
+        worker.progress()
+      }
     }
   } catch {
     case ex: Throwable => logError(s"Failed to read and send data: $ex")
