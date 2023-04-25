@@ -189,7 +189,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
   def connectByWorkerAddress(executorId: transport.ExecutorId, workerAddress: ByteBuffer): Unit = {
     logDebug(s"Worker $this connecting back to $executorId by worker address")
     val ep = worker.newEndpoint(new UcpEndpointParams().setName(s"Server connection to $executorId")
-      .setUcpAddress(workerAddress))
+      .setUcpAddress(workerAddress)))
     connections.put(executorId, ep)
   }
 
@@ -268,13 +268,12 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
     ep.sendAmNonBlocking(0, address,
       headerSize, dataAddress, buffer.capacity() - headerSize,
       UcpConstants.UCP_AM_SEND_FLAG_EAGER, new UcxCallback() {
-       override def onSuccess(request: UcpRequest): Unit = {
-         buffer.clear()
-         logDebug(s"Sent message on $ep to $executorId to fetch ${blockIds.length} blocks on tag $t id $id" +
-           s"in ${System.nanoTime() - startTime} ns")
-       }
-     }, MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
-
+      override def onSuccess(request: UcpRequest): Unit = {
+        buffer.clear()
+        logDebug(s"Sent message on $ep to $executorId to fetch ${blockIds.length} blocks on tag $t id $id" +
+          s"in ${System.nanoTime() - startTime} ns")
+      }
+    }, MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
     worker.progressRequest(ep.flushNonBlocking(null))
     Seq(request)
   }
@@ -325,8 +324,16 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
       }, new UcpRequestParams().setMemoryType(UcsConstants.MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
         .setMemoryHandle(resultMemory.memory))
 
-    while (!req.isCompleted) {
-      progress()
+    if (transport.ucxShuffleConf.useWakeup) {
+      while (!req.isCompleted) {
+        if (worker.progress() == 0) {
+          worker.waitForEvents()
+        }
+      }
+    } else {
+      while (!req.isCompleted) {
+        worker.progress()
+      }
     }
   } catch {
     case ex: Throwable => logError(s"Failed to read and send data: $ex")
