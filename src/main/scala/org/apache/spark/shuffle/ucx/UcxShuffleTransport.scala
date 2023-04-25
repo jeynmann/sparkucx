@@ -135,7 +135,7 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
       .setConnectionHandler((ucpConnectionRequest: UcpConnectionRequest) => {
         endpoints.add(globalWorker.newEndpoint(new UcpEndpointParams().setConnectionRequest(ucpConnectionRequest)
           .setPeerErrorHandlingMode().setErrorHandler(errorHandler)
-          .setName(s"Endpoint to ${ucpConnectionRequest.getClientId}")))
+          .setName(s"Endpoint to ${ucpConnectionRequest.getClientId.toInt}.${ucpConnectionRequest.getClientId>>32}")))
       }))
 
     progressThread = new GlobalWorkerRpcThread(globalWorker, this)

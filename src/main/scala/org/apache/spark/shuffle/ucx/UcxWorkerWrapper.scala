@@ -186,8 +186,8 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
   }
 
   def connectByWorkerAddress(executorId: transport.ExecutorId, workerAddress: ByteBuffer): Unit = {
-    logDebug(s"Worker $this connecting back to $executorId by worker address")
-    val ep = worker.newEndpoint(new UcpEndpointParams().setName(s"Server connection to $executorId")
+    logDebug(s"Worker $this connecting back to ${executorId.toInt}.${executorId>>32} by worker address")
+    val ep = worker.newEndpoint(new UcpEndpointParams().setName(s"Server connection to ${executorId.toInt}.${executorId>>32}")
       .setUcpAddress(workerAddress))
     connections.put(executorId, ep)
   }
