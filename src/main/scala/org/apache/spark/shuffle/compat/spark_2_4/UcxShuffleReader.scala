@@ -57,6 +57,9 @@ class UcxShuffleReader[K, C](handle: BaseShuffleHandle[K, _, C],
       queueField.setAccessible(true)
       val resultQueue = queueField.get(wrappedStreams).asInstanceOf[LinkedBlockingQueue[_]]
 
+      val fetchMethod = wrappedStreams.getClass.getDeclaredMethod("fetchUpToMaxBytes")
+      fetchMethod.setAccessible(true)
+
       // Do progress if queue is empty before calling next on ShuffleIterator
       val ucxWrappedStream = new Iterator[(BlockId, InputStream)] {
         override def next(): (BlockId, InputStream) = {
@@ -65,6 +68,7 @@ class UcxShuffleReader[K, C](handle: BaseShuffleHandle[K, _, C],
             transport.progress()
           }
           shuffleMetrics.incFetchWaitTime(System.currentTimeMillis() - startTime)
+          fetchMethod.invoke(wrappedStreams)
           wrappedStreams.next()
         }
 
