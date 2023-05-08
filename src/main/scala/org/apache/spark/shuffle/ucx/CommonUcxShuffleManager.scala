@@ -14,6 +14,7 @@ import org.apache.spark.shuffle.ucx.rpc.UcxRpcMessages.{ExecutorAdded, Introduce
 import org.apache.spark.shuffle.ucx.utils.SerializableDirectBuffer
 import org.apache.spark.util.{RpcUtils, ThreadUtils}
 import org.apache.spark.{SecurityManager, SparkConf, SparkEnv}
+import org.openucx.jucx.NativeLibs
 
 /**
  * Common part for all spark versions for UcxShuffleManager logic
@@ -22,6 +23,11 @@ abstract class CommonUcxShuffleManager(val conf: SparkConf, isDriver: Boolean) e
   type ShuffleId = Int
   type MapId = Int
   type ReduceId = Long
+  
+  /* Load UCX/JUCX libraries as soon as possible to avoid collision with JVM when register malloc/mmap hook. */
+  if (!isDriver) {
+    NativeLibs.load();
+  }
 
   val ucxShuffleConf = new UcxShuffleConf(conf)
 
