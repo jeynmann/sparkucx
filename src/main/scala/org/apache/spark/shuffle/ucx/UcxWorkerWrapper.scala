@@ -165,7 +165,9 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
    */
   def progressConnect(): Unit = {
     while (!flushRequests.isEmpty) {
-      progress()
+      if (0 == progress()) {
+        Thread.`yield`()
+      }
       flushRequests.removeIf(_.isCompleted)
     }
     logTrace(s"Flush completed. Number of connections: ${connections.keys.size}")
@@ -274,7 +276,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
            s"in ${System.nanoTime() - startTime} ns")
        }
      }, MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
-    worker.progressRequest(ep.flushNonBlocking(null))
+    // worker.progressRequest(ep.flushNonBlocking(null))
     Seq(request)
   }
 
