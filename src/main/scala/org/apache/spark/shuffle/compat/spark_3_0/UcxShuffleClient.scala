@@ -13,7 +13,6 @@ import org.apache.spark.storage.{BlockId => SparkBlockId, ShuffleBlockId => Spar
 
 class UcxShuffleClient(val transport: UcxShuffleTransport, mapId2PartitionId: Map[Long, Int]) extends BlockStoreClient with Logging {
   val worker = transport.selectLocalWorker()
-  var numFetched = 0
   override def fetchBlocks(host: String, port: Int, execId: String, blockIds: Array[String],
                            listener: BlockFetchingListener,
                            downloadFileManager: DownloadFileManager): Unit = {
@@ -38,7 +37,6 @@ class UcxShuffleClient(val transport: UcxShuffleTransport, mapId2PartitionId: Ma
             this
           }
         })
-        numFetched += 1
       }
     }
     val resultBufferAllocator = (size: Long) => transport.hostBounceBufferMemoryPool.get(size)
@@ -50,11 +48,8 @@ class UcxShuffleClient(val transport: UcxShuffleTransport, mapId2PartitionId: Ma
   }
 
   def progress(): Unit = {
-    numFetched = 0
-    while (numFetched == 0) {
-      if (worker.worker.progress() == 0) {
-        Thread.`yield`()
-      }
+    if (worker.worker.progress() == 0) {
+      Thread.`yield`()
     }
   }
 }

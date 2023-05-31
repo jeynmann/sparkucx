@@ -37,7 +37,7 @@ class UcxShuffleClient(val transport: UcxShuffleTransport) extends ShuffleClient
   }
 
   def progress(): Unit = {
-    while (worker.worker.progress() == 0) {
+    if (worker.worker.progress() == 0) {
       Thread.`yield`()
     }
   }
