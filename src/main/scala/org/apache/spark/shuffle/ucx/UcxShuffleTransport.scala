@@ -14,7 +14,6 @@ import org.openucx.jucx.UcxException
 import org.openucx.jucx.ucp._
 import org.openucx.jucx.ucs.UcsConstants
 
-import java.lang.ThreadLocal
 import java.net.InetSocketAddress
 import java.nio.ByteBuffer
 import java.util.concurrent.ArrayBlockingQueue
@@ -84,12 +83,7 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
   val endpoints = mutable.Set.empty[UcpEndpoint]
   val executorAddresses = new TrieMap[ExecutorId, ByteBuffer]
 
-  // private val localWorker = new ThreadLocal[UcxWorkerWrapper] {
-  //   override def initialValue = null
-  // }
-
   private var allocatedClientWorkers: Array[UcxWorkerWrapper] = _
-  // private val clientWorkerId = new AtomicInteger()
 
   private var allocatedServerThreads: Array[UcxWorkerThread] = _
   private val serverThreadId = new AtomicInteger()
@@ -211,7 +205,6 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
   override def addExecutor(executorId: ExecutorId, workerAddress: ByteBuffer): Unit = {
     executorAddresses.put(executorId, workerAddress)
     allocatedClientWorkers.foreach(w => {
-      // logDebug(s"<zzh> connect ($executorId)[$workerAddress]")
       w.getConnection(executorId)
       w.progressConnect()
     })
@@ -221,12 +214,10 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
     executorIdsToAddress.foreach {
       case (executorId, address) => executorAddresses.put(executorId, address.value)
       allocatedClientWorkers.foreach(_.getConnection(executorId))
-      // logDebug(s"<zzh> addExecutors ($executorId)[$workerAddress]")
     }
   }
 
   def preConnect(): Unit = { 
-    println(s"<zzh> addExecutors ${executorAddresses.keys}")
     allocatedClientWorkers.foreach(_.progressConnect)
   }
 
@@ -330,27 +321,6 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
     allocatedClientWorkers(
       (Thread.currentThread().getId % allocatedClientWorkers.length).toInt)
   }
-
-  // def selectLocalWorker(): UcxWorkerWrapper = {
-  //   Option(localWorker.get()) match {
-  //     case Some(worker) => worker
-  //     case None => {
-  //       val worker = allocatedClientWorkers(
-  //         (clientWorkerId.incrementAndGet() % allocatedServerThreads.length).abs)
-  //       localWorker.set(worker)
-  //       worker
-  //     }
-  //   }
-  // }
-
-  // def releaseLocalWorker(): Unit = {
-  //   Option(localWorker.get()) match {
-  //     case Some(worker) => {
-  //       localWorker.set(null)
-  //     }
-  //     case None => {}
-  //   }
-  // }
 
   def selectServerThread(): UcxWorkerThread = {
     allocatedServerThreads(

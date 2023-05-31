@@ -44,7 +44,6 @@ class UcxShuffleClient(val transport: UcxShuffleTransport, mapId2PartitionId: Ma
   }
 
   override def close(): Unit = {
-    transport.releaseLocalWorker()
   }
 
   def progress(): Unit = {

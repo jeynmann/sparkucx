@@ -72,7 +72,6 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
     transport.ucxShuffleConf.numIoThreads)
   private val ioTaskSupport = new ForkJoinTaskSupport(ioThreadPool)
 
-
   if (isClientWorker) {
     // Receive block data handler
     worker.setAmRecvHandler(1,
@@ -276,7 +275,6 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
            s"in ${System.nanoTime() - startTime} ns")
        }
      }, MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
-    // worker.progressRequest(ep.flushNonBlocking(null))
     Seq(request)
   }
 
