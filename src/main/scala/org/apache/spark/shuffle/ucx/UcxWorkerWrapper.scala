@@ -5,8 +5,8 @@
 package org.apache.spark.shuffle.ucx
 
 import java.io.Closeable
-import java.util.concurrent.{ConcurrentLinkedQueue, LinkedBlockingQueue}
-import java.util.concurrent.atomic.{AtomicInteger, AtomicBoolean}
+import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.atomic.AtomicInteger
 import scala.collection.concurrent.TrieMap
 import scala.util.Random
 import org.openucx.jucx.ucp._
@@ -338,36 +338,4 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
     case ex: Throwable => logError(s"Failed to read and send data: $ex")
   }
 
-}
-
-class UcxWorkerThread(val workerWrapper: UcxWorkerWrapper) extends Thread with Logging {
-  val id = workerWrapper.id
-
-  private val stopping = new AtomicBoolean(false)
-  private val outstandingTasks = new LinkedBlockingQueue[Runnable]()
-
-  setDaemon(true)
-  setName(s"UCX-worker $id")
-
-  override def run(): Unit = {
-    logDebug(s"UCX-worker $id started")
-    while (!stopping.get()) {
-      processTask()
-    }
-    workerWrapper.close()
-    logDebug(s"UCX-worker $id stopped")
-  }
-
-  def processTask(): Unit = {
-    outstandingTasks.take().run()
-  }
-
-  def submit(task: Runnable): Unit = {
-    outstandingTasks.put(task)
-  }
-
-  def close(): Unit = {
-    logDebug(s"UCX-worker $id stopping")
-    stopping.set(true)
-  }
 }
