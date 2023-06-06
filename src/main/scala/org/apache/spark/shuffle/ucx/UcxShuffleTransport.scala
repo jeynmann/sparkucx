@@ -309,10 +309,11 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
         val blocks = blockIds.map(bid => registeredBlocks(bid))
         amData.close()
 
-        Option(server.workerWrapper.handleFetchBlockRequest(blocks, replyTag, replyExecutor)) match {
-          case Some(req) => server.submit(req)
-          case None => {}
-        }
+        server.workerWrapper.handleFetchBlockRequest(blocks, replyTag, replyExecutor)
+        // Option(server.workerWrapper.handleFetchBlockRequest(blocks, replyTag, replyExecutor)) match {
+        //   case Some(req) => server.submit(req)
+        //   case None => {}
+        // }
       }
     })
   }
