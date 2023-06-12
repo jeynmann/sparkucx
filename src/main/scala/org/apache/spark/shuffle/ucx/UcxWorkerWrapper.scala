@@ -177,6 +177,20 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
     worker.progress()
   }
 
+  @inline
+  def progressBlocked(isFinished: () => Boolean): Unit = {
+    transport.ucxShuffleConf.useWakeup match {
+      case true => while (!isFinished()) {
+        if (worker.progress() == 0) {
+          worker.waitForEvents()
+        }
+      }
+      case false => while (!isFinished()) {
+        worker.progress()
+      }
+    }
+  }
+
   /**
    * Establish connections to known instances.
    */
@@ -241,14 +255,14 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
     val headerSize = UnsafeUtils.INT_SIZE + UnsafeUtils.LONG_SIZE
     val ep = getConnection(executorId)
 
-    if (worker.getMaxAmHeaderSize <=
-      headerSize + UnsafeUtils.INT_SIZE * blockIds.length) {
-      val (b1, b2) = blockIds.splitAt(blockIds.length / 2)
-      val (c1, c2) = callbacks.splitAt(callbacks.length / 2)
-      val r1 = fetchBlocksByBlockIds(executorId, b1, resultBufferAllocator, c1)
-      val r2 = fetchBlocksByBlockIds(executorId, b2, resultBufferAllocator, c2)
-      return r1 ++ r2
-    }
+    // if (worker.getMaxAmHeaderSize <=
+    //   headerSize + UnsafeUtils.INT_SIZE * blockIds.length) {
+    //   val (b1, b2) = blockIds.splitAt(blockIds.length / 2)
+    //   val (c1, c2) = callbacks.splitAt(callbacks.length / 2)
+    //   val r1 = fetchBlocksByBlockIds(executorId, b1, resultBufferAllocator, c1)
+    //   val r2 = fetchBlocksByBlockIds(executorId, b2, resultBufferAllocator, c2)
+    //   return r1 ++ r2
+    // }
 
     val t = tag.incrementAndGet()
 
@@ -322,18 +336,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
       }, new UcpRequestParams().setMemoryType(UcsConstants.MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
         .setMemoryHandle(resultMemory.memory))
 
-    val useWakeup = transport.ucxShuffleConf.useWakeup
-    if (useWakeup) {
-      while (!req.isCompleted) {
-        if (worker.progress() == 0) {
-          worker.waitForEvents()
-        }
-      }
-    } else {
-      while (!req.isCompleted) {
-        worker.progress()
-      }
-    }
+    progressBlocked(() => req.isCompleted)
   } catch {
     case ex: Throwable => logError(s"Failed to read and send data: $ex")
   }
@@ -358,10 +361,12 @@ class UcxWorkerThread(val workerWrapper: UcxWorkerWrapper) extends Thread with L
     logDebug(s"UCX-worker $id stopped")
   }
 
+  @inline
   def processTask(): Unit = {
     outstandingTasks.take().run()
   }
 
+  @inline
   def submit(task: Runnable): Unit = {
     outstandingTasks.put(task)
   }

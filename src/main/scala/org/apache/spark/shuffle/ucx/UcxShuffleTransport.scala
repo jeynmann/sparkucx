@@ -14,6 +14,7 @@ import org.openucx.jucx.UcxException
 import org.openucx.jucx.ucp._
 import org.openucx.jucx.ucs.UcsConstants
 
+import java.lang.ThreadLocal
 import java.net.InetSocketAddress
 import java.nio.ByteBuffer
 import java.util.concurrent.ArrayBlockingQueue
@@ -84,6 +85,8 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
   val executorAddresses = new TrieMap[ExecutorId, ByteBuffer]
 
   private var allocatedClientWorkers: Array[UcxWorkerWrapper] = _
+  private val clientWorkerId = new AtomicInteger()
+  private val clientWorker = new ThreadLocal[UcxWorkerWrapper]
 
   private var allocatedServerThreads: Array[UcxWorkerThread] = _
   private val serverThreadId = new AtomicInteger()
@@ -213,12 +216,11 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
   def addExecutors(executorIdsToAddress: Map[ExecutorId, SerializableDirectBuffer]): Unit = {
     executorIdsToAddress.foreach {
       case (executorId, address) => executorAddresses.put(executorId, address.value)
-      allocatedClientWorkers.foreach(_.getConnection(executorId))
     }
   }
 
-  def preConnect(): Unit = { 
-    allocatedClientWorkers.foreach(_.progressConnect)
+  def preConnect(): Unit = {
+    allocatedClientWorkers.foreach(_.preconnect())
   }
 
   /**
@@ -277,7 +279,7 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
   override def fetchBlocksByBlockIds(executorId: ExecutorId, blockIds: Seq[BlockId],
                                      resultBufferAllocator: BufferAllocator,
                                      callbacks: Seq[OperationCallback]): Seq[Request] = {
-    selectLocalWorker()
+    selectClientWorker
       .fetchBlocksByBlockIds(executorId, blockIds, resultBufferAllocator, callbacks)
   }
 
@@ -291,7 +293,7 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
   }
 
   def handleFetchBlockRequest(replyTag: Int, amData: UcpAmData, replyExecutor: Long): Unit = {
-    val server = selectServerThread()
+    val server = selectServerThread
     server.submit(new Runnable {
       override def run(): Unit = {
         val buffer = UnsafeUtils.getByteBufferView(amData.getDataAddress, amData.getLength.toInt)
@@ -310,23 +312,24 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
         amData.close()
 
         server.workerWrapper.handleFetchBlockRequest(blocks, replyTag, replyExecutor)
-        // Option(server.workerWrapper.handleFetchBlockRequest(blocks, replyTag, replyExecutor)) match {
-        //   case Some(req) => server.submit(req)
-        //   case None => {}
-        // }
       }
     })
   }
 
-  def selectLocalWorker(): UcxWorkerWrapper = {
-    allocatedClientWorkers(
-      (Thread.currentThread().getId % allocatedClientWorkers.length).toInt)
+  def selectClientWorker(): UcxWorkerWrapper = Option(clientWorker.get) match {
+    case Some(worker) => worker
+    case None => {
+      val worker = allocatedClientWorkers(
+        (clientWorkerId.incrementAndGet() % allocatedClientWorkers.length).abs)
+      clientWorker.set(worker)
+      worker
+    }
   }
 
-  def selectServerThread(): UcxWorkerThread = {
-    allocatedServerThreads(
-      (serverThreadId.incrementAndGet() % allocatedServerThreads.length).abs)
-  }
+  @inline
+  def selectServerThread(): UcxWorkerThread = allocatedServerThreads(
+    (serverThreadId.incrementAndGet() % allocatedServerThreads.length).abs
+  )
 
   /**
    * Progress outstanding operations. This routine is blocking (though may poll for event).
@@ -335,9 +338,9 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
    * Return from this method guarantees that at least some operation was progressed.
    * But not guaranteed that at least one [[ fetchBlocksByBlockIds ]] completed!
    */
-   override def progress(): Unit = {
-    selectLocalWorker().progress()
-   }
+  override def progress(): Unit = {
+    selectClientWorker.progress()
+  }
 
   def progressConnect(): Unit = {
     allocatedClientWorkers.par.foreach(_.progressConnect())

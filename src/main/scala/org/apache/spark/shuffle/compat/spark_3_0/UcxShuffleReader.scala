@@ -107,6 +107,7 @@ private[spark] class UcxShuffleReader[K, C](handle: BaseShuffleHandle[K, _, C],
 
     // Ucx shuffle logic
     // Java reflection to get access to private results queue
+    val worker = shuffleClient.worker
     val queueField = shuffleIterator.getClass.getDeclaredField(
       "org$apache$spark$storage$ShuffleBlockFetcherIterator$$results")
     queueField.setAccessible(true)
@@ -116,9 +117,7 @@ private[spark] class UcxShuffleReader[K, C](handle: BaseShuffleHandle[K, _, C],
     val ucxWrappedStream = new Iterator[(BlockId, InputStream)] {
       override def next(): (BlockId, InputStream) = {
         val startTime = System.nanoTime()
-        while (resultQueue.isEmpty) {
-          shuffleClient.progress()
-        }
+        worker.progressBlocked(() => !resultQueue.isEmpty)
         val fetchWaitTime = System.nanoTime() - startTime
         readMetrics.incFetchWaitTime(TimeUnit.NANOSECONDS.toMillis(fetchWaitTime))
         wrappedStreams.next()
