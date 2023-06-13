@@ -287,6 +287,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
            s"in ${System.nanoTime() - startTime} ns")
        }
      }, MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
+
     Seq(request)
   }
 
@@ -348,6 +349,7 @@ class UcxWorkerThread(val workerWrapper: UcxWorkerWrapper) extends Thread with L
 
   private val stopping = new AtomicBoolean(false)
   private val outstandingTasks = new LinkedBlockingQueue[Runnable]()
+  private val dummy = new Runnable { override def run = {}}
 
   setDaemon(true)
   setName(s"UCX-worker $id")
@@ -357,7 +359,6 @@ class UcxWorkerThread(val workerWrapper: UcxWorkerWrapper) extends Thread with L
     while (!stopping.get()) {
       processTask()
     }
-    workerWrapper.close()
     logDebug(s"UCX-worker $id stopped")
   }
 
@@ -371,8 +372,9 @@ class UcxWorkerThread(val workerWrapper: UcxWorkerWrapper) extends Thread with L
     outstandingTasks.put(task)
   }
 
+  @inline
   def close(): Unit = {
-    logDebug(s"UCX-worker $id stopping")
     stopping.set(true)
+    outstandingTasks.put(dummy)
   }
 }

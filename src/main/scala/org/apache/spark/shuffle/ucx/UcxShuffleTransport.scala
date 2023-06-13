@@ -191,8 +191,11 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
         globalWorker = null
       }
 
-      allocatedServerThreads.foreach(_.close())
-      allocatedServerThreads.foreach(_.join(10))
+      allocatedServerThreads.foreach{ case(t) =>
+        t.close()
+        t.join(10)
+        t.workerWrapper.close()
+      }
 
       if (ucxContext != null) {
         ucxContext.close()
