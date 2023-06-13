@@ -85,7 +85,7 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
   val executorAddresses = new TrieMap[ExecutorId, ByteBuffer]
 
   private var allocatedClientWorkers: Array[UcxWorkerWrapper] = _
-  private val clientWorkerId = new AtomicInteger()
+  private var clientWorkerIds: ArrayBlockingQueue[Int] = _
   private val clientWorker = new ThreadLocal[UcxWorkerWrapper]
 
   private var allocatedServerThreads: Array[UcxWorkerThread] = _
@@ -151,12 +151,14 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
     progressThread.start()
 
     allocatedClientWorkers = new Array[UcxWorkerWrapper](ucxShuffleConf.numWorkers)
+    clientWorkerIds = new ArrayBlockingQueue[Int](ucxShuffleConf.numWorkers)
     logInfo(s"Allocating ${ucxShuffleConf.numWorkers} client workers")
     for (i <- 0 until ucxShuffleConf.numWorkers) {
-      val clientId: Long = ((i.toLong + 1L) << 32) | executorId
+      val clientId = genClientId(i.toLong, executorId)
       ucpWorkerParams.setClientId(clientId)
       val worker = ucxContext.newWorker(ucpWorkerParams)
       allocatedClientWorkers(i) = UcxWorkerWrapper(worker, this, isClientWorker = true, clientId)
+      clientWorkerIds.add(i)
     }
 
     initialized = true
@@ -316,15 +318,31 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
     })
   }
 
+  @inline
   def selectClientWorker(): UcxWorkerWrapper = Option(clientWorker.get) match {
     case Some(worker) => worker
     case None => {
       val worker = allocatedClientWorkers(
-        (clientWorkerId.incrementAndGet() % allocatedClientWorkers.length).abs)
+        (clientWorkerIds.poll() % allocatedClientWorkers.length).abs)
       clientWorker.set(worker)
       worker
     }
   }
+
+  @inline
+  def releaseClientWorker(): Unit = Option(clientWorker.get) match {
+    case Some(worker) => {
+      clientWorker.set(null)
+      clientWorkerIds.add(getWorkerId(worker.id).toInt)
+    }
+    case None => {}
+  }
+
+  @inline
+  def genClientId(workerId: Long, executorId: Long): Long = ((workerId + 1L) << 32) | executorId
+
+  @inline
+  def getWorkerId(clientId: Long): Long = (clientId >> 32) - 1L
 
   @inline
   def selectServerThread(): UcxWorkerThread = allocatedServerThreads(

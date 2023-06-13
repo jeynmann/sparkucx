@@ -33,6 +33,6 @@ class UcxShuffleClient(val transport: UcxShuffleTransport) extends ShuffleClient
   }
 
   override def close(): Unit = {
-
+    transport.releaseClientWorker()
   }
 }
