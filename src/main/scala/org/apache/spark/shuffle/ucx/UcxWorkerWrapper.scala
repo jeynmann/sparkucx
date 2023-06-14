@@ -6,7 +6,7 @@ package org.apache.spark.shuffle.ucx
 
 import java.io.Closeable
 import java.util.concurrent.{ConcurrentLinkedQueue, LinkedBlockingQueue}
-import java.util.concurrent.atomic.{AtomicInteger, AtomicBoolean}
+import java.util.concurrent.atomic.AtomicInteger
 import scala.collection.concurrent.TrieMap
 import scala.util.Random
 import org.openucx.jucx.ucp._
@@ -347,7 +347,6 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
 class UcxWorkerThread(val workerWrapper: UcxWorkerWrapper) extends Thread with Logging {
   val id = workerWrapper.id
 
-  private val stopping = new AtomicBoolean(false)
   private val outstandingTasks = new LinkedBlockingQueue[Runnable]()
   private val dummy = new Runnable { override def run = {}}
 
@@ -356,7 +355,7 @@ class UcxWorkerThread(val workerWrapper: UcxWorkerWrapper) extends Thread with L
 
   override def run(): Unit = {
     logDebug(s"UCX-worker $id started")
-    while (!stopping.get()) {
+    while (!isInterrupted) {
       processTask()
     }
     logDebug(s"UCX-worker $id stopped")
@@ -374,7 +373,6 @@ class UcxWorkerThread(val workerWrapper: UcxWorkerWrapper) extends Thread with L
 
   @inline
   def close(): Unit = {
-    stopping.set(true)
-    outstandingTasks.put(dummy)
+    workerWrapper.close()
   }
 }
