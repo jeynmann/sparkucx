@@ -6,7 +6,7 @@ package org.apache.spark.shuffle.ucx
 
 import java.io.Closeable
 import java.util.concurrent.{ConcurrentLinkedQueue, LinkedBlockingQueue}
-import java.util.concurrent.atomic.{AtomicInteger, AtomicBoolean}
+import java.util.concurrent.atomic.AtomicInteger
 import scala.collection.concurrent.TrieMap
 import scala.util.Random
 import org.openucx.jucx.ucp._
@@ -62,6 +62,7 @@ class UcxRefCountMemoryBlock(baseBlock: MemoryBlock, offset: Long, size: Long,
 case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, isClientWorker: Boolean,
                             id: Long = 0L)
   extends Closeable with Logging {
+  private val useWakeup = transport.ucxShuffleConf.useWakeup
 
   private final val connections =  new TrieMap[transport.ExecutorId, UcpEndpoint]
   private val requestData = new TrieMap[Int, (Seq[OperationCallback], UcxRequest, transport.BufferAllocator)]
@@ -179,13 +180,14 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
 
   @inline
   def progressBlocked(isFinished: () => Boolean): Unit = {
-    transport.ucxShuffleConf.useWakeup match {
-      case true => while (!isFinished()) {
+    if (useWakeup) {
+      while (!isFinished()) {
         if (worker.progress() == 0) {
           worker.waitForEvents()
         }
       }
-      case false => while (!isFinished()) {
+    } else {
+      while (!isFinished()) {
         worker.progress()
       }
     }
@@ -291,7 +293,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
     Seq(request)
   }
 
-  def handleFetchBlockRequest(blocks: Seq[Block], replyTag: Int, replyExecutor: Long): Unit = try {
+  def handleFetchBlockRequest(blocks: Seq[Block], replyTag: Int, replyExecutor: Long): UcpRequest = try {
     val tagAndSizes = UnsafeUtils.INT_SIZE + UnsafeUtils.INT_SIZE * blocks.length
     val resultMemory = transport.hostBounceBufferMemoryPool.get(tagAndSizes + blocks.map(_.getSize).sum)
       .asInstanceOf[UcxBounceBufferMemoryBlock]
@@ -323,7 +325,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
     }
 
     val startTime = System.nanoTime()
-    val req = getConnection(replyExecutor).sendAmNonBlocking(1, resultMemory.address, tagAndSizes,
+    getConnection(replyExecutor).sendAmNonBlocking(1, resultMemory.address, tagAndSizes,
       resultMemory.address + tagAndSizes, resultMemory.size - tagAndSizes, 0, new UcxCallback {
         override def onSuccess(request: UcpRequest): Unit = {
           logTrace(s"Sent ${blocks.length} blocks of size: ${resultMemory.size} " +
@@ -336,45 +338,67 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
         }
       }, new UcpRequestParams().setMemoryType(UcsConstants.MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
         .setMemoryHandle(resultMemory.memory))
-
-    progressBlocked(() => req.isCompleted)
   } catch {
     case ex: Throwable => logError(s"Failed to read and send data: $ex")
+    null
   }
 
 }
 
 class UcxWorkerThread(val workerWrapper: UcxWorkerWrapper) extends Thread with Logging {
   val id = workerWrapper.id
+  val worker = workerWrapper.worker
+  val transport = workerWrapper.transport
+  val useWakeup = workerWrapper.transport.ucxShuffleConf.useWakeup
 
-  private val stopping = new AtomicBoolean(false)
-  private val outstandingTasks = new LinkedBlockingQueue[Runnable]()
-  private val dummy = new Runnable { override def run = {}}
+  private val outstandingRequests = new ConcurrentLinkedQueue[UcpRequest]()
+  private val outstandingTasks = new ConcurrentLinkedQueue[Runnable]()
 
   setDaemon(true)
   setName(s"UCX-worker $id")
 
   override def run(): Unit = {
     logDebug(s"UCX-worker $id started")
-    while (!stopping.get()) {
+    while (!isInterrupted) {
       processTask()
+      processRequest()
     }
     logDebug(s"UCX-worker $id stopped")
   }
 
   @inline
-  def processTask(): Unit = {
-    outstandingTasks.take().run()
+  def processTask(): Unit = Option(outstandingTasks.poll()) match {
+    case Some(task) => task.run()
+    case None => {}
+  }
+
+  @inline
+  def processRequest(): Unit = {
+    var req = outstandingRequests.peek()
+    while(req != null && req.isCompleted) {
+      outstandingRequests.poll()
+      req = outstandingRequests.peek()
+    }
+    while (worker.progress() != 0) {}
+    if (outstandingTasks.isEmpty && useWakeup) {
+      worker.waitForEvents()
+    }
   }
 
   @inline
   def submit(task: Runnable): Unit = {
-    outstandingTasks.put(task)
+    outstandingTasks.offer(task)
+    worker.signal()
+  }
+
+  @inline
+  def submit(request: UcpRequest): Unit = {
+    outstandingRequests.offer(request)
+    worker.signal()
   }
 
   @inline
   def close(): Unit = {
-    stopping.set(true)
-    outstandingTasks.put(dummy)
+    workerWrapper.close()
   }
 }
