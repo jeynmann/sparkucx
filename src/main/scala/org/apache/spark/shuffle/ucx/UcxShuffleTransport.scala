@@ -83,11 +83,11 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
   val endpoints = mutable.Set.empty[UcpEndpoint]
   val executorAddresses = new TrieMap[ExecutorId, ByteBuffer]
 
-  private var allocatedClientThreads: Array[UcxWorkerThread] = _
+  var allocatedClientThreads: Array[UcxWorkerThread] = _
   private var clientThreadId = new AtomicInteger()
   // private var clientLocal = new ThreadLocal[UcxWorkerThread] = _
 
-  private var allocatedServerThreads: Array[UcxWorkerThread] = _
+  var allocatedServerThreads: Array[UcxWorkerThread] = _
   private val serverThreadId = new AtomicInteger()
 
   private val registeredBlocks = new TrieMap[BlockId, Block]

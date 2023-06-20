@@ -338,6 +338,10 @@ class UcxWorkerThread(val workerWrapper: UcxWorkerWrapper) extends Thread with L
   val worker = workerWrapper.worker
   val transport = workerWrapper.transport
   val useWakeup = workerWrapper.transport.ucxShuffleConf.useWakeup
+  val workerPool = workerWrapper.isClientWorker match {
+    case true => transport.allocatedClientThreads
+    case false => transport.allocatedServerThreads
+  }
 
   private val taskQueue = new ConcurrentLinkedQueue[FutureTask[_]]()
 
@@ -347,16 +351,41 @@ class UcxWorkerThread(val workerWrapper: UcxWorkerWrapper) extends Thread with L
   override def run(): Unit = {
     logDebug(s"UCX-worker $id started")
     while (!isInterrupted) {
-      Option(taskQueue.poll()) match {
-        case Some(task) => task.run
-        case None => {}
+      val isEmpty = Option(taskQueue.poll()) match {
+        case Some(task) => {
+          task.run
+          false
+        }
+        case None => steal
       }
       while (worker.progress() != 0) {}
-      if(taskQueue.isEmpty && useWakeup) {
+      if(isEmpty && taskQueue.isEmpty && useWakeup) {
         worker.waitForEvents()
       }
     }
     logDebug(s"UCX-worker $id stopped")
+  }
+
+  @inline
+  def steal() = {
+    var stealWorker = this
+    var taskNumMax = 0
+    for (other <- workerPool) {
+      if (other != null){
+        val taskNum = other.taskQueue.size
+        if (other != this && taskNum > taskNumMax) {
+          taskNumMax = taskNum
+          stealWorker = other
+        }
+      }
+    }
+    if (taskNumMax != 0) {
+      Option(stealWorker.taskQueue.poll()) match {
+        case Some(task) => task.run
+        case None => {}
+      }
+      false
+    } else true
   }
 
   @inline
