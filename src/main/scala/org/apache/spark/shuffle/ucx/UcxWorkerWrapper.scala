@@ -381,10 +381,9 @@ class UcxWorkerThread(val workerWrapper: UcxWorkerWrapper) extends Thread with L
     }
     if (taskNumMax != 0) {
       Option(stealWorker.taskQueue.poll()) match {
-        case Some(task) => task.run
-        case None => {}
+        case Some(task) => task.run; false
+        case None => true
       }
-      false
     } else true
   }
 

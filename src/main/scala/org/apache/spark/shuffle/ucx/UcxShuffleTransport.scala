@@ -215,11 +215,12 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
    */
   override def addExecutor(executorId: ExecutorId, workerAddress: ByteBuffer): Unit = {
     executorAddresses.put(executorId, workerAddress)
-    allocatedClientThreads.foreach { t => t.submit(
+    allocatedClientThreads.foreach { _.submit(
       new Runnable {
         override def run = {
-          t.workerWrapper.getConnection(executorId)
-          t.workerWrapper.progressConnect()
+          val worker = UcxWorkerThread.getWorkerWrapper
+          worker.getConnection(executorId)
+          worker.progressConnect()
         }
       })
     }
@@ -229,13 +230,14 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
     executorIdsToAddress.foreach {
       case (executorId, address) => executorAddresses.put(executorId, address.value)
     }
-    allocatedClientThreads.foreach { t => t.submit(
+    allocatedClientThreads.foreach { _.submit(
       new Runnable {
         override def run = {
+          val worker = UcxWorkerThread.getWorkerWrapper
           executorIdsToAddress.foreach {
-            case (executorId, _) => t.workerWrapper.getConnection(executorId)
+            case (executorId, _) => worker.getConnection(executorId)
           }
-          t.workerWrapper.progressConnect()
+          worker.progressConnect()
         }
       })
     }
@@ -300,23 +302,21 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
   override def fetchBlocksByBlockIds(executorId: ExecutorId, blockIds: Seq[BlockId],
                                      resultBufferAllocator: BufferAllocator,
                                      callbacks: Seq[OperationCallback]): Unit = {
-    val client = selectClientThread
-    client.submit(new Runnable {
-      override def run = client.workerWrapper.fetchBlocksByBlockIds(
-      executorId, blockIds, resultBufferAllocator, callbacks)
+    selectClientThread.submit(new Runnable {
+      override def run = UcxWorkerThread.getWorkerWrapper.fetchBlocksByBlockIds(
+        executorId, blockIds, resultBufferAllocator, callbacks)
     })
   }
 
   def connectServerWorkers(executorId: ExecutorId, workerAddress: ByteBuffer): Unit = {
     executorAddresses.put(executorId, workerAddress)
-    allocatedServerThreads.foreach(t => t.submit(new Runnable {
-      override def run = t.workerWrapper.connectByWorkerAddress(executorId, workerAddress)
+    allocatedServerThreads.foreach(_.submit(new Runnable {
+      override def run = UcxWorkerThread.getWorkerWrapper.connectByWorkerAddress(executorId, workerAddress)
     }))
   }
 
   def handleFetchBlockRequest(replyTag: Int, amData: UcpAmData, replyExecutor: Long): Unit = {
-    val server = selectServerThread
-    server.submit(new Runnable {
+    selectServerThread.submit(new Runnable {
       override def run = {
         val buffer = UnsafeUtils.getByteBufferView(amData.getDataAddress, amData.getLength.toInt)
         val blockIds = mutable.ArrayBuffer.empty[BlockId]
@@ -333,7 +333,7 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
         val blocks = blockIds.map(bid => registeredBlocks(bid))
         amData.close()
 
-        server.workerWrapper.handleFetchBlockRequest(blocks, replyTag, replyExecutor)
+        UcxWorkerThread.getWorkerWrapper.handleFetchBlockRequest(blocks, replyTag, replyExecutor)
       }
     })
   }
