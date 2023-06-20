@@ -5,7 +5,7 @@
 package org.apache.spark.shuffle.ucx
 
 import java.io.Closeable
-import java.util.concurrent.{ConcurrentLinkedQueue, LinkedBlockingQueue}
+import java.util.concurrent.{ConcurrentLinkedQueue, Callable, FutureTask}
 import java.util.concurrent.atomic.AtomicInteger
 import scala.collection.concurrent.TrieMap
 import scala.util.Random
@@ -252,19 +252,10 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
 
   def fetchBlocksByBlockIds(executorId: transport.ExecutorId, blockIds: Seq[BlockId],
                             resultBufferAllocator: transport.BufferAllocator,
-                            callbacks: Seq[OperationCallback]): Seq[Request] = {
+                            callbacks: Seq[OperationCallback]): Unit = {
     val startTime = System.nanoTime()
     val headerSize = UnsafeUtils.INT_SIZE + UnsafeUtils.LONG_SIZE
     val ep = getConnection(executorId)
-
-    // if (worker.getMaxAmHeaderSize <=
-    //   headerSize + UnsafeUtils.INT_SIZE * blockIds.length) {
-    //   val (b1, b2) = blockIds.splitAt(blockIds.length / 2)
-    //   val (c1, c2) = callbacks.splitAt(callbacks.length / 2)
-    //   val r1 = fetchBlocksByBlockIds(executorId, b1, resultBufferAllocator, c1)
-    //   val r2 = fetchBlocksByBlockIds(executorId, b2, resultBufferAllocator, c2)
-    //   return r1 ++ r2
-    // }
 
     val t = tag.incrementAndGet()
 
@@ -289,11 +280,9 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
            s"in ${System.nanoTime() - startTime} ns")
        }
      }, MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
-
-    Seq(request)
   }
 
-  def handleFetchBlockRequest(blocks: Seq[Block], replyTag: Int, replyExecutor: Long): UcpRequest = try {
+  def handleFetchBlockRequest(blocks: Seq[Block], replyTag: Int, replyExecutor: Long): Unit = try {
     val tagAndSizes = UnsafeUtils.INT_SIZE + UnsafeUtils.INT_SIZE * blocks.length
     val resultMemory = transport.hostBounceBufferMemoryPool.get(tagAndSizes + blocks.map(_.getSize).sum)
       .asInstanceOf[UcxBounceBufferMemoryBlock]
@@ -340,7 +329,6 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
         .setMemoryHandle(resultMemory.memory))
   } catch {
     case ex: Throwable => logError(s"Failed to read and send data: $ex")
-    null
   }
 
 }
@@ -351,8 +339,7 @@ class UcxWorkerThread(val workerWrapper: UcxWorkerWrapper) extends Thread with L
   val transport = workerWrapper.transport
   val useWakeup = workerWrapper.transport.ucxShuffleConf.useWakeup
 
-  private val outstandingRequests = new ConcurrentLinkedQueue[UcpRequest]()
-  private val outstandingTasks = new ConcurrentLinkedQueue[Runnable]()
+  private val taskQueue = new ConcurrentLinkedQueue[FutureTask[_]]()
 
   setDaemon(true)
   setName(s"UCX-worker $id")
@@ -360,41 +347,32 @@ class UcxWorkerThread(val workerWrapper: UcxWorkerWrapper) extends Thread with L
   override def run(): Unit = {
     logDebug(s"UCX-worker $id started")
     while (!isInterrupted) {
-      processTask()
-      processRequest()
+      Option(taskQueue.poll()) match {
+        case Some(task) => task.run
+        case None => {}
+      }
+      while (worker.progress() != 0) {}
+      if(taskQueue.isEmpty && useWakeup) {
+        worker.waitForEvents()
+      }
     }
     logDebug(s"UCX-worker $id stopped")
   }
 
   @inline
-  def processTask(): Unit = Option(outstandingTasks.poll()) match {
-    case Some(task) => task.run()
-    case None => {}
-  }
-
-  @inline
-  def processRequest(): Unit = {
-    var req = outstandingRequests.peek()
-    while(req != null && req.isCompleted) {
-      outstandingRequests.poll()
-      req = outstandingRequests.peek()
-    }
-    while (worker.progress() != 0) {}
-    if (outstandingTasks.isEmpty && useWakeup) {
-      worker.waitForEvents()
-    }
-  }
-
-  @inline
-  def submit(task: Runnable): Unit = {
-    outstandingTasks.offer(task)
+  def submit(task: Callable[_]) = {
+    val future = new FutureTask(task)
+    taskQueue.offer(future)
     worker.signal()
+    future
   }
 
   @inline
-  def submit(request: UcpRequest): Unit = {
-    outstandingRequests.offer(request)
+  def submit(task: Runnable) = {
+    val future = new FutureTask(task, Unit)
+    taskQueue.offer(future)
     worker.signal()
+    future
   }
 
   @inline
