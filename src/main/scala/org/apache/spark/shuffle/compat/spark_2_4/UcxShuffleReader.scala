@@ -58,8 +58,6 @@ class UcxShuffleReader[K, C](handle: BaseShuffleHandle[K, _, C],
       queueField.setAccessible(true)
       val resultQueue = queueField.get(wrappedStreams).asInstanceOf[LinkedBlockingQueue[_]]
 
-      val useWakeup = transport.ucxShuffleConf.useWakeup
-      val ucxWorker = transport.selectClientWorker.worker
       // Do progress if queue is empty before calling next on ShuffleIterator
       val ucxWrappedStream = new Iterator[(BlockId, InputStream)] {
         override def next(): (BlockId, InputStream) = {

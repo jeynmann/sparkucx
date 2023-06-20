@@ -276,10 +276,6 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
     registeredBlocks.clear()
   }
 
-  def selectClientWorker(): UcxWorkerWrapper = allocatedClientWorkers(
-    (Thread.currentThread().getId % allocatedClientWorkers.length).toInt
-  )
-
   /**
    * Batch version of [[ fetchBlocksByBlockIds ]].
    */
