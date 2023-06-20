@@ -17,7 +17,6 @@ import org.openucx.jucx.ucs.UcsConstants
 import java.lang.ThreadLocal
 import java.net.InetSocketAddress
 import java.nio.ByteBuffer
-import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.atomic.AtomicInteger
 import scala.collection.concurrent.TrieMap
 import scala.collection.mutable
@@ -219,11 +218,12 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
   def addExecutors(executorIdsToAddress: Map[ExecutorId, SerializableDirectBuffer]): Unit = {
     executorIdsToAddress.foreach {
       case (executorId, address) => executorAddresses.put(executorId, address.value)
+      allocatedClientWorkers.foreach(_.getConnection(executorId))
     }
   }
 
-  def preConnect(): Unit = {
-    allocatedClientWorkers.foreach(_.preconnect())
+  def preConnect(): Unit = { 
+    allocatedClientWorkers.foreach(_.progressConnect)
   }
 
   /**
@@ -318,10 +318,7 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
         val blocks = blockIds.map(bid => registeredBlocks(bid))
         amData.close()
 
-        Option(server.workerWrapper.handleFetchBlockRequest(blocks, replyTag, replyExecutor)) match {
-          case Some(req) => server.submit(req)
-          case None => {}
-        }
+        server.workerWrapper.handleFetchBlockRequest(blocks, replyTag, replyExecutor)
       }
     })
   }

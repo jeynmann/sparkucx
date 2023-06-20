@@ -5,7 +5,7 @@
 package org.apache.spark.shuffle.ucx
 
 import java.io.Closeable
-import java.util.concurrent.{ConcurrentLinkedQueue, LinkedBlockingQueue}
+import java.util.concurrent.{ConcurrentLinkedQueue, Callable, FutureTask}
 import java.util.concurrent.atomic.AtomicInteger
 import scala.collection.concurrent.TrieMap
 import scala.util.Random
@@ -351,8 +351,7 @@ class UcxWorkerThread(val workerWrapper: UcxWorkerWrapper) extends Thread with L
   val transport = workerWrapper.transport
   val useWakeup = workerWrapper.transport.ucxShuffleConf.useWakeup
 
-  private val outstandingRequests = new ConcurrentLinkedQueue[UcpRequest]()
-  private val outstandingTasks = new ConcurrentLinkedQueue[Runnable]()
+  private val taskQueue = new ConcurrentLinkedQueue[FutureTask[_]]()
 
   setDaemon(true)
   setName(s"UCX-worker $id")
@@ -360,41 +359,32 @@ class UcxWorkerThread(val workerWrapper: UcxWorkerWrapper) extends Thread with L
   override def run(): Unit = {
     logDebug(s"UCX-worker $id started")
     while (!isInterrupted) {
-      processTask()
-      processRequest()
+      Option(taskQueue.poll()) match {
+        case Some(task) => task.run
+        case None => {}
+      }
+      while (worker.progress() != 0) {}
+      if(taskQueue.isEmpty && useWakeup) {
+        worker.waitForEvents()
+      }
     }
     logDebug(s"UCX-worker $id stopped")
   }
 
   @inline
-  def processTask(): Unit = Option(outstandingTasks.poll()) match {
-    case Some(task) => task.run()
-    case None => {}
-  }
-
-  @inline
-  def processRequest(): Unit = {
-    var req = outstandingRequests.peek()
-    while(req != null && req.isCompleted) {
-      outstandingRequests.poll()
-      req = outstandingRequests.peek()
-    }
-    while (worker.progress() != 0) {}
-    if (outstandingTasks.isEmpty && useWakeup) {
-      worker.waitForEvents()
-    }
-  }
-
-  @inline
-  def submit(task: Runnable): Unit = {
-    outstandingTasks.offer(task)
+  def submit(task: Callable[_]) = {
+    val future = new FutureTask(task)
+    taskQueue.offer(future)
     worker.signal()
+    future
   }
 
   @inline
-  def submit(request: UcpRequest): Unit = {
-    outstandingRequests.offer(request)
+  def submit(task: Runnable) = {
+    val future = new FutureTask(task, Unit)
+    taskQueue.offer(future)
     worker.signal()
+    future
   }
 
   @inline
