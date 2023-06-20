@@ -5,7 +5,7 @@
 package org.apache.spark.shuffle.ucx
 
 import java.io.Closeable
-import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.{ConcurrentLinkedQueue, LinkedBlockingQueue}
 import java.util.concurrent.atomic.AtomicInteger
 import scala.collection.concurrent.TrieMap
 import scala.util.Random
@@ -177,6 +177,20 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
     worker.progress()
   }
 
+  @inline
+  def progressBlocked(isFinished: () => Boolean): Unit = {
+    transport.ucxShuffleConf.useWakeup match {
+      case true => while (!isFinished()) {
+        if (worker.progress() == 0) {
+          worker.waitForEvents()
+        }
+      }
+      case false => while (!isFinished()) {
+        worker.progress()
+      }
+    }
+  }
+
   /**
    * Establish connections to known instances.
    */
@@ -241,14 +255,14 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
     val headerSize = UnsafeUtils.INT_SIZE + UnsafeUtils.LONG_SIZE
     val ep = getConnection(executorId)
 
-    if (worker.getMaxAmHeaderSize <=
-      headerSize + UnsafeUtils.INT_SIZE * blockIds.length) {
-      val (b1, b2) = blockIds.splitAt(blockIds.length / 2)
-      val (c1, c2) = callbacks.splitAt(callbacks.length / 2)
-      val r1 = fetchBlocksByBlockIds(executorId, b1, resultBufferAllocator, c1)
-      val r2 = fetchBlocksByBlockIds(executorId, b2, resultBufferAllocator, c2)
-      return r1 ++ r2
-    }
+    // if (worker.getMaxAmHeaderSize <=
+    //   headerSize + UnsafeUtils.INT_SIZE * blockIds.length) {
+    //   val (b1, b2) = blockIds.splitAt(blockIds.length / 2)
+    //   val (c1, c2) = callbacks.splitAt(callbacks.length / 2)
+    //   val r1 = fetchBlocksByBlockIds(executorId, b1, resultBufferAllocator, c1)
+    //   val r2 = fetchBlocksByBlockIds(executorId, b2, resultBufferAllocator, c2)
+    //   return r1 ++ r2
+    // }
 
     val t = tag.incrementAndGet()
 
@@ -274,7 +288,6 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
        }
      }, MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
 
-    worker.progressRequest(ep.flushNonBlocking(null))
     Seq(request)
   }
 
@@ -324,11 +337,42 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
       }, new UcpRequestParams().setMemoryType(UcsConstants.MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
         .setMemoryHandle(resultMemory.memory))
 
-    while (!req.isCompleted) {
-      progress()
-    }
+    progressBlocked(() => req.isCompleted)
   } catch {
     case ex: Throwable => logError(s"Failed to read and send data: $ex")
   }
 
+}
+
+class UcxWorkerThread(val workerWrapper: UcxWorkerWrapper) extends Thread with Logging {
+  val id = workerWrapper.id
+
+  private val outstandingTasks = new LinkedBlockingQueue[Runnable]()
+  private val dummy = new Runnable { override def run = {}}
+
+  setDaemon(true)
+  setName(s"UCX-worker $id")
+
+  override def run(): Unit = {
+    logDebug(s"UCX-worker $id started")
+    while (!isInterrupted) {
+      processTask()
+    }
+    logDebug(s"UCX-worker $id stopped")
+  }
+
+  @inline
+  def processTask(): Unit = {
+    outstandingTasks.take().run()
+  }
+
+  @inline
+  def submit(task: Runnable): Unit = {
+    outstandingTasks.put(task)
+  }
+
+  @inline
+  def close(): Unit = {
+    workerWrapper.close()
+  }
 }
