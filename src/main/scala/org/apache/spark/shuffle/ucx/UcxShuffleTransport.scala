@@ -215,13 +215,11 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
    */
   override def addExecutor(executorId: ExecutorId, workerAddress: ByteBuffer): Unit = {
     executorAddresses.put(executorId, workerAddress)
-    allocatedClientThreads.foreach { t => t.submit(
-      new Runnable {
-        override def run = {
-          t.workerWrapper.getConnection(executorId)
-          t.workerWrapper.progressConnect()
-        }
-      })
+    allocatedClientThreads.foreach { t => t.submit(new Runnable {
+      override def run = {
+        t.workerWrapper.getConnection(executorId)
+        t.workerWrapper.progressConnect()
+      }})
     }
   }
 
@@ -229,16 +227,21 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
     executorIdsToAddress.foreach {
       case (executorId, address) => executorAddresses.put(executorId, address.value)
     }
-    allocatedClientThreads.foreach { t => t.submit(
-      new Runnable {
-        override def run = {
-          executorIdsToAddress.foreach {
-            case (executorId, _) => t.workerWrapper.getConnection(executorId)
-          }
-          t.workerWrapper.progressConnect()
+    allocatedClientThreads.foreach(t => t.submit(new Runnable {
+      override def run = {
+        val startTime = System.currentTimeMillis()
+        executorIdsToAddress.foreach {
+          case (executorId, _) => t.workerWrapper.getConnection(executorId)
         }
-      })
-    }
+        t.workerWrapper.progressConnect()
+        logInfo(s"preconnect cost ${System.currentTimeMillis() - startTime}ms")
+      }
+    }))
+    // allocatedClientThreads.foreach(t => t.submit(new Runnable {
+    //   override def run = {
+    //     t.workerWrapper.progressConnect()
+    //   }
+    // }))
   }
 
   def preConnect(): Unit = {
