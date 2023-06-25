@@ -124,12 +124,6 @@ trait ShuffleTransport {
   def close(): Unit
 
   /**
-   * Add executor's worker address. For standalone testing purpose and for implementations that makes
-   * connection establishment outside of UcxShuffleManager.
-   */
-  def addExecutor(executorId: ExecutorId, workerAddress: ByteBuffer): Unit
-
-  /**
    * Remove executor from communications.
    */
   def removeExecutor(executorId: ExecutorId): Unit
