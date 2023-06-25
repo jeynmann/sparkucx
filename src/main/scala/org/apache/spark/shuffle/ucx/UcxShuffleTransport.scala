@@ -226,12 +226,20 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
   def addExecutors(executorIdsToAddress: Map[ExecutorId, SerializableDirectBuffer]): Unit = {
     executorIdsToAddress.foreach {
       case (executorId, address) => executorAddresses.put(executorId, address.value)
-      allocatedClientThreads.foreach(t => t.submit(new Runnable {
-        override def run = t.workerWrapper.getConnection(executorId)
-      }))
     }
     allocatedClientThreads.foreach(t => t.submit(new Runnable {
-      override def run = t.workerWrapper.progressConnect()
+      override def run = {
+        var i = 0
+        executorIdsToAddress.foreach {
+          case (executorId, _) => {
+            t.workerWrapper.getConnection(executorId)
+            if ((i & 7) == 7) {
+              t.workerWrapper.progressConnect()
+            }
+            i += 1
+          }
+        }
+      }
     }))
   }
   
