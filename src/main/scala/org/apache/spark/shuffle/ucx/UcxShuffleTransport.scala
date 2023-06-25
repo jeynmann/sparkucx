@@ -218,12 +218,11 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
   def addExecutors(executorIdsToAddress: Map[ExecutorId, SerializableDirectBuffer]): Unit = {
     executorIdsToAddress.foreach {
       case (executorId, address) => executorAddresses.put(executorId, address.value)
-      allocatedClientWorkers.foreach(_.getConnection(executorId))
     }
   }
 
   def preConnect(): Unit = { 
-    allocatedClientWorkers.foreach(_.progressConnect)
+    allocatedClientWorkers.foreach(_.preconnect)
   }
 
   /**
