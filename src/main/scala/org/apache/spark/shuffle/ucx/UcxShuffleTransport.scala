@@ -233,7 +233,7 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
         executorIdsToAddress.foreach {
           case (executorId, _) => {
             t.workerWrapper.getConnection(executorId)
-            if ((i & 7) == 7) {
+            if ((i & 3) == 3) {
               t.workerWrapper.progressConnect()
             }
             i += 1

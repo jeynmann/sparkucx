@@ -165,8 +165,10 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
    */
   def progressConnect(): Unit = {
     while (!flushRequests.isEmpty) {
-      progress()
-      flushRequests.removeIf(_.isCompleted)
+      Option(flushRequests.poll()) match {
+        case Some(req) => progressBlocked(() => req.isCompleted)
+        case None => {}
+      }
     }
     logTrace(s"Flush completed. Number of connections: ${connections.keys.size}")
   }
