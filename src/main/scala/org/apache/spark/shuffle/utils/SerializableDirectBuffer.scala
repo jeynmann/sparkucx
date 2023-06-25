@@ -10,6 +10,7 @@ import java.nio.ByteBuffer
 import java.nio.channels.Channels
 import java.nio.charset.StandardCharsets
 
+import org.apache.spark.unsafe.Platform
 import org.apache.spark.internal.Logging
 import org.apache.spark.util.Utils
 
@@ -24,7 +25,7 @@ class SerializableDirectBuffer(@transient var buffer: ByteBuffer) extends Serial
 
   private def readObject(in: ObjectInputStream): Unit = Utils.tryOrIOException {
     val length = in.readInt()
-    buffer = ByteBuffer.allocateDirect(length)
+    buffer = Platform.allocateDirect(length)
     var amountRead = 0
     val channel = Channels.newChannel(in)
     while (amountRead < length) {
@@ -81,7 +82,7 @@ object SerializationUtils {
   def serializeInetAddress(address: InetSocketAddress): ByteBuffer = {
     val hostAddress = new InetSocketAddress(Utils.localCanonicalHostName(), address.getPort)
     val hostString = hostAddress.getHostName.getBytes(StandardCharsets.UTF_8)
-    val result = ByteBuffer.allocateDirect(hostString.length + 4)
+    val result = Platform.allocateDirect(hostString.length + 4)
     result.putInt(hostAddress.getPort)
     result.put(hostString)
   }
