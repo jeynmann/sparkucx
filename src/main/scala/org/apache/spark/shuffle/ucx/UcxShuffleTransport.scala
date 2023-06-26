@@ -83,10 +83,12 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
   val endpoints = mutable.Set.empty[UcpEndpoint]
   val executorAddresses = new TrieMap[ExecutorId, ByteBuffer]
 
+  private[ucx] var cliContext: Array[UcpContext] = _
   private var allocatedClientThreads: Array[UcxWorkerThread] = _
   private var clientThreadId = new AtomicInteger()
   // private var clientLocal = new ThreadLocal[UcxWorkerThread] = _
-
+  
+  private[ucx] var srvContext: Array[UcpContext] = _
   private var allocatedServerThreads: Array[UcxWorkerThread] = _
   private val serverThreadId = new AtomicInteger()
 
@@ -128,10 +130,12 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
     globalWorker = ucxContext.newWorker(ucpWorkerParams)
     hostBounceBufferMemoryPool = new UcxHostBounceBuffersPool(ucxShuffleConf, ucxContext)
 
+    srvContext = new Array[UcpContext](ucxShuffleConf.numListenerThreads)
     allocatedServerThreads = new Array[UcxWorkerThread](ucxShuffleConf.numListenerThreads)
     logInfo(s"Allocating ${ucxShuffleConf.numListenerThreads} server workers")
     for (i <- 0 until ucxShuffleConf.numListenerThreads) {
-      val worker = ucxContext.newWorker(ucpWorkerParams)
+      srvContext(i) = new UcpContext(params)
+      val worker = srvContext(i).newWorker(ucpWorkerParams)
       val workerWrapper = UcxWorkerWrapper(worker, this, isClientWorker = false, i.toLong)
       allocatedServerThreads(i) = new UcxWorkerThread(workerWrapper)
       allocatedServerThreads(i).start()
@@ -149,12 +153,14 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
     progressThread = new GlobalWorkerRpcThread(globalWorker, this)
     progressThread.start()
 
+    cliContext = new Array[UcpContext](ucxShuffleConf.numWorkers)
     allocatedClientThreads = new Array[UcxWorkerThread](ucxShuffleConf.numWorkers)
     logInfo(s"Allocating ${ucxShuffleConf.numWorkers} client workers")
     for (i <- 0 until ucxShuffleConf.numWorkers) {
+      cliContext(i) = new UcpContext(params)
       val clientId: Long = ((i.toLong + 1L) << 32) | executorId
       ucpWorkerParams.setClientId(clientId)
-      val worker = ucxContext.newWorker(ucpWorkerParams)
+      val worker = cliContext(i).newWorker(ucpWorkerParams)
       val workerWrapper = UcxWorkerWrapper(worker, this, isClientWorker = true, clientId)
       allocatedClientThreads(i) = new UcxWorkerThread(workerWrapper)
       allocatedClientThreads(i).start()
@@ -215,12 +221,12 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
    */
   override def addExecutor(executorId: ExecutorId, workerAddress: ByteBuffer): Unit = {
     executorAddresses.put(executorId, workerAddress)
-    allocatedClientThreads.foreach { t => t.submit(new Runnable {
+    allocatedClientThreads.foreach(t => t.submit(new Runnable {
       override def run = {
         t.workerWrapper.getConnection(executorId)
         t.workerWrapper.progressConnect()
-      }})
-    }
+      }
+    }))
   }
 
   def addExecutors(executorIdsToAddress: Map[ExecutorId, SerializableDirectBuffer]): Unit = {
@@ -230,7 +236,7 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
     allocatedClientThreads.foreach(t => t.submit(new Runnable {
       override def run = {
         val startTime = System.currentTimeMillis()
-        executorIdsToAddress.foreach {
+        executorAddresses.foreach {
           case (executorId, _) => t.workerWrapper.getConnection(executorId)
         }
         t.workerWrapper.progressConnect()
@@ -306,7 +312,7 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
     val client = selectClientThread
     client.submit(new Runnable {
       override def run = client.workerWrapper.fetchBlocksByBlockIds(
-      executorId, blockIds, resultBufferAllocator, callbacks)
+        executorId, blockIds, resultBufferAllocator, callbacks)
     })
   }
 
