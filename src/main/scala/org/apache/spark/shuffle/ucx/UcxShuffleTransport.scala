@@ -231,11 +231,11 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
     }
     allocatedClientThreads.foreach { t => t.submit(
       new Runnable {
-        override def run = allocatedClientThreads.synchronized {
-          executorIdsToAddress.foreach {
-            case (executorId, _) => t.workerWrapper.getConnection(executorId)
+        override def run = executorIdsToAddress.keys.foreach {
+          executorId => allocatedClientThreads.synchronized {
+            t.workerWrapper.getConnection(executorId)
+            t.workerWrapper.progressConnect()
           }
-          t.workerWrapper.progressConnect()
         }
       })
     }
