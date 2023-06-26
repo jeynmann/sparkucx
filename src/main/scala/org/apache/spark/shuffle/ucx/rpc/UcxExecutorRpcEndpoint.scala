@@ -20,11 +20,18 @@ class UcxExecutorRpcEndpoint(override val rpcEnv: RpcEnv, transport: UcxShuffleT
     case ExecutorAdded(executorId: Long, _: RpcEndpointRef,
     ucxWorkerAddress: SerializableDirectBuffer) =>
       logDebug(s"Received ExecutorAdded($executorId)")
-      transport.addExecutor(executorId, ucxWorkerAddress.value) // <zzh> may need to use ucxWorkerAddress instead of its value
+      executorService.submit(new Runnable() {
+        override def run(): Unit = {
+          transport.addExecutor(executorId, ucxWorkerAddress.value)
+        }
+      })
     case IntroduceAllExecutors(executorIdToWorkerAdresses: Map[Long, SerializableDirectBuffer]) =>
-      // logDebug(s"Received IntroduceAllExecutors(${executorIdToWorkerAdresses.keys.mkString(",")}")
-      val startTime = System.currentTimeMillis()
-      transport.addExecutors(executorIdToWorkerAdresses)
-      logInfo(s"<zzh> IntroduceAllExecutors cost ${System.currentTimeMillis() - startTime}ms")
+      logDebug(s"Received IntroduceAllExecutors(${executorIdToWorkerAdresses.keys.mkString(",")}")
+      executorService.submit(new Runnable() {
+        override def run(): Unit = {
+          transport.addExecutors(executorIdToWorkerAdresses)
+          transport.preConnect()
+        }
+      })
   }
 }
