@@ -31,8 +31,7 @@ abstract class CommonUcxShuffleManager(val conf: SparkConf, isDriver: Boolean) e
 
   val ucxShuffleConf = new UcxShuffleConf(conf)
 
-  @volatile var transport: UcxShuffleTransport = _
-  private var transportMonitor = 0
+  @volatile var ucxTransport: UcxShuffleTransport = _
 
   private var executorEndpoint: UcxExecutorRpcEndpoint = _
   private var driverEndpoint: UcxDriverRpcEndpoint = _
@@ -60,46 +59,28 @@ abstract class CommonUcxShuffleManager(val conf: SparkConf, isDriver: Boolean) e
     }
   })
 
-  def ucxTransport = {
-    if (transport != null) {
-      transport
-    } else {
-      transportMonitor.synchronized {
-        if (!isDriver && transport == null) {
-          logInfo("<zzh> wait transport")
-          transportMonitor.wait
-        }
-        logInfo("<zzh> get transport")
-      }
-      transport
-    }
-  }
   /**
    * Atomically starts UcxNode singleton - one for all shuffle threads.
    */
-  def startUcxTransport(): Unit = if (transport == null) {
-    transportMonitor.synchronized {
-      val blockManager = SparkEnv.get.blockManager.blockManagerId
-      val t = new UcxShuffleTransport(ucxShuffleConf, blockManager.executorId.toLong)
-      val address = t.init()
-      transport = t
-      val rpcEnv = RpcEnv.create("ucx-rpc-env", blockManager.host, blockManager.port,
-        conf, new SecurityManager(conf), clientMode = false)
-      executorEndpoint = new UcxExecutorRpcEndpoint(rpcEnv, transport, setupThread)
-      val endpoint = rpcEnv.setupEndpoint(
-        s"ucx-shuffle-executor-${blockManager.executorId}",
-        executorEndpoint)
-      val driverEndpoint = RpcUtils.makeDriverRef(driverRpcName, conf, rpcEnv)
-      driverEndpoint.ask[IntroduceAllExecutors](ExecutorAdded(blockManager.executorId.toLong, endpoint,
-        new SerializableDirectBuffer(address)))
-        .andThen {
-          case Success(msg) =>
-            logInfo(s"Receive reply $msg")
-            executorEndpoint.receive(msg)
-        }
-      transportMonitor.notifyAll
-      logInfo("<zzh> starting transport")
-    }
+  def startUcxTransport(): Unit = if (ucxTransport == null) {
+    val blockManager = SparkEnv.get.blockManager.blockManagerId
+    val transport = new UcxShuffleTransport(ucxShuffleConf, blockManager.executorId.toLong)
+    val address = transport.init()
+    ucxTransport = transport
+    val rpcEnv = RpcEnv.create("ucx-rpc-env", blockManager.host, blockManager.port,
+      conf, new SecurityManager(conf), clientMode = false)
+    executorEndpoint = new UcxExecutorRpcEndpoint(rpcEnv, ucxTransport, setupThread)
+    val endpoint = rpcEnv.setupEndpoint(
+      s"ucx-shuffle-executor-${blockManager.executorId}",
+      executorEndpoint)
+    val driverEndpoint = RpcUtils.makeDriverRef(driverRpcName, conf, rpcEnv)
+    driverEndpoint.ask[IntroduceAllExecutors](ExecutorAdded(blockManager.executorId.toLong, endpoint,
+      new SerializableDirectBuffer(address)))
+      .andThen {
+        case Success(msg) =>
+          logInfo(s"Receive reply $msg")
+          executorEndpoint.receive(msg)
+      }
   }
 
 
@@ -113,9 +94,9 @@ abstract class CommonUcxShuffleManager(val conf: SparkConf, isDriver: Boolean) e
    */
   override def stop(): Unit = synchronized {
     super.stop()
-    if (transport != null) {
-      transport.close()
-      transport = null
+    if (ucxTransport != null) {
+      ucxTransport.close()
+      ucxTransport = null
     }
     if (executorEndpoint != null) {
       executorEndpoint.stop()
