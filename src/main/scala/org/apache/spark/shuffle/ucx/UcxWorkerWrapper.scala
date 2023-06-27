@@ -351,9 +351,7 @@ class UcxWorkerThread(val workerWrapper: UcxWorkerWrapper) extends Thread with L
         case Some(task) => task.run
         case None => {}
       }
-      worker.synchronized {
-        while (worker.progress() != 0) {}
-      }
+      while (worker.progress() != 0) {}
       if(taskQueue.isEmpty && useWakeup) {
         worker.waitForEvents()
       }

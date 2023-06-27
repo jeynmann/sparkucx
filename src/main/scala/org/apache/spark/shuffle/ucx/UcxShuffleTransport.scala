@@ -215,7 +215,7 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
    */
   override def addExecutor(executorId: ExecutorId, workerAddress: ByteBuffer): Unit = {
     executorAddresses.put(executorId, workerAddress)
-    allocatedClientThreads.foreach(t => t.worker.synchronized {
+    allocatedClientThreads.foreach(t => {
       t.workerWrapper.getConnection(executorId)
       t.workerWrapper.progressConnect()
     })
@@ -225,12 +225,13 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
     executorIdsToAddress.foreach {
       case (executorId, address) => executorAddresses.put(executorId, address.value)
     }
+    allocatedClientThreads.foreach(t => {
+      executorIdsToAddress.keys.foreach(t.workerWrapper.getConnection(_))
+      t.workerWrapper.progressConnect()
+    })
   }
 
   def preConnect(): Unit = {
-    allocatedClientThreads.foreach(t => t.worker.synchronized {
-      t.workerWrapper.preconnect()
-    })
   }
 
   /**
@@ -298,7 +299,7 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
 
   def connectServerWorkers(executorId: ExecutorId, workerAddress: ByteBuffer): Unit = {
     executorAddresses.put(executorId, workerAddress)
-    allocatedServerThreads.foreach(t => t.worker.synchronized {
+    allocatedServerThreads.foreach(t => {
       t.workerWrapper.connectByWorkerAddress(executorId, workerAddress)
     })
   }
