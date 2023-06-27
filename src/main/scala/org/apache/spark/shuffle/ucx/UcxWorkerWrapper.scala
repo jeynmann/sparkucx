@@ -67,7 +67,6 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
   private final val connections =  new TrieMap[transport.ExecutorId, UcpEndpoint]
   private val requestData = new TrieMap[Int, (Seq[OperationCallback], UcxRequest, transport.BufferAllocator)]
   private val tag = new AtomicInteger(Random.nextInt())
-  private val flushRequests = new ConcurrentLinkedQueue[UcpRequest]()
 
   private val ioThreadPool = ThreadUtils.newForkJoinPool("IO threads",
     transport.ucxShuffleConf.numIoThreads)
@@ -161,17 +160,6 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
   }
 
   /**
-   * Blocking progress until there's outstanding flush requests.
-   */
-  def progressConnect(): Unit = {
-    while (!flushRequests.isEmpty) {
-      progress()
-      flushRequests.removeIf(_.isCompleted)
-    }
-    logTrace(s"Flush completed. Number of connections: ${connections.keys.size}")
-  }
-
-  /**
    * The only place for worker progress
    */
   def progress(): Int = worker.synchronized {
@@ -191,14 +179,6 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
         worker.progress()
       }
     }
-  }
-
-  /**
-   * Establish connections to known instances.
-   */
-  def preconnect(): Unit = {
-    transport.executorAddresses.keys.foreach(getConnection)
-    progressConnect()
   }
 
   def connectByWorkerAddress(executorId: transport.ExecutorId, workerAddress: ByteBuffer): Unit = {
@@ -245,7 +225,6 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
             workerAddress.clear()
           }
         }, MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
-      flushRequests.add(ep.flushNonBlocking(null))
       ep
     })
   }
