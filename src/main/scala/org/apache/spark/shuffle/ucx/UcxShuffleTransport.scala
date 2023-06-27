@@ -83,10 +83,12 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
   val endpoints = mutable.Set.empty[UcpEndpoint]
   val executorAddresses = new TrieMap[ExecutorId, ByteBuffer]
 
+  private val clientLock = new java.util.concurrent.locks.ReentrantLock
   private var allocatedClientThreads: Array[UcxWorkerThread] = _
   private var clientThreadId = new AtomicInteger()
   // private var clientLocal = new ThreadLocal[UcxWorkerThread] = _
 
+  private val serverLock = new java.util.concurrent.locks.ReentrantLock
   private var allocatedServerThreads: Array[UcxWorkerThread] = _
   private val serverThreadId = new AtomicInteger()
 
@@ -217,11 +219,16 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
     executorAddresses.put(executorId, workerAddress)
     allocatedClientThreads.foreach { t => t.submit(
       new Runnable {
-        override def run = allocatedClientThreads.synchronized {
-          t.workerWrapper.getConnection(executorId)
-          t.workerWrapper.progressConnect()
+        override def run = {
+          clientLock.lock
+          try {
+            t.workerWrapper.getConnection(executorId)
+            t.workerWrapper.progressConnect()
+          } finally {
+            clientLock.unlock
+          }
         }
-      })
+      }) 
     }
   }
 
@@ -231,10 +238,13 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
     }
     allocatedClientThreads.foreach { t => t.submit(
       new Runnable {
-        override def run = executorIdsToAddress.keys.foreach {
-          executorId => allocatedClientThreads.synchronized {
-            t.workerWrapper.getConnection(executorId)
+        override def run = {
+          clientLock.lock
+          try {
+            executorIdsToAddress.keys.foreach(t.workerWrapper.getConnection(_))
             t.workerWrapper.progressConnect()
+          } finally {
+            clientLock.unlock
           }
         }
       })
@@ -309,11 +319,17 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
 
   def connectServerWorkers(executorId: ExecutorId, workerAddress: ByteBuffer): Unit = {
     executorAddresses.put(executorId, workerAddress)
-    allocatedServerThreads.foreach(t => t.submit(new Runnable {
-      override def run = allocatedServerThreads.synchronized {
-        t.workerWrapper.connectByWorkerAddress(executorId, workerAddress)
-      }
-    }))
+    allocatedServerThreads.foreach(t => t.submit(
+      new Runnable {
+        override def run = {
+          serverLock.lock
+          try {
+            t.workerWrapper.connectByWorkerAddress(executorId, workerAddress)
+          } finally {
+            serverLock.unlock
+          }
+        }
+      }))
   }
 
   def handleFetchBlockRequest(replyTag: Int, amData: UcpAmData, replyExecutor: Long): Unit = {
