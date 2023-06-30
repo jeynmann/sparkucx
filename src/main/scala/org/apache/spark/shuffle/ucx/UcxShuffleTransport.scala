@@ -206,7 +206,7 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
     executorAddresses.put(executorId, workerAddress)
     allocatedClientThreads.foreach(t => {
       t.getConnection(executorId)
-      t.progressConnect()
+      // t.progressConnect()
     })
   }
 
@@ -216,7 +216,7 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
     }
     allocatedClientThreads.foreach(t => {
       executorIdsToAddress.keys.foreach(t.getConnection(_))
-      t.progressConnect()
+      // t.progressConnect()
     })
   }
 
