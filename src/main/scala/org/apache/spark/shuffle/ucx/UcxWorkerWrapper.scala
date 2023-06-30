@@ -367,7 +367,7 @@ class UcxWorkerThread(val workerWrapper: UcxWorkerWrapper) extends Thread with L
   }
 
   @inline
-  def progressConnect() = worker.progressConnect
+  def progressConnect(): Unit = workerWrapper.progressConnect
 
   override def run(): Unit = {
     logDebug(s"UCX-worker $id started")
