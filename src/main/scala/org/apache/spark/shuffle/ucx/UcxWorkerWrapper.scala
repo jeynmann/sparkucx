@@ -174,7 +174,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
     Option(progressThread) match {
       case Some(thread) => {
         thread.interrupt()
-        worker.signal()
+        // worker.signal()
         thread.join(10)
       }
       case None => ()
