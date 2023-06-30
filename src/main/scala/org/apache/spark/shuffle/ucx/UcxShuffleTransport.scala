@@ -277,7 +277,7 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
   override def fetchBlocksByBlockIds(executorId: ExecutorId, blockIds: Seq[BlockId],
                                      resultBufferAllocator: BufferAllocator,
                                      callbacks: Seq[OperationCallback]): Seq[Request] = {
-    selectClientThread.fetchBlocksByBlockIds(
+    selectClientWorker.fetchBlocksByBlockIds(
       executorId, blockIds, resultBufferAllocator, callbacks)
   }
 
@@ -302,15 +302,15 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
     val blocks = blockIds.map(bid => registeredBlocks(bid))
     amData.close()
 
-    selectServerThread.handleFetchBlockRequest(blocks, replyTag, replyExecutor)
+    selectServerWorker.handleFetchBlockRequest(blocks, replyTag, replyExecutor)
   }
 
   @inline
-  def selectClientThread(): UcxWorkerWrapper = allocatedClientWorkers(
+  def selectClientWorker(): UcxWorkerWrapper = allocatedClientWorkers(
     (clientThreadId.incrementAndGet() % allocatedClientWorkers.length).abs)
 
   @inline
-  def selectServerThread(): UcxWorkerWrapper = allocatedServerWorkers(
+  def selectServerWorker(): UcxWorkerWrapper = allocatedServerWorkers(
     (serverThreadId.incrementAndGet() % allocatedServerWorkers.length).abs)
 
   /**
