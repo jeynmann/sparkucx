@@ -5,7 +5,7 @@
 package org.apache.spark.shuffle.ucx
 
 import java.io.Closeable
-import java.util.concurrent.{ConcurrentLinkedQueue, Callable, FutureTask}
+import java.util.concurrent.{ConcurrentLinkedQueue}
 import java.util.concurrent.atomic.AtomicInteger
 import scala.collection.concurrent.TrieMap
 import scala.util.Random
@@ -252,7 +252,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
 
   def fetchBlocksByBlockIds(executorId: transport.ExecutorId, blockIds: Seq[BlockId],
                             resultBufferAllocator: transport.BufferAllocator,
-                            callbacks: Seq[OperationCallback]): Unit = {
+                            callbacks: Seq[OperationCallback]): Seq[UcxRequest] = {
     val startTime = System.nanoTime()
     val headerSize = UnsafeUtils.INT_SIZE + UnsafeUtils.LONG_SIZE
     val ep = getConnection(executorId)
@@ -280,6 +280,8 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
            s"in ${System.nanoTime() - startTime} ns")
        }
      }, MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
+
+     Seq(request)
   }
 
   def handleFetchBlockRequest(blocks: Seq[Block], replyTag: Int, replyExecutor: Long): Unit = try {
@@ -339,40 +341,30 @@ class UcxWorkerThread(val workerWrapper: UcxWorkerWrapper) extends Thread with L
   val transport = workerWrapper.transport
   val useWakeup = workerWrapper.transport.ucxShuffleConf.useWakeup
 
-  private val taskQueue = new ConcurrentLinkedQueue[FutureTask[_]]()
-
   setDaemon(true)
   setName(s"UCX-worker $id")
+
+  @inline
+  def fetchBlocksByBlockIds(executorId: transport.ExecutorId, blockIds: Seq[BlockId],
+                            allocator: transport.BufferAllocator,
+                            callbacks: Seq[OperationCallback]): Seq[UcxRequest] = {
+    workerWrapper.fetchBlocksByBlockIds(executorId, blockIds, allocator, callbacks)
+  }
+
+  @inline
+  def handleFetchBlockRequest(blocks: Seq[Block], replyTag: Int, replyExecutor: Long): Unit = {
+    workerWrapper.handleFetchBlockRequest(blocks, replyTag, replyExecutor)
+  }
 
   override def run(): Unit = {
     logDebug(s"UCX-worker $id started")
     while (!isInterrupted) {
-      Option(taskQueue.poll()) match {
-        case Some(task) => task.run
-        case None => {}
-      }
       while (worker.progress() != 0) {}
-      if(taskQueue.isEmpty && useWakeup) {
+      if(useWakeup) {
         worker.waitForEvents()
       }
     }
     logDebug(s"UCX-worker $id stopped")
-  }
-
-  @inline
-  def submit(task: Callable[_]) = {
-    val future = new FutureTask(task)
-    taskQueue.offer(future)
-    worker.signal()
-    future
-  }
-
-  @inline
-  def submit(task: Runnable) = {
-    val future = new FutureTask(task, Unit)
-    taskQueue.offer(future)
-    worker.signal()
-    future
   }
 
   @inline

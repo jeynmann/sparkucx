@@ -155,7 +155,7 @@ trait ShuffleTransport {
    */
   def fetchBlocksByBlockIds(executorId: ExecutorId, blockIds: Seq[BlockId],
                             resultBufferAllocator: BufferAllocator,
-                            callbacks: Seq[OperationCallback]): Unit
+                            callbacks: Seq[OperationCallback]): Seq[Request]
 
   /**
    * Progress outstanding operations. This routine is blocking (though may poll for event).

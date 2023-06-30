@@ -4,7 +4,6 @@
 */
 package org.apache.spark.shuffle.ucx.rpc
 
-import java.nio.ByteBuffer
 import org.openucx.jucx.ucp.{UcpAmData, UcpConstants, UcpEndpoint, UcpWorker}
 import org.openucx.jucx.ucs.UcsConstants
 import org.apache.spark.internal.Logging
@@ -17,12 +16,20 @@ class GlobalWorkerRpcThread(globalWorker: UcpWorker, transport: UcxShuffleTransp
   setDaemon(true)
   setName("Global worker progress thread")
 
+  private val replyWorkersThreadPool = ThreadUtils.newDaemonFixedThreadPool(transport.ucxShuffleConf.numListenerThreads,
+    "UcxListenerThread")
+
   // Main RPC thread. Submit each RPC request to separate thread and send reply back from separate worker.
   globalWorker.setAmRecvHandler(0, (headerAddress: Long, headerSize: Long, amData: UcpAmData, _: UcpEndpoint) => {
     val header = UnsafeUtils.getByteBufferView(headerAddress, headerSize.toInt)
     val replyTag = header.getInt
     val replyExecutor = header.getLong
     transport.handleFetchBlockRequest(replyTag, amData, replyExecutor)
+    replyWorkersThreadPool.submit(new Runnable {
+      override def run(): Unit = {
+        transport.handleFetchBlockRequest(replyTag, amData, replyExecutor)
+      }
+    })
     UcsConstants.STATUS.UCS_INPROGRESS
   }, UcpConstants.UCP_AM_FLAG_PERSISTENT_DATA | UcpConstants.UCP_AM_FLAG_WHOLE_MSG )
 
@@ -33,7 +40,6 @@ class GlobalWorkerRpcThread(globalWorker: UcpWorker, transport: UcxShuffleTransp
     val header = UnsafeUtils.getByteBufferView(headerAddress, headerSize.toInt)
     val executorId = header.getLong
     val workerAddress = UnsafeUtils.getByteBufferView(amData.getDataAddress, amData.getLength.toInt)
-    transport.connectServerWorkers(executorId, workerAddress)
     UcsConstants.STATUS.UCS_OK
   }, UcpConstants.UCP_AM_FLAG_WHOLE_MSG)
 
