@@ -356,10 +356,25 @@ class UcxWorkerThread(val workerWrapper: UcxWorkerWrapper) extends Thread with L
     workerWrapper.handleFetchBlockRequest(blocks, replyTag, replyExecutor)
   }
 
+  @inline
+  def connectByWorkerAddress(executorId: transport.ExecutorId, workerAddress: ByteBuffer): Unit = {
+    workerWrapper.connectByWorkerAddress(executorId, workerAddress)
+  }
+
+  @inline
+  def getConnection(executorId: transport.ExecutorId): UcpEndpoint = {
+    workerWrapper.getConnection(executorId)
+  }
+
+  @inline
+  def progressConnect() = worker.progressConnect
+
   override def run(): Unit = {
     logDebug(s"UCX-worker $id started")
     while (!isInterrupted) {
-      while (worker.progress() != 0) {}
+      worker.synchronized {
+        while (worker.progress() != 0) {}
+      }
       if(useWakeup) {
         worker.waitForEvents()
       }
@@ -369,6 +384,8 @@ class UcxWorkerThread(val workerWrapper: UcxWorkerWrapper) extends Thread with L
 
   @inline
   def close(): Unit = {
+    interrupt()
+    join(10)
     workerWrapper.close()
   }
 }
