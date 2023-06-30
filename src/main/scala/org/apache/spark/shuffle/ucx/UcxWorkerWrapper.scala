@@ -5,7 +5,7 @@
 package org.apache.spark.shuffle.ucx
 
 import java.io.Closeable
-import java.util.concurrent.{ConcurrentLinkedQueue, Callable, FutureTask}
+import java.util.concurrent.{ConcurrentLinkedQueue, Callable, Future, FutureTask}
 import java.util.concurrent.atomic.AtomicInteger
 import scala.collection.concurrent.TrieMap
 import scala.util.Random
@@ -178,21 +178,6 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
     worker.progress()
   }
 
-  @inline
-  def progressBlocked(isFinished: () => Boolean): Unit = {
-    if (useWakeup) {
-      while (!isFinished()) {
-        if (worker.progress() == 0) {
-          worker.waitForEvents()
-        }
-      }
-    } else {
-      while (!isFinished()) {
-        worker.progress()
-      }
-    }
-  }
-
   /**
    * Establish connections to known instances.
    */
@@ -339,7 +324,7 @@ class UcxWorkerThread(val workerWrapper: UcxWorkerWrapper) extends Thread with L
   val transport = workerWrapper.transport
   val useWakeup = workerWrapper.transport.ucxShuffleConf.useWakeup
 
-  private val taskQueue = new ConcurrentLinkedQueue[FutureTask[_]]()
+  private val taskQueue = new ConcurrentLinkedQueue[Runnable]()
 
   setDaemon(true)
   setName(s"UCX-worker $id")
@@ -351,7 +336,9 @@ class UcxWorkerThread(val workerWrapper: UcxWorkerWrapper) extends Thread with L
         case Some(task) => task.run
         case None => {}
       }
-      while (worker.progress() != 0) {}
+      worker.synchronized {
+        while (worker.progress() != 0) {}
+      }
       if(taskQueue.isEmpty && useWakeup) {
         worker.waitForEvents()
       }
@@ -360,7 +347,7 @@ class UcxWorkerThread(val workerWrapper: UcxWorkerWrapper) extends Thread with L
   }
 
   @inline
-  def submit(task: Callable[_]) = {
+  def submit(task: Callable[_]): Future[_] = {
     val future = new FutureTask(task)
     taskQueue.offer(future)
     worker.signal()
@@ -368,7 +355,7 @@ class UcxWorkerThread(val workerWrapper: UcxWorkerWrapper) extends Thread with L
   }
 
   @inline
-  def submit(task: Runnable) = {
+  def submit(task: Runnable): Future[Unit.type] = {
     val future = new FutureTask(task, Unit)
     taskQueue.offer(future)
     worker.signal()
