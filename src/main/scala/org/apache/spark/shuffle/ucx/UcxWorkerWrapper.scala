@@ -171,8 +171,14 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
   }
 
   override def close(): Unit = {
-    progressThread.interrupt
-    progressThread.join(10)
+    Option(progressThread) match {
+      case Some(thread) => {
+        thread.interrupt()
+        worker.signal()
+        thread.join(10)
+      }
+      case None => ()
+    }
 
     val closeRequests = connections.map {
       case (_, endpoint) => endpoint.closeNonBlockingForce()
