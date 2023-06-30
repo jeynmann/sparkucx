@@ -202,15 +202,20 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
    */
   override def addExecutor(executorId: ExecutorId, workerAddress: ByteBuffer): Unit = {
     executorAddresses.put(executorId, workerAddress)
-    allocatedClientWorkers.foreach(_.getConnection(executorId))
+    allocatedClientWorkers.foreach(w => {
+      w.getConnection(executorId)
+      w.progressConnect()
+    })
   }
 
   def addExecutors(executorIdsToAddress: Map[ExecutorId, SerializableDirectBuffer]): Unit = {
     executorIdsToAddress.foreach {
       case (executorId, address) => executorAddresses.put(executorId, address.value)
     }
-    allocatedClientWorkers.foreach(w =>
-      executorIdsToAddress.keys.foreach(w.getConnection(_)))
+    allocatedClientWorkers.foreach(w => {
+      executorIdsToAddress.keys.foreach(w.getConnection(_))
+      w.progressConnect
+    })
   }
 
   def preConnect(): Unit = {

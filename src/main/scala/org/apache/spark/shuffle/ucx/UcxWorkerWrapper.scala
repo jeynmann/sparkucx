@@ -171,8 +171,14 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
   }
 
   override def close(): Unit = {
-    progressThread.interrupt
-    progressThread.join(10)
+    Option(progressThread) match {
+      case Some(thread) => {
+        thread.interrupt()
+        worker.signal()
+        thread.join(10)
+      }
+      case None => ()
+    }
 
     val closeRequests = connections.map {
       case (_, endpoint) => endpoint.closeNonBlockingForce()
@@ -185,16 +191,16 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
     worker.close()
   }
 
-  // /**
-  //  * Blocking progress until there's outstanding flush requests.
-  //  */
-  // def progressConnect(): Unit = {
-  //   while (!flushRequests.isEmpty) {
-  //     progress()
-  //     flushRequests.removeIf(_.isCompleted)
-  //   }
-  //   logTrace(s"Flush completed. Number of connections: ${connections.keys.size}")
-  // }
+  /**
+   * Blocking progress until there's outstanding flush requests.
+   */
+  def progressConnect(): Unit = {
+    while (!flushRequests.isEmpty) {
+      progress()
+      flushRequests.removeIf(_.isCompleted)
+    }
+    logTrace(s"Flush completed. Number of connections: ${connections.keys.size}")
+  }
 
   /**
    * The only place for worker progress
@@ -255,7 +261,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
             workerAddress.clear()
           }
         }, MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
-      // flushRequests.add(ep.flushNonBlocking(null))
+      flushRequests.add(ep.flushNonBlocking(null))
       ep
     })
   }
