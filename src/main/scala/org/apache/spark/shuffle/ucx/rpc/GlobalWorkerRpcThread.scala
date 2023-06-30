@@ -24,7 +24,6 @@ class GlobalWorkerRpcThread(globalWorker: UcpWorker, transport: UcxShuffleTransp
     val header = UnsafeUtils.getByteBufferView(headerAddress, headerSize.toInt)
     val replyTag = header.getInt
     val replyExecutor = header.getLong
-    transport.handleFetchBlockRequest(replyTag, amData, replyExecutor)
     replyWorkersThreadPool.submit(new Runnable {
       override def run(): Unit = {
         transport.handleFetchBlockRequest(replyTag, amData, replyExecutor)
@@ -40,6 +39,7 @@ class GlobalWorkerRpcThread(globalWorker: UcpWorker, transport: UcxShuffleTransp
     val header = UnsafeUtils.getByteBufferView(headerAddress, headerSize.toInt)
     val executorId = header.getLong
     val workerAddress = UnsafeUtils.getByteBufferView(amData.getDataAddress, amData.getLength.toInt)
+    transport.connectServerWorkers(executorId, workerAddress)
     UcsConstants.STATUS.UCS_OK
   }, UcpConstants.UCP_AM_FLAG_WHOLE_MSG)
 

@@ -82,10 +82,10 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
   val endpoints = mutable.Set.empty[UcpEndpoint]
   val executorAddresses = new TrieMap[ExecutorId, ByteBuffer]
 
-  private var allocatedClientThreads: Array[UcxWorkerThread] = _
+  private var allocatedClientWorkers: Array[UcxWorkerWrapper] = _
   private var clientThreadId = new AtomicInteger()
 
-  private var allocatedServerThreads: Array[UcxWorkerThread] = _
+  private var allocatedServerWorkers: Array[UcxWorkerWrapper] = _
   private val serverThreadId = new AtomicInteger()
 
   private val registeredBlocks = new TrieMap[BlockId, Block]
@@ -126,13 +126,12 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
     globalWorker = ucxContext.newWorker(ucpWorkerParams)
     hostBounceBufferMemoryPool = new UcxHostBounceBuffersPool(ucxShuffleConf, ucxContext)
 
-    allocatedServerThreads = new Array[UcxWorkerThread](ucxShuffleConf.numListenerThreads)
+    allocatedServerWorkers = new Array[UcxWorkerWrapper](ucxShuffleConf.numListenerThreads)
     logInfo(s"Allocating ${ucxShuffleConf.numListenerThreads} server workers")
     for (i <- 0 until ucxShuffleConf.numListenerThreads) {
       val worker = ucxContext.newWorker(ucpWorkerParams)
-      val workerWrapper = UcxWorkerWrapper(worker, this, isClientWorker = false, i.toLong)
-      allocatedServerThreads(i) = new UcxWorkerThread(workerWrapper)
-      allocatedServerThreads(i).start()
+      allocatedServerWorkers(i) = UcxWorkerWrapper(worker, this, isClientWorker = false, i.toLong)
+      allocatedServerWorkers(i).startProgress
     }
 
     val Array(host, port) = ucxShuffleConf.listenerAddress.split(":")
@@ -147,15 +146,14 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
     progressThread = new GlobalWorkerRpcThread(globalWorker, this)
     progressThread.start()
 
-    allocatedClientThreads = new Array[UcxWorkerThread](ucxShuffleConf.numWorkers)
+    allocatedClientWorkers = new Array[UcxWorkerWrapper](ucxShuffleConf.numWorkers)
     logInfo(s"Allocating ${ucxShuffleConf.numWorkers} client workers")
     for (i <- 0 until ucxShuffleConf.numWorkers) {
       val clientId: Long = ((i.toLong + 1L) << 32) | executorId
       ucpWorkerParams.setClientId(clientId)
       val worker = ucxContext.newWorker(ucpWorkerParams)
-      val workerWrapper = UcxWorkerWrapper(worker, this, isClientWorker = true, clientId)
-      allocatedClientThreads(i) = new UcxWorkerThread(workerWrapper)
-      allocatedClientThreads(i).start()
+      allocatedClientWorkers(i) = UcxWorkerWrapper(worker, this, isClientWorker = true, clientId)
+      allocatedClientWorkers(i).startProgress
     }
 
     initialized = true
@@ -173,11 +171,8 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
 
       hostBounceBufferMemoryPool.close()
 
-      allocatedClientThreads.foreach{ case(t) =>
-        t.interrupt()
-        t.join(10)
-        t.close()
-      }
+      allocatedClientWorkers.foreach(_.close())
+      allocatedServerWorkers.foreach(_.close())
 
       if (listener != null) {
         listener.close()
@@ -194,12 +189,6 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
         globalWorker = null
       }
 
-      allocatedServerThreads.foreach{ case(t) =>
-        t.interrupt()
-        t.join(10)
-        t.close()
-      }
-
       if (ucxContext != null) {
         ucxContext.close()
         ucxContext = null
@@ -213,20 +202,15 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
    */
   override def addExecutor(executorId: ExecutorId, workerAddress: ByteBuffer): Unit = {
     executorAddresses.put(executorId, workerAddress)
-    allocatedClientThreads.foreach(t => {
-      t.workerWrapper.getConnection(executorId)
-      t.workerWrapper.progressConnect()
-    })
+    allocatedClientWorkers.foreach(_.getConnection(executorId))
   }
 
   def addExecutors(executorIdsToAddress: Map[ExecutorId, SerializableDirectBuffer]): Unit = {
     executorIdsToAddress.foreach {
       case (executorId, address) => executorAddresses.put(executorId, address.value)
     }
-    allocatedClientThreads.foreach(t => {
-      executorIdsToAddress.keys.foreach(t.workerWrapper.getConnection(_))
-      t.workerWrapper.progressConnect()
-    })
+    allocatedClientWorkers.foreach(w =>
+      executorIdsToAddress.keys.foreach(w.getConnection(_)))
   }
 
   def preConnect(): Unit = {
@@ -294,8 +278,7 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
 
   def connectServerWorkers(executorId: ExecutorId, workerAddress: ByteBuffer): Unit = {
     executorAddresses.put(executorId, workerAddress)
-    allocatedServerThreads.foreach(
-      _.workerWrapper.connectByWorkerAddress(executorId, workerAddress))
+    allocatedServerWorkers.foreach(w => w.connectByWorkerAddress(executorId, workerAddress))
   }
 
   def handleFetchBlockRequest(replyTag: Int, amData: UcpAmData, replyExecutor: Long): Unit = {
@@ -318,12 +301,12 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
   }
 
   @inline
-  def selectClientThread(): UcxWorkerThread = allocatedClientThreads(
-    (clientThreadId.incrementAndGet() % allocatedClientThreads.length).abs)
+  def selectClientThread(): UcxWorkerWrapper = allocatedClientWorkers(
+    (clientThreadId.incrementAndGet() % allocatedClientWorkers.length).abs)
 
   @inline
-  def selectServerThread(): UcxWorkerThread = allocatedServerThreads(
-    (serverThreadId.incrementAndGet() % allocatedServerThreads.length).abs)
+  def selectServerThread(): UcxWorkerWrapper = allocatedServerWorkers(
+    (serverThreadId.incrementAndGet() % allocatedServerWorkers.length).abs)
 
   /**
    * Progress outstanding operations. This routine is blocking (though may poll for event).
