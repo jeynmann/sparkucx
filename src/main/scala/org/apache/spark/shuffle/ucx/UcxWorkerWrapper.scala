@@ -188,8 +188,10 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
 
   def connectByWorkerAddress(executorId: transport.ExecutorId, workerAddress: ByteBuffer): Unit = {
     logDebug(s"Worker $this connecting back to $executorId by worker address")
-    val ep = worker.newEndpoint(new UcpEndpointParams().setName(s"Server connection to $executorId")
+    val ep = worker.synchronized {
+      worker.newEndpoint(new UcpEndpointParams().setName(s"Server connection to $executorId")
       .setUcpAddress(workerAddress))
+    }
     connections.put(executorId, ep)
   }
 
@@ -203,7 +205,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
       }
     }
 
-    connections.getOrElseUpdate(executorId,  {
+    connections.getOrElseUpdate(executorId,  worker.synchronized {
       val address = transport.executorAddresses(executorId)
       val endpointParams = new UcpEndpointParams().setPeerErrorHandlingMode()
         .setSocketAddress(SerializationUtils.deserializeInetAddress(address)).sendClientId()
