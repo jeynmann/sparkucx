@@ -209,13 +209,13 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
     worker.progress()
   }
 
-  // /**
-  //  * Establish connections to known instances.
-  //  */
-  // def preconnect(): Unit = {
-  //   transport.executorAddresses.keys.foreach(getConnection)
-  //   progressConnect()
-  // }
+  /**
+   * Establish connections to known instances.
+   */
+  def preconnect(): Unit = {
+    transport.executorAddresses.keys.foreach(getConnection)
+    progressConnect()
+  }
 
   def connectByWorkerAddress(executorId: transport.ExecutorId, workerAddress: ByteBuffer): Unit = worker.synchronized {
     logDebug(s"Worker $this connecting back to $executorId by worker address")
