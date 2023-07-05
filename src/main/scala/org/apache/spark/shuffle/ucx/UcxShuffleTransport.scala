@@ -175,11 +175,7 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
 
       hostBounceBufferMemoryPool.close()
 
-      allocatedClientThreads.foreach{ case(t) =>
-        t.interrupt()
-        t.join(10)
-        t.close()
-      }
+      allocatedClientThreads.foreach(_.close)
 
       if (listener != null) {
         listener.close()
@@ -196,11 +192,7 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
         globalWorker = null
       }
 
-      allocatedServerThreads.foreach{ case(t) =>
-        t.interrupt()
-        t.join(10)
-        t.close()
-      }
+      allocatedServerThreads.foreach(_.close)
 
       if (ucxContext != null) {
         ucxContext.close()
@@ -225,13 +217,10 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
     executorIdsToAddress.foreach {
       case (executorId, address) => executorAddresses.put(executorId, address.value)
     }
-    allocatedClientThreads.foreach(t => {
-      executorIdsToAddress.keys.foreach(t.workerWrapper.getConnection(_))
-      t.workerWrapper.progressConnect()
-    })
   }
 
   def preConnect(): Unit = {
+    allocatedClientThreads.foreach(_.workerWrapper.preconnect())
   }
 
   /**
