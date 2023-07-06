@@ -297,6 +297,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
             s"in ${System.nanoTime() - startTime} ns")
         }
       }, MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
+      while (worker.progress() != 0) {}
     }
 
     Seq(request)
@@ -348,6 +349,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
           }
         }, new UcpRequestParams().setMemoryType(UcsConstants.MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
           .setMemoryHandle(resultMemory.memory))
+      while (worker.progress() != 0) {}
     }
   } catch {
     case ex: Throwable => logError(s"Failed to read and send data: $ex")
