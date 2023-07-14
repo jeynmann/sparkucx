@@ -4,6 +4,8 @@
 */
 package org.apache.spark.shuffle.ucx.rpc
 
+import java.nio.ByteBuffer
+
 import org.openucx.jucx.ucp.{UcpAmData, UcpConstants, UcpEndpoint, UcpWorker}
 import org.openucx.jucx.ucs.UcsConstants
 import org.apache.spark.internal.Logging
@@ -32,7 +34,9 @@ class GlobalWorkerRpcThread(globalWorker: UcpWorker, transport: UcxShuffleTransp
     val header = UnsafeUtils.getByteBufferView(headerAddress, headerSize.toInt)
     val executorId = header.getLong
     val workerAddress = UnsafeUtils.getByteBufferView(amData.getDataAddress, amData.getLength.toInt)
-    transport.connectServerWorkers(executorId, workerAddress)
+    val copiedAddress = ByteBuffer.allocateDirect(workerAddress.remaining)
+    copiedAddress.put(workerAddress)
+    transport.connectServerWorkers(executorId, copiedAddress)
     UcsConstants.STATUS.UCS_OK
   }, UcpConstants.UCP_AM_FLAG_WHOLE_MSG)
 
