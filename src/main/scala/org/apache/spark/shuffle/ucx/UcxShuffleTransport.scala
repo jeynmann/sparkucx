@@ -300,9 +300,9 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
   /**
    * Batch version of [[ fetchBlocksByBlockIds ]].
    */
-  override def fetchBlocksByBlockIds(executorId: ExecutorId, blockIds: Seq[BlockId],
+  def fetchBlocksByBlockIds(executorId: ExecutorId, blockIds: Seq[BlockId],
                                      resultBufferAllocator: BufferAllocator,
-                                     callbacks: Seq[OperationCallback]): Unit = {
+                                     callbacks: Seq[OperationCallback]) = {
     val client = selectClientThread
     client.submit(new Runnable {
       override def run = client.workerWrapper.fetchBlocksByBlockIds(
