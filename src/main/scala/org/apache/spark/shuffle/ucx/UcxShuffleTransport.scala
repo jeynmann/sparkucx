@@ -217,17 +217,12 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
     executorIdsToAddress.foreach {
       case (executorId, address) => executorAddresses.put(executorId, address.value)
     }
-    allocatedClientThreads.foreach(t => t.submit(new Runnable {
-      override def run = {
-        executorIdsToAddress.foreach {
-          case (executorId, _) => t.workerWrapper.getConnection(executorId)
-        }
-        t.workerWrapper.progressConnect()
-      }
-    }))
   }
 
   def preConnect(): Unit = {
+    allocatedClientThreads.foreach(t => t.submit(new Runnable {
+      override def run = t.workerWrapper.preconnect()
+    }))
   }
 
   /**
