@@ -5,7 +5,7 @@
 package org.apache.spark.shuffle.ucx
 
 import java.io.Closeable
-import java.util.concurrent.{ConcurrentLinkedQueue, Callable, FutureTask}
+import java.util.concurrent.{ConcurrentLinkedQueue, Callable, Future, FutureTask}
 import java.util.concurrent.atomic.AtomicInteger
 import scala.collection.concurrent.TrieMap
 import scala.util.Random
@@ -210,15 +210,15 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
 
   def getConnection(executorId: transport.ExecutorId): UcpEndpoint = {
 
-    val startTime = System.currentTimeMillis()
-    while (!transport.executorAddresses.contains(executorId)) {
-      if  (System.currentTimeMillis() - startTime >
-        transport.ucxShuffleConf.getSparkConf.getTimeAsMs("spark.network.timeout", "100")) {
-        throw new UcxException(s"Don't get a worker address for $executorId")
-      }
-    }
-
     connections.getOrElseUpdate(executorId,  {
+      val startTime = System.currentTimeMillis()
+      while (!transport.executorAddresses.contains(executorId)) {
+        if  (System.currentTimeMillis() - startTime >
+          transport.ucxShuffleConf.getSparkConf.getTimeAsMs("spark.network.timeout", "100")) {
+          throw new UcxException(s"Don't get a worker address for $executorId")
+        }
+      }
+
       val address = transport.executorAddresses(executorId)
       val endpointParams = new UcpEndpointParams().setPeerErrorHandlingMode()
         .setSocketAddress(SerializationUtils.deserializeInetAddress(address)).sendClientId()
@@ -333,13 +333,12 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
 
 }
 
-class UcxWorkerThread(val workerWrapper: UcxWorkerWrapper) extends Thread with Logging {
-  val id = workerWrapper.id
-  val worker = workerWrapper.worker
-  val transport = workerWrapper.transport
-  val useWakeup = workerWrapper.transport.ucxShuffleConf.useWakeup
+class UcxWorkerThread(worker: UcpWorker, transport: UcxShuffleTransport,
+                      isClientWorker: Boolean, id: Long) extends Thread with Logging {
+  val workerWrapper = UcxWorkerWrapper(worker, transport, isClientWorker, id)
+  val useWakeup = transport.ucxShuffleConf.useWakeup
 
-  private val taskQueue = new ConcurrentLinkedQueue[FutureTask[_]]()
+  private val taskQueue = new ConcurrentLinkedQueue[Runnable]()
 
   setDaemon(true)
   setName(s"UCX-worker $id")
@@ -360,7 +359,7 @@ class UcxWorkerThread(val workerWrapper: UcxWorkerWrapper) extends Thread with L
   }
 
   @inline
-  def submit(task: Callable[_]) = {
+  def submit(task: Callable[_]): Future[_] = {
     val future = new FutureTask(task)
     taskQueue.offer(future)
     worker.signal()
@@ -368,7 +367,7 @@ class UcxWorkerThread(val workerWrapper: UcxWorkerWrapper) extends Thread with L
   }
 
   @inline
-  def submit(task: Runnable) = {
+  def submit(task: Runnable): Future[Unit.type] = {
     val future = new FutureTask(task, Unit)
     taskQueue.offer(future)
     worker.signal()
@@ -377,6 +376,8 @@ class UcxWorkerThread(val workerWrapper: UcxWorkerWrapper) extends Thread with L
 
   @inline
   def close(): Unit = {
+    interrupt()
+    join(10)
     workerWrapper.close()
   }
 }

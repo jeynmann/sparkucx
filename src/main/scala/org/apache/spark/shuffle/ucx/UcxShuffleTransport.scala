@@ -132,8 +132,7 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
     logInfo(s"Allocating ${ucxShuffleConf.numListenerThreads} server workers")
     for (i <- 0 until ucxShuffleConf.numListenerThreads) {
       val worker = ucxContext.newWorker(ucpWorkerParams)
-      val workerWrapper = UcxWorkerWrapper(worker, this, isClientWorker = false, i.toLong)
-      allocatedServerThreads(i) = new UcxWorkerThread(workerWrapper)
+      allocatedServerThreads(i) = new UcxWorkerThread(worker, this, isClientWorker = false, i.toLong)
       allocatedServerThreads(i).start()
     }
 
@@ -155,8 +154,7 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
       val clientId: Long = ((i.toLong + 1L) << 32) | executorId
       ucpWorkerParams.setClientId(clientId)
       val worker = ucxContext.newWorker(ucpWorkerParams)
-      val workerWrapper = UcxWorkerWrapper(worker, this, isClientWorker = true, clientId)
-      allocatedClientThreads(i) = new UcxWorkerThread(workerWrapper)
+      allocatedClientThreads(i) = new UcxWorkerThread(worker, this, isClientWorker = true, clientId)
       allocatedClientThreads(i).start()
     }
 
@@ -175,11 +173,7 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
 
       hostBounceBufferMemoryPool.close()
 
-      allocatedClientThreads.foreach{ case(t) =>
-        t.interrupt()
-        t.join(10)
-        t.close()
-      }
+      allocatedClientThreads.foreach(_.close)
 
       if (listener != null) {
         listener.close()
@@ -196,11 +190,7 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
         globalWorker = null
       }
 
-      allocatedServerThreads.foreach{ case(t) =>
-        t.interrupt()
-        t.join(10)
-        t.close()
-      }
+      allocatedServerThreads.foreach(_.close)
 
       if (ucxContext != null) {
         ucxContext.close()
@@ -229,19 +219,12 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
     }
     allocatedClientThreads.foreach(t => t.submit(new Runnable {
       override def run = {
-        val startTime = System.currentTimeMillis()
         executorIdsToAddress.foreach {
           case (executorId, _) => t.workerWrapper.getConnection(executorId)
         }
         t.workerWrapper.progressConnect()
-        logInfo(s"preconnect cost ${System.currentTimeMillis() - startTime}ms")
       }
     }))
-    // allocatedClientThreads.foreach(t => t.submit(new Runnable {
-    //   override def run = {
-    //     t.workerWrapper.progressConnect()
-    //   }
-    // }))
   }
 
   def preConnect(): Unit = {
@@ -306,7 +289,7 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
     val client = selectClientThread
     client.submit(new Runnable {
       override def run = client.workerWrapper.fetchBlocksByBlockIds(
-      executorId, blockIds, resultBufferAllocator, callbacks)
+        executorId, blockIds, resultBufferAllocator, callbacks)
     })
   }
 
@@ -344,7 +327,7 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
   // @inline
   // def selectClientThread(): UcxWorkerThread = Option(clientLocal.get) match {
   //   case Some(client) => client
-  //   case None => 
+  //   case None =>
   //     val client = allocatedClientThreads(
   //       (clientThreadId.incrementAndGet() % allocatedClientThreads.length).abs)
   //     clientLocal.set(client)
