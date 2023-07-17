@@ -62,7 +62,6 @@ class UcxRefCountMemoryBlock(baseBlock: MemoryBlock, offset: Long, size: Long,
 case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, isClientWorker: Boolean,
                             id: Long = 0L)
   extends Closeable with Logging {
-  private val useWakeup = transport.ucxShuffleConf.useWakeup
 
   private final val connections =  new TrieMap[transport.ExecutorId, UcpEndpoint]
   private val requestData = new TrieMap[Int, (Seq[OperationCallback], UcxRequest, transport.BufferAllocator)]
@@ -205,7 +204,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
       }
     }
 
-    connections.getOrElseUpdate(executorId, {
+    connections.getOrElseUpdate(executorId,  {
       val address = transport.executorAddresses(executorId)
       val endpointParams = new UcpEndpointParams().setPeerErrorHandlingMode()
         .setSocketAddress(SerializationUtils.deserializeInetAddress(address)).sendClientId()

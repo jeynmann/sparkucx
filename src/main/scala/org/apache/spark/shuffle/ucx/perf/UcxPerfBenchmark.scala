@@ -144,10 +144,7 @@ object UcxPerfBenchmark extends App with Logging {
             }
           }
         }
-        val requests = ucxTransport.fetchBlocksByBlockIds(1, blocks, resultBufferAllocator, callbacks)
-        // while (!requests.forall(_.isCompleted)) {
-        //   ucxTransport.progress()
-        // }
+        ucxTransport.fetchBlocksByBlockIds(1, blocks, resultBufferAllocator, callbacks).get
       }
     }
     ucxTransport.close()

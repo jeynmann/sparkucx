@@ -8,7 +8,6 @@ import org.apache.spark.shuffle.utils.UnsafeUtils
 import org.apache.spark.storage.{BlockId => SparkBlockId, ShuffleBlockId => SparkShuffleBlockId}
 
 class UcxShuffleClient(val transport: UcxShuffleTransport) extends ShuffleClient{
-
   override def fetchBlocks(host: String, port: Int, execId: String, blockIds: Array[String],
                            listener: BlockFetchingListener,
                            downloadFileManager: DownloadFileManager): Unit = {

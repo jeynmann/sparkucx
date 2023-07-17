@@ -14,7 +14,6 @@ import org.openucx.jucx.UcxException
 import org.openucx.jucx.ucp._
 import org.openucx.jucx.ucs.UcsConstants
 
-import java.lang.ThreadLocal
 import java.net.InetSocketAddress
 import java.nio.ByteBuffer
 import java.util.concurrent.atomic.AtomicInteger
@@ -85,7 +84,6 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
 
   private var allocatedClientThreads: Array[UcxWorkerThread] = _
   private var clientThreadId = new AtomicInteger()
-  // private var clientLocal = new ThreadLocal[UcxWorkerThread] = _
 
   private var allocatedServerThreads: Array[UcxWorkerThread] = _
   private val serverThreadId = new AtomicInteger()
@@ -278,7 +276,7 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
    */
   override def fetchBlocksByBlockIds(executorId: ExecutorId, blockIds: Seq[BlockId],
                                      resultBufferAllocator: BufferAllocator,
-                                     callbacks: Seq[OperationCallback]): Unit = {
+                                     callbacks: Seq[OperationCallback]) = {
     val client = selectClientThread
     client.submit(new Runnable {
       override def run = client.workerWrapper.fetchBlocksByBlockIds(
@@ -316,16 +314,6 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
       }
     })
   }
-
-  // @inline
-  // def selectClientThread(): UcxWorkerThread = Option(clientLocal.get) match {
-  //   case Some(client) => client
-  //   case None => 
-  //     val client = allocatedClientThreads(
-  //       (clientThreadId.incrementAndGet() % allocatedClientThreads.length).abs)
-  //     clientLocal.set(client)
-  //     client
-  // }
 
   @inline
   def selectClientThread(): UcxWorkerThread = allocatedClientThreads(
