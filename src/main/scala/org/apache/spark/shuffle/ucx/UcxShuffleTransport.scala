@@ -272,7 +272,7 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
    */
   def fetchBlocksByBlockIds(executorId: ExecutorId, blockIds: Seq[BlockId],
                                      resultBufferAllocator: BufferAllocator,
-                                     callbacks: Seq[OperationCallback]) = {
+                                     callbacks: Seq[OperationCallback]): Unit = {
     val client = selectClientThread
     client.submit(new Runnable {
       override def run = client.workerWrapper.fetchBlocksByBlockIds(
