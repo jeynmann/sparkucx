@@ -73,6 +73,15 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
     transport.ucxShuffleConf.numIoThreads)
   private val ioTaskSupport = new ForkJoinTaskSupport(ioThreadPool)
 
+  val synMon = transport.synMon
+  val synLat = transport.synLat
+  val fetchMon = transport.fetchMon
+  val fetchLat = transport.fetchLat
+  val replyMon = transport.replyMon
+  val replyLat = transport.replyLat
+  val fetchReplyMon = transport.fetchReplyMon
+  val fetchReplyLat = transport.fetchReplyLat
+
   if (isClientWorker) {
     // Receive block data handler
     worker.setAmRecvHandler(1,
@@ -97,8 +106,11 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
         if (ucpAmData.isDataValid) {
           request.completed = true
           stats.endTime = System.nanoTime()
-          logDebug(s"Received amData: $ucpAmData for tag $i " +
-            s"in ${stats.getElapsedTimeNs} ns")
+          val elapsedTime = stats.getElapsedTimeNs/1000
+          fetchReplyMon.update(IntArrayRecord.add(_, (Interval.toLog10(elapsedTime), 1)))
+          fetchReplyLat.update(LongRecord.add(_, elapsedTime))
+          // logDebug(s"Received amData: $ucpAmData for tag $i " +
+          //   s"in ${stats.getElapsedTimeNs} ns")
 
           for (b <- 0 until numBlocks) {
             val blockSize = headerBuffer.getInt
@@ -124,9 +136,12 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
               override def onSuccess(r: UcpRequest): Unit = {
                 request.completed = true
                 stats.endTime = System.nanoTime()
-                logDebug(s"Received rndv data of size: ${mem.size} for tag $i in " +
-                  s"${stats.getElapsedTimeNs} ns " +
-                  s"time from amHandle: ${System.nanoTime() - stats.amHandleTime} ns")
+                val elapsedTime = stats.getElapsedTimeNs/1000
+                fetchReplyMon.update(IntArrayRecord.add(_, (Interval.toLog10(elapsedTime), 1)))
+                fetchReplyLat.update(LongRecord.add(_, elapsedTime))
+                // logDebug(s"Received rndv data of size: ${mem.size} for tag $i in " +
+                //   s"${stats.getElapsedTimeNs} ns " +
+                //   s"time from amHandle: ${System.nanoTime() - stats.amHandleTime} ns")
                 for (b <- 0 until numBlocks) {
                   val blockSize = headerBuffer.getInt
                   callbacks(b).onComplete(new OperationResult {
@@ -242,7 +257,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
   def fetchBlocksByBlockIds(executorId: transport.ExecutorId, blockIds: Seq[BlockId],
                             resultBufferAllocator: transport.BufferAllocator,
                             callbacks: Seq[OperationCallback]): Unit = {
-    val startTime = System.nanoTime()
+    // val startTime = System.nanoTime()
     val headerSize = UnsafeUtils.INT_SIZE + UnsafeUtils.LONG_SIZE
     val ep = getConnection(executorId)
 
@@ -260,13 +275,17 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
     val address = UnsafeUtils.getAdress(buffer)
     val dataAddress = address + headerSize
 
+    val startTime = System.nanoTime()
     ep.sendAmNonBlocking(0, address,
       headerSize, dataAddress, buffer.capacity() - headerSize,
       UcpConstants.UCP_AM_SEND_FLAG_EAGER, new UcxCallback() {
        override def onSuccess(request: UcpRequest): Unit = {
-         buffer.clear()
-         logDebug(s"Sent message on $ep to $executorId to fetch ${blockIds.length} blocks on tag $t id $id" +
-           s"in ${System.nanoTime() - startTime} ns")
+        val elapsedTime = (System.nanoTime - startTime) / 1000
+        fetchMon.update(IntArrayRecord.add(_, (Interval.toLog10(elapsedTime), 1)))
+        fetchLat.update(LongRecord.add(_, elapsedTime))
+        buffer.clear()
+        //  logDebug(s"Sent message on $ep to $executorId to fetch ${blockIds.length} blocks on tag $t id $id" +
+        //    s"in ${System.nanoTime() - startTime} ns")
        }
      }, MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
   }
@@ -306,8 +325,11 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
     getConnection(replyExecutor).sendAmNonBlocking(1, resultMemory.address, tagAndSizes,
       resultMemory.address + tagAndSizes, resultMemory.size - tagAndSizes, 0, new UcxCallback {
         override def onSuccess(request: UcpRequest): Unit = {
-          logTrace(s"Sent ${blocks.length} blocks of size: ${resultMemory.size} " +
-            s"to tag $replyTag in ${System.nanoTime() - startTime} ns.")
+          val elapsedTime = (System.nanoTime - startTime) / 1000
+          replyMon.update(IntArrayRecord.add(_, (Interval.toLog10(elapsedTime), 1)))
+          replyLat.update(LongRecord.add(_, elapsedTime))
+          // logTrace(s"Sent ${blocks.length} blocks of size: ${resultMemory.size} " +
+          //   s"to tag $replyTag in ${System.nanoTime() - startTime} ns.")
           transport.hostBounceBufferMemoryPool.put(resultMemory)
         }
 

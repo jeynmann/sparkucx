@@ -165,11 +165,28 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
     SerializationUtils.serializeInetAddress(listener.getAddress)
   }
 
+  // synchronized cost time 0us 1us 10su 100us 1ms 10ms 100ms 1s
+  val synMon = new IntArrayMonitor(8)
+  val synLat = new LongMonitor()
+  // fetch cost time
+  val fetchMon = new IntArrayMonitor(8)
+  val fetchLat = new LongMonitor()
+  // reply cost time
+  val replyMon = new IntArrayMonitor(8)
+  val replyLat = new LongMonitor()
+  // fetch-reply cost time
+  val fetchReplyMon = new IntArrayMonitor(8)
+  val fetchReplyLat = new LongMonitor()
+
   /**
    * Close all transport resources
    */
   override def close(): Unit = {
     if (initialized) {
+      logInfo(s"@S syn=$synMon $synLat")
+      logInfo(s"@S fetch=$fetchMon $fetchLat")
+      logInfo(s"@S reply=$replyMon $replyLat")
+      logInfo(s"@S fetch+reply=$fetchReplyMon $fetchReplyLat")
       endpoints.foreach(_.closeNonBlockingForce())
       endpoints.clear()
 
@@ -280,9 +297,15 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
                                      resultBufferAllocator: BufferAllocator,
                                      callbacks: Seq[OperationCallback]): Unit = {
     val client = selectClientThread
+    val startTime = System.nanoTime
     client.submit(new Runnable {
-      override def run = client.workerWrapper.fetchBlocksByBlockIds(
+      override def run = {
+        val elapsedTime = (System.nanoTime - startTime) / 1000
+        synMon.update(IntArrayRecord.add(_, (Interval.toLog10(elapsedTime), 1)))
+        synLat.update(LongRecord.add(_, elapsedTime))
+        client.workerWrapper.fetchBlocksByBlockIds(
         executorId, blockIds, resultBufferAllocator, callbacks)
+      }
     })
   }
 
@@ -295,8 +318,12 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
 
   def handleFetchBlockRequest(replyTag: Int, amData: UcpAmData, replyExecutor: Long): Unit = {
     val server = selectServerThread
+    val startTime = System.nanoTime
     server.submit(new Runnable {
       override def run = {
+        val elapsedTime = (System.nanoTime - startTime) / 1000
+        synMon.update(IntArrayRecord.add(_, (Interval.toLog10(elapsedTime), 1)))
+        synLat.update(LongRecord.add(_, elapsedTime))
         val buffer = UnsafeUtils.getByteBufferView(amData.getDataAddress, amData.getLength.toInt)
         val blockIds = mutable.ArrayBuffer.empty[BlockId]
 
