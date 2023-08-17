@@ -107,7 +107,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
           request.completed = true
           stats.endTime = System.nanoTime()
           val elapsedTime = stats.getElapsedTimeNs/1000
-          fetchReplyMon.update(IntArrayRecord.add(_, (Interval.toLog10(elapsedTime), 1)))
+          // fetchReplyMon.update(IntArrayRecord.add(_, (Interval.toLog10(elapsedTime), 1)))
           fetchReplyLat.update(LongRecord.add(_, elapsedTime))
           // logDebug(s"Received amData: $ucpAmData for tag $i " +
           //   s"in ${stats.getElapsedTimeNs} ns")
@@ -137,7 +137,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
                 request.completed = true
                 stats.endTime = System.nanoTime()
                 val elapsedTime = stats.getElapsedTimeNs/1000
-                fetchReplyMon.update(IntArrayRecord.add(_, (Interval.toLog10(elapsedTime), 1)))
+                // fetchReplyMon.update(IntArrayRecord.add(_, (Interval.toLog10(elapsedTime), 1)))
                 fetchReplyLat.update(LongRecord.add(_, elapsedTime))
                 // logDebug(s"Received rndv data of size: ${mem.size} for tag $i in " +
                 //   s"${stats.getElapsedTimeNs} ns " +
@@ -281,7 +281,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
       UcpConstants.UCP_AM_SEND_FLAG_EAGER, new UcxCallback() {
        override def onSuccess(request: UcpRequest): Unit = {
         val elapsedTime = (System.nanoTime - startTime) / 1000
-        fetchMon.update(IntArrayRecord.add(_, (Interval.toLog10(elapsedTime), 1)))
+        // fetchMon.update(IntArrayRecord.add(_, (Interval.toLog10(elapsedTime), 1)))
         fetchLat.update(LongRecord.add(_, elapsedTime))
         buffer.clear()
         //  logDebug(s"Sent message on $ep to $executorId to fetch ${blockIds.length} blocks on tag $t id $id" +
@@ -326,7 +326,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
       resultMemory.address + tagAndSizes, resultMemory.size - tagAndSizes, 0, new UcxCallback {
         override def onSuccess(request: UcpRequest): Unit = {
           val elapsedTime = (System.nanoTime - startTime) / 1000
-          replyMon.update(IntArrayRecord.add(_, (Interval.toLog10(elapsedTime), 1)))
+          // replyMon.update(IntArrayRecord.add(_, (Interval.toLog10(elapsedTime), 1)))
           replyLat.update(LongRecord.add(_, elapsedTime))
           // logTrace(s"Sent ${blocks.length} blocks of size: ${resultMemory.size} " +
           //   s"to tag $replyTag in ${System.nanoTime() - startTime} ns.")

@@ -125,6 +125,18 @@ class LongMonitor extends Monitor[Long] {
     override def toString(): String = s"${aggregate()}"
 }
 
+// class PpsMonitor extends IntArrayMonitor(100) {
+//     ;
+// }
+
+// class TpsMonitor extends IntMonitor {
+//     ;
+// }
+
+// object Monitor {
+//     ;
+// }
+
 object Interval {
     @`inline`
     def noGreaterThan(x: Long, ceil: Long) = {
