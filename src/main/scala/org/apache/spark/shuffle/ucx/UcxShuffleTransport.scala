@@ -300,11 +300,11 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
     val startTime = System.nanoTime
     client.submit(new Runnable {
       override def run = {
-        val elapsedTime = (System.nanoTime - startTime) / 1000
-        // synMon.update(IntArrayRecord.add(_, (Interval.toLog10(elapsedTime), 1)))
-        synLat.update(LongRecord.add(_, elapsedTime))
         client.workerWrapper.fetchBlocksByBlockIds(
         executorId, blockIds, resultBufferAllocator, callbacks)
+        val elapsedTime = (System.nanoTime - startTime) / 1000
+        fetchMon.update(IntArrayRecord.add(_, (Interval.toLog10(elapsedTime), 1)))
+        fetchLat.update(LongRecord.add(_, elapsedTime))
       }
     })
   }
@@ -321,9 +321,6 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
     val startTime = System.nanoTime
     server.submit(new Runnable {
       override def run = {
-        val elapsedTime = (System.nanoTime - startTime) / 1000
-        // synMon.update(IntArrayRecord.add(_, (Interval.toLog10(elapsedTime), 1)))
-        synLat.update(LongRecord.add(_, elapsedTime))
         val buffer = UnsafeUtils.getByteBufferView(amData.getDataAddress, amData.getLength.toInt)
         val blockIds = mutable.ArrayBuffer.empty[BlockId]
 
@@ -340,6 +337,9 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
         amData.close()
 
         server.workerWrapper.handleFetchBlockRequest(blocks, replyTag, replyExecutor)
+        val elapsedTime = (System.nanoTime - startTime) / 1000
+        replyMon.update(IntArrayRecord.add(_, (Interval.toLog10(elapsedTime), 1)))
+        replyLat.update(LongRecord.add(_, elapsedTime))
       }
     })
   }
