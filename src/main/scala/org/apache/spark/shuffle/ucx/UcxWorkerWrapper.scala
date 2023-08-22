@@ -72,6 +72,47 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
   private val ioThreadPool = ThreadUtils.newForkJoinPool("IO threads",
     transport.ucxShuffleConf.numIoThreads)
   private val ioTaskSupport = new ForkJoinTaskSupport(ioThreadPool)
+  var workerThread: WorkerThread = _
+
+  class WorkerThread() extends Thread with Logging {
+    private val taskQueue = new ConcurrentLinkedQueue[Runnable]()
+
+    setDaemon(true)
+    setName(s"UCX-worker $id")
+
+    override def run(): Unit = {
+      logDebug(s"UCX-worker $id started")
+      while (!isInterrupted) {
+        Option(taskQueue.poll()) match {
+          case Some(task) => task.run
+          case None => {}
+        }
+        worker.synchronized {
+          while (worker.progress() != 0) {}
+        }
+        if(taskQueue.isEmpty && useWakeup) {
+          worker.waitForEvents()
+        }
+      }
+      logDebug(s"UCX-worker $id stopped")
+    }
+
+    @inline
+    def submit(task: Callable[_]): Future[_] = {
+      val future = new FutureTask(task)
+      taskQueue.offer(future)
+      worker.signal()
+      future
+    }
+
+    @inline
+    def submit(task: Runnable): Future[Unit.type] = {
+      val future = new FutureTask(task, Unit)
+      taskQueue.offer(future)
+      worker.signal()
+      future
+    }
+  }
 
   val synMon = transport.synMon
   val synLat = transport.synLat
@@ -163,7 +204,19 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
       }, UcpConstants.UCP_AM_FLAG_PERSISTENT_DATA | UcpConstants.UCP_AM_FLAG_WHOLE_MSG)
   }
 
+  def start(): Unit = {
+    workerThread = new WorkerThread
+    workerThread.start
+  }
+
   override def close(): Unit = {
+    Option(workerThread) match {
+      case Some(thread) => {
+        thread.interrupt()
+        thread.join(10)
+      }
+      case None => {}
+    }
     val closeRequests = connections.map {
       case (_, endpoint) => endpoint.closeNonBlockingForce()
     }
@@ -191,6 +244,20 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
    */
   def progress(): Int = worker.synchronized {
     worker.progress()
+  }
+
+  def progressUntil(finished: () => Boolean, useWakeUp: Boolean): Unit = {
+    if (useWakeUp) {
+      while (!finished()) {
+        if (worker.progress() == 0) {
+          worker.waitForEvents()
+        }
+      }
+    } else {
+      while (!finished()) {
+        worker.progress()
+      }
+    }
   }
 
   /**
@@ -336,56 +403,4 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
     case ex: Throwable => logError(s"Failed to read and send data: $ex")
   }
 
-}
-
-class UcxWorkerThread(val workerWrapper: UcxWorkerWrapper) extends Thread with Logging {
-  val id = workerWrapper.id
-  val worker = workerWrapper.worker
-  val transport = workerWrapper.transport
-  val useWakeup = workerWrapper.transport.ucxShuffleConf.useWakeup
-
-  private val taskQueue = new ConcurrentLinkedQueue[Runnable]()
-
-  setDaemon(true)
-  setName(s"UCX-worker $id")
-
-  override def run(): Unit = {
-    logDebug(s"UCX-worker $id started")
-    while (!isInterrupted) {
-      Option(taskQueue.poll()) match {
-        case Some(task) => task.run
-        case None => {}
-      }
-      worker.synchronized {
-        while (worker.progress() != 0) {}
-      }
-      if(taskQueue.isEmpty && useWakeup) {
-        worker.waitForEvents()
-      }
-    }
-    logDebug(s"UCX-worker $id stopped")
-  }
-
-  @inline
-  def submit(task: Callable[_]): Future[_] = {
-    val future = new FutureTask(task)
-    taskQueue.offer(future)
-    worker.signal()
-    future
-  }
-
-  @inline
-  def submit(task: Runnable): Future[Unit.type] = {
-    val future = new FutureTask(task, Unit)
-    taskQueue.offer(future)
-    worker.signal()
-    future
-  }
-
-  @inline
-  def close(): Unit = {
-    interrupt()
-    join(10)
-    workerWrapper.close()
-  }
 }
