@@ -75,6 +75,15 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
   private var connectToRemoteNvkv = false
   private var requestComplete = false
 
+  val synMon = transport.synMon
+  val synLat = transport.synLat
+  val fetchMon = transport.fetchMon
+  val fetchLat = transport.fetchLat
+  val replyMon = transport.replyMon
+  val replyLat = transport.replyLat
+  val fetchReplyMon = transport.fetchReplyMon
+  val fetchReplyLat = transport.fetchReplyLat
+
   worker.setAmRecvHandler(UcpSparkAmId.InitExecutorAck,
   (headerAddress: Long, headerSize: Long, ucpAmData: UcpAmData, _: UcpEndpoint) => {
 
@@ -115,7 +124,11 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
       if (ucpAmData.isDataValid) {
         request.completed = true
         stats.endTime = System.nanoTime()
-        logDebug(s"Received block with length ${ucpAmData.getLength} in ${stats.getElapsedTimeNs} ns")
+        // logDebug(s"Received amData: $ucpAmData for tag $i " +
+        //   s"in ${stats.getElapsedTimeNs} ns")
+        val elapsedTime = stats.getElapsedTimeNs/1000
+        fetchReplyMon.update(IntArrayRecord.add(_, (Interval.toLog10(elapsedTime), 1)))
+        fetchReplyLat.update(LongRecord.add(_, elapsedTime))
 
         if (callbacks(0) != null) {
           callbacks(0).onComplete(new OperationResult {
@@ -140,10 +153,12 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
               override def onSuccess(r: UcpRequest): Unit = {
                 request.completed = true
                 stats.endTime = System.nanoTime()
-                logDebug(s"Perftest receive tag $i time ${System.nanoTime()} size ${mem.size}")
-                logDebug(s"Received rndv data of size: ${mem.size} for tag $i in " +
-                  s"${stats.getElapsedTimeNs} ns " +
-                  s"time from amHandle: ${System.nanoTime() - stats.amHandleTime} ns")
+                // logDebug(s"Received rndv data of size: ${mem.size} for tag $i in " +
+                //   s"${stats.getElapsedTimeNs} ns " +
+                //   s"time from amHandle: ${System.nanoTime() - stats.amHandleTime} ns")
+                val elapsedTime = stats.getElapsedTimeNs/1000
+                fetchReplyMon.update(IntArrayRecord.add(_, (Interval.toLog10(elapsedTime), 1)))
+                fetchReplyLat.update(LongRecord.add(_, elapsedTime))
                   callbacks(0).onComplete(new OperationResult {
                     override def getStatus: OperationStatus.Value = OperationStatus.SUCCESS
 
