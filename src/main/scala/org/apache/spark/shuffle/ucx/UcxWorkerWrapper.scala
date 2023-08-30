@@ -23,6 +23,7 @@ import org.apache.spark.util.ThreadUtils
 
 import java.nio.{ByteBuffer, ByteOrder}
 import scala.collection.parallel.ForkJoinTaskSupport
+import scala.collection.mutable.HashSet
 
 class UcxFailureOperationResult(errorMsg: String) extends OperationResult {
   override def getStatus: OperationStatus.Value = OperationStatus.FAILURE
@@ -64,7 +65,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
 
   private final val connections =  new TrieMap[transport.ExecutorId, UcpEndpoint]
   private final val dpuAddress =  new TrieMap[InetSocketAddress, UcpEndpoint]
-  private val requestData = new TrieMap[Int, (Seq[OperationCallback], UcxRequest, transport.BufferAllocator)]
+  private val requestData = new TrieMap[Int, (Seq[OperationCallback], UcxRequest, transport.BufferAllocator, HashSet[Int])]
   private val tag = new AtomicInteger(Random.nextInt())
   private val flushRequests = new ConcurrentLinkedQueue[UcpRequest]()
 
@@ -109,21 +110,23 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
       val headerBuffer = UnsafeUtils.getByteBufferView(headerAddress, headerSize.toInt)
       // val headerBuffer = UnsafeUtils.getByteBufferView(headerAddress, headerSize.toInt).order(ByteOrder.nativeOrder())
       val i = headerBuffer.getInt
-      val data = requestData.remove(i)
+      val data = requestData.get(i)
 
-      logInfo(s"@Z Recv tag $i length ${ucpAmData.getLength}")
-      // logDebug(s"LEO Fetch block ack called!")
+      // logInfo(s"@Z Recv tag $i length ${ucpAmData.getLength}")
+      logDebug(s"LEO Fetch block ack called!")
 
       if (data.isEmpty) {
         throw new UcxException(s"No data for tag $i.")
       }
 
-      val (callbacks, request, allocator) = data.get
+      val (callbacks, request, allocator, recvSet) = data.get
       val stats = request.getStats.get.asInstanceOf[UcxStats]
       stats.receiveSize = ucpAmData.getLength
       
+      val block_begin = headerBuffer.getInt
       // Header contains tag followed by sizes of blocks
-      val numBlocks = (headerSize.toInt - UnsafeUtils.INT_SIZE) / UnsafeUtils.INT_SIZE
+      val numBlocks = headerSize.toInt / UnsafeUtils.INT_SIZE - 2
+      val block_end = block_begin + numBlocks
 
       var offset = 0
       val refCounts = new AtomicInteger(numBlocks)
@@ -136,9 +139,10 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
         fetchReplyMon.update(IntArrayRecord.add(_, (Interval.toLog10(elapsedTime), 1)))
         fetchReplyLat.update(LongRecord.add(_, elapsedTime))
 
-        for (b <- 0 until numBlocks) {
+        for (b <- block_begin until block_end) {
           val blockSize = headerBuffer.getInt
           if (callbacks(b) != null) {
+            logInfo(s"@Z Recv tag $i length ${ucpAmData.getLength} id ${b} size ${blockSize}")
             callbacks(b).onComplete(new OperationResult {
               override def getStatus: OperationStatus.Value = OperationStatus.SUCCESS
 
@@ -150,6 +154,10 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
             })
           }
           offset += alignedLength(blockSize, 512)
+          recvSet += b
+        }
+        if (recvSet.size == callbacks.size) {
+          requestData.remove(i)
         }
         if (callbacks.isEmpty) UcsConstants.STATUS.UCS_OK else UcsConstants.STATUS.UCS_INPROGRESS
 
@@ -168,7 +176,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
                 val elapsedTime = stats.getElapsedTimeNs/1000
                 fetchReplyMon.update(IntArrayRecord.add(_, (Interval.toLog10(elapsedTime), 1)))
                 fetchReplyLat.update(LongRecord.add(_, elapsedTime))
-                for (b <- 0 until numBlocks) {
+                for (b <- block_begin until block_end) {
                   val blockSize = headerBuffer.getInt
                   if (callbacks(b) != null) {
                     callbacks(b).onComplete(new OperationResult {
@@ -182,6 +190,10 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
                     })
                   }
                   offset += alignedLength(blockSize, 512)
+                  recvSet += b
+                }
+                if (recvSet.size == callbacks.size) {
+                  requestData.remove(i)
                 }
               }
             }, UcsConstants.MEMORY_TYPE.UCS_MEMORY_TYPE_HOST))
@@ -284,14 +296,14 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
     blockIds.foreach(b => b.serialize(buffer))
 
     val request = new UcxRequest(null, new UcxStats())
-    requestData.put(t, (callbacks, request, resultBufferAllocator))
+    requestData.put(t, (callbacks, request, resultBufferAllocator, HashSet.empty[Int]))
 
     buffer.rewind()
     val address = UnsafeUtils.getAdress(buffer)
     val dataAddress = address + headerSize
 
-    logInfo(s"@Z Send tag ${t}")
-    // logDebug(s"Perftest send tag ${t} time ${System.nanoTime()}")
+    // logInfo(s"@Z Send tag ${t}")
+    logDebug(s"Perftest send tag ${t} time ${System.nanoTime()}")
     ep.sendAmNonBlocking(UcpSparkAmId.FetchBlockReq, address, headerSize, dataAddress, buffer.capacity() - headerSize,
     UcpConstants.UCP_AM_SEND_FLAG_EAGER | UcpConstants.UCP_AM_SEND_FLAG_REPLY, new UcxCallback() {
       override def onSuccess(request: UcpRequest): Unit = {
