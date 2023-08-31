@@ -17,17 +17,13 @@ class UcxShuffleClient(val transport: UcxShuffleTransport, mapId2PartitionId: Ma
   override def fetchBlocks(host: String, port: Int, execId: String, blockIds: Array[String],
                            listener: BlockFetchingListener,
                            downloadFileManager: DownloadFileManager): Unit = {
-  // val maxBlocksPerRequest = transport.ucxShuffleConf.maxBlocksPerRequest
-  //   logInfo(s"@F execId=${execId}")
-  //   blockIds.foreach { idStr => {
-  //     doFetchBlocks(host, port, execId, Array(idStr), listener, downloadFileManager)
-  //   }}
-  // }
-
-  // def doFetchBlocks(host: String, port: Int, execId: String, blockIds: Array[String],
-  //                          listener: BlockFetchingListener,
-  //                          downloadFileManager: DownloadFileManager): Unit = {
     //TODO - check if we need to limit max number of request "on the air"
+    // if (blockIds.length > 32) {
+    //   val (b1, b2) = blockIds.splitAt(blockIds.length / 2)
+    //   fetchBlocks(host, port, execId, b1, listener, downloadFileManager)
+    //   fetchBlocks(host, port, execId, b2, listener, downloadFileManager)
+    //   return
+    // }
 
     val ucxBlockIds = Array.ofDim[UcxShuffleBlockId](blockIds.length)
     val callbacks = Array.ofDim[OperationCallback](blockIds.length)
@@ -36,7 +32,6 @@ class UcxShuffleClient(val transport: UcxShuffleTransport, mapId2PartitionId: Ma
     for (i <- blockIds.indices) {
       send = send + 1
       val blockId = SparkBlockId.apply(blockIds(i)).asInstanceOf[SparkShuffleBlockId]
-      // logInfo(s"@F (${blockId.shuffleId}, ${blockId.mapId}, ${blockId.reduceId})")
       ucxBlockIds(i) = UcxShuffleBlockId(blockId.shuffleId, mapId2PartitionId(blockId.mapId), blockId.reduceId)
       callbacks(i) = (result: OperationResult) => {
         val memBlock = result.getData

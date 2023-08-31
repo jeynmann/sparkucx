@@ -561,7 +561,7 @@ final class ShuffleBlockFetcherIterator(
     if (numBlocksProcessed < numBlocksToFetch) {
       true
     } else {
-      logInfo(s"@S take+=$takeTime fetch+=$fetchTime compute+=$computeTime")
+      logDebug(s"take+=$takeTime fetch+=$fetchTime compute+=$computeTime")
       false
     }
   }

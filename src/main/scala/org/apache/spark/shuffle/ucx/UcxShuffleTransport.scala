@@ -152,28 +152,11 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
     logDebug("LEO init UcxShuffleTransport Nvkv init done")
   }
 
-  // synchronized cost time 0us 1us 10su 100us 1ms 10ms 100ms 1s
-  val synMon = new IntArrayMonitor(8)
-  val synLat = new LongMonitor()
-  // fetch cost time
-  val fetchMon = new IntArrayMonitor(8)
-  val fetchLat = new LongMonitor()
-  // reply cost time
-  val replyMon = new IntArrayMonitor(8)
-  val replyLat = new LongMonitor()
-  // fetch-reply cost time
-  val fetchReplyMon = new IntArrayMonitor(8)
-  val fetchReplyLat = new LongMonitor()
-
   /**
    * Close all transport resources
    */
   override def close(): Unit = {
     if (initialized) {
-      logInfo(s"@S syn=$synMon $synLat")
-      logInfo(s"@S fetch=$fetchMon $fetchLat")
-      logInfo(s"@S reply=$replyMon $replyLat")
-      logInfo(s"@S fetch+reply=$fetchReplyMon $fetchReplyLat")
       endpoints.foreach(_.closeNonBlockingForce())
       endpoints.clear()
 
@@ -277,13 +260,8 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
                                      resultBufferAllocator: BufferAllocator,
                                      callbacks: Seq[OperationCallback],
                                      amRecvStartCb: () => Unit): Seq[Request] = {
-    val startTime = System.nanoTime
-    val req = globalWorker
+    globalWorker
       .fetchBlocksByBlockIds(executorId, blockIds, resultBufferAllocator, callbacks, amRecvStartCb)
-    val elapsedTime = (System.nanoTime - startTime) / 1000
-    fetchMon.update(IntArrayRecord.add(_, (Interval.toLog10(elapsedTime), 1)))
-    fetchLat.update(LongRecord.add(_, elapsedTime))
-    req
   }
 
   def commitBlock(executorId: ExecutorId, resultBufferAllocator: BufferAllocator, 

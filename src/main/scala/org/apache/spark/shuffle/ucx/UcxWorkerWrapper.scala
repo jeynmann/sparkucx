@@ -76,15 +76,6 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
   private var connectToRemoteNvkv = false
   private var requestComplete = false
 
-  val synMon = transport.synMon
-  val synLat = transport.synLat
-  val fetchMon = transport.fetchMon
-  val fetchLat = transport.fetchLat
-  val replyMon = transport.replyMon
-  val replyLat = transport.replyLat
-  val fetchReplyMon = transport.fetchReplyMon
-  val fetchReplyLat = transport.fetchReplyLat
-
   worker.setAmRecvHandler(UcpSparkAmId.InitExecutorAck,
   (headerAddress: Long, headerSize: Long, ucpAmData: UcpAmData, _: UcpEndpoint) => {
 
@@ -108,11 +99,9 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
   worker.setAmRecvHandler(UcpSparkAmId.FetchBlockReqAck,
     (headerAddress: Long, headerSize: Long, ucpAmData: UcpAmData, _: UcpEndpoint) => {
       val headerBuffer = UnsafeUtils.getByteBufferView(headerAddress, headerSize.toInt)
-      // val headerBuffer = UnsafeUtils.getByteBufferView(headerAddress, headerSize.toInt).order(ByteOrder.nativeOrder())
       val i = headerBuffer.getInt
       val data = requestData.get(i)
 
-      // logInfo(s"@Z Recv tag $i length ${ucpAmData.getLength}")
       logDebug(s"LEO Fetch block ack called!")
 
       if (data.isEmpty) {
@@ -133,16 +122,11 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
       if (ucpAmData.isDataValid) {
         request.completed = true
         stats.endTime = System.nanoTime()
-        // logDebug(s"Received amData: $ucpAmData for tag $i " +
-        //   s"in ${stats.getElapsedTimeNs} ns")
-        val elapsedTime = stats.getElapsedTimeNs/1000
-        fetchReplyMon.update(IntArrayRecord.add(_, (Interval.toLog10(elapsedTime), 1)))
-        fetchReplyLat.update(LongRecord.add(_, elapsedTime))
+        logDebug(s"Received block with length ${ucpAmData.getLength} in ${stats.getElapsedTimeNs} ns")
 
         for (b <- block_begin until block_end) {
           val blockSize = headerBuffer.getInt
           if (callbacks(b) != null) {
-            logInfo(s"@Z Recv tag $i length ${ucpAmData.getLength} id ${b} size ${blockSize}")
             callbacks(b).onComplete(new OperationResult {
               override def getStatus: OperationStatus.Value = OperationStatus.SUCCESS
 
@@ -170,12 +154,9 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
               override def onSuccess(r: UcpRequest): Unit = {
                 request.completed = true
                 stats.endTime = System.nanoTime()
-                // logDebug(s"Received rndv data of size: ${mem.size} for tag $i in " +
-                //   s"${stats.getElapsedTimeNs} ns " +
-                //   s"time from amHandle: ${System.nanoTime() - stats.amHandleTime} ns")
-                val elapsedTime = stats.getElapsedTimeNs/1000
-                fetchReplyMon.update(IntArrayRecord.add(_, (Interval.toLog10(elapsedTime), 1)))
-                fetchReplyLat.update(LongRecord.add(_, elapsedTime))
+                logDebug(s"Received rndv data of size: ${mem.size} for tag $i in " +
+                  s"${stats.getElapsedTimeNs} ns " +
+                  s"time from amHandle: ${System.nanoTime() - stats.amHandleTime} ns")
                 for (b <- block_begin until block_end) {
                   val blockSize = headerBuffer.getInt
                   if (callbacks(b) != null) {
@@ -290,7 +271,6 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
     val t = tag.incrementAndGet()
 
     val buffer = Platform.allocateDirectBuffer(headerSize + blockIds.map(_.serializedSize).sum)
-    // val buffer = Platform.allocateDirectBuffer(headerSize + blockIds.map(_.serializedSize).sum).order(ByteOrder.nativeOrder())
     buffer.putInt(t)
     buffer.putInt(blockIds.size)
     blockIds.foreach(b => b.serialize(buffer))
@@ -302,7 +282,6 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
     val address = UnsafeUtils.getAdress(buffer)
     val dataAddress = address + headerSize
 
-    // logInfo(s"@Z Send tag ${t}")
     logDebug(s"Perftest send tag ${t} time ${System.nanoTime()}")
     ep.sendAmNonBlocking(UcpSparkAmId.FetchBlockReq, address, headerSize, dataAddress, buffer.capacity() - headerSize,
     UcpConstants.UCP_AM_SEND_FLAG_EAGER | UcpConstants.UCP_AM_SEND_FLAG_REPLY, new UcxCallback() {
