@@ -178,21 +178,6 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
     worker.progress()
   }
 
-  @inline
-  def progressBlocked(isFinished: () => Boolean): Unit = {
-    if (useWakeup) {
-      while (!isFinished()) {
-        if (worker.progress() == 0) {
-          worker.waitForEvents()
-        }
-      }
-    } else {
-      while (!isFinished()) {
-        worker.progress()
-      }
-    }
-  }
-
   /**
    * Establish connections to known instances.
    */
@@ -209,16 +194,16 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
   }
 
   def getConnection(executorId: transport.ExecutorId): UcpEndpoint = {
+    val startTime = System.currentTimeMillis()
+
+    while (!transport.executorAddresses.contains(executorId)) {
+      if  (System.currentTimeMillis() - startTime >
+        transport.ucxShuffleConf.getSparkConf.getTimeAsMs("spark.network.timeout", "100")) {
+        throw new UcxException(s"Don't get a worker address for $executorId")
+      }
+    }
 
     connections.getOrElseUpdate(executorId,  {
-      val startTime = System.currentTimeMillis()
-      while (!transport.executorAddresses.contains(executorId)) {
-        if  (System.currentTimeMillis() - startTime >
-          transport.ucxShuffleConf.getSparkConf.getTimeAsMs("spark.network.timeout", "100")) {
-          throw new UcxException(s"Don't get a worker address for $executorId")
-        }
-      }
-
       val address = transport.executorAddresses(executorId)
       val endpointParams = new UcpEndpointParams().setPeerErrorHandlingMode()
         .setSocketAddress(SerializationUtils.deserializeInetAddress(address)).sendClientId()
@@ -338,21 +323,31 @@ class UcxWorkerThread(worker: UcpWorker, transport: UcxShuffleTransport,
   val workerWrapper = UcxWorkerWrapper(worker, transport, isClientWorker, id)
   val useWakeup = transport.ucxShuffleConf.useWakeup
 
-  private val taskQueue = new ConcurrentLinkedQueue[Runnable]()
+  private[this] val taskQueue = new ConcurrentLinkedQueue[Runnable]()
 
   setDaemon(true)
   setName(s"UCX-worker $id")
 
   override def run(): Unit = {
     logDebug(s"UCX-worker $id started")
-    while (!isInterrupted) {
-      Option(taskQueue.poll()) match {
-        case Some(task) => task.run
-        case None => {}
+    if (useWakeup) {
+      while (!isInterrupted) {
+        Option(taskQueue.poll()) match {
+          case Some(task) => task.run
+          case None => {}
+        }
+        while (worker.progress() != 0) {}
+        if(taskQueue.isEmpty) {
+          worker.waitForEvents()
+        }
       }
-      while (worker.progress() != 0) {}
-      if(taskQueue.isEmpty && useWakeup) {
-        worker.waitForEvents()
+    } else {
+      while (!isInterrupted) {
+        Option(taskQueue.poll()) match {
+          case Some(task) => task.run
+          case None => {}
+        }
+        worker.progress()
       }
     }
     logDebug(s"UCX-worker $id stopped")

@@ -36,6 +36,7 @@ class GlobalWorkerRpcThread(globalWorker: UcpWorker, transport: UcxShuffleTransp
     val workerAddress = UnsafeUtils.getByteBufferView(amData.getDataAddress, amData.getLength.toInt)
     val copiedAddress = ByteBuffer.allocateDirect(workerAddress.remaining)
     copiedAddress.put(workerAddress)
+    copiedAddress.rewind()
     transport.connectServerWorkers(executorId, copiedAddress)
     UcsConstants.STATUS.UCS_OK
   }, UcpConstants.UCP_AM_FLAG_WHOLE_MSG)
