@@ -62,8 +62,6 @@ class UcxRefCountMemoryBlock(baseBlock: MemoryBlock, offset: Long, size: Long,
 case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, isClientWorker: Boolean,
                             id: Long = 0L)
   extends Closeable with Logging {
-  private val useWakeup = transport.ucxShuffleConf.useWakeup
-
   private final val connections =  new TrieMap[transport.ExecutorId, UcpEndpoint]
   private val requestData = new TrieMap[Int, (Seq[OperationCallback], UcxRequest, transport.BufferAllocator)]
   private val tag = new AtomicInteger(Random.nextInt())
@@ -321,8 +319,8 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
 class UcxWorkerThread(worker: UcpWorker, transport: UcxShuffleTransport,
                       isClientWorker: Boolean, id: Long) extends Thread with Logging {
   val workerWrapper = UcxWorkerWrapper(worker, transport, isClientWorker, id)
-  val useWakeup = transport.ucxShuffleConf.useWakeup
 
+  private[this] val useWakeup = transport.ucxShuffleConf.useWakeup
   private[this] val taskQueue = new ConcurrentLinkedQueue[Runnable]()
 
   setDaemon(true)
