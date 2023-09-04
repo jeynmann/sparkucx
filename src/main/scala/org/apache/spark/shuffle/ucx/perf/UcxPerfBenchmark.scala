@@ -10,6 +10,7 @@ import java.nio.ByteBuffer
 import java.nio.charset.StandardCharsets
 import java.nio.channels.FileChannel
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.CountDownLatch
 import org.apache.commons.cli.{GnuParser, HelpFormatter, Options}
 import org.apache.spark.SparkConf
 import org.apache.spark.internal.Logging
