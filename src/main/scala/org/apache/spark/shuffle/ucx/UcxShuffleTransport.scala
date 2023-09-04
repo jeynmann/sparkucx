@@ -85,7 +85,6 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
 
   private var allocatedClientThreads: Array[UcxWorkerThread] = _
   private var clientThreadId = new AtomicInteger()
-  // private var clientLocal = new ThreadLocal[UcxWorkerThread] = _
 
   private var allocatedServerThreads: Array[UcxWorkerThread] = _
   private val serverThreadId = new AtomicInteger()
@@ -324,16 +323,6 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
       }
     })
   }
-
-  // @inline
-  // def selectClientThread(): UcxWorkerThread = Option(clientLocal.get) match {
-  //   case Some(client) => client
-  //   case None =>
-  //     val client = allocatedClientThreads(
-  //       (clientThreadId.incrementAndGet() % allocatedClientThreads.length).abs)
-  //     clientLocal.set(client)
-  //     client
-  // }
 
   @inline
   def selectClientThread(): UcxWorkerThread = allocatedClientThreads(
