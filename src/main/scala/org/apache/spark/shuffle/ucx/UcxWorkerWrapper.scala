@@ -284,7 +284,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
         }).setName(s"Endpoint to $executorId")
 
       logDebug(s"Worker $this connecting to Executor($executorId, " +
-      s"${SerializationUtils.deserializeInetAddress(address)}")
+        s"${SerializationUtils.deserializeInetAddress(address)}")
       val header = Platform.allocateDirectBuffer(UnsafeUtils.LONG_SIZE)
       header.putLong(id)
       header.rewind()
@@ -309,7 +309,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
   def fetchBlocksByBlockIds(executorId: transport.ExecutorId, blockIds: Seq[BlockId],
                             resultBufferAllocator: transport.BufferAllocator,
                             callbacks: Seq[OperationCallback]): Unit = {
-    // val startTime = System.nanoTime()
+    val startTime = System.nanoTime()
     val headerSize = UnsafeUtils.INT_SIZE + UnsafeUtils.LONG_SIZE
     
     val t = tag.incrementAndGet()
@@ -325,8 +325,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
     buffer.rewind()
     val address = UnsafeUtils.getAdress(buffer)
     val dataAddress = address + headerSize
-    
-    val startTime = System.nanoTime()
+
     worker.synchronized {
       val ep = getConnection(executorId)
       ep.sendAmNonBlocking(0, address,
@@ -334,7 +333,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
       UcpConstants.UCP_AM_SEND_FLAG_EAGER, new UcxCallback() {
         override def onSuccess(request: UcpRequest): Unit = {
           logDebug(s"Sent message on $ep to $executorId to fetch ${blockIds.length} blocks on tag $t id $id" +
-          s"in ${System.nanoTime() - startTime} ns")
+            s"in ${System.nanoTime() - startTime} ns")
           buffer.clear()
         }
       }, MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
