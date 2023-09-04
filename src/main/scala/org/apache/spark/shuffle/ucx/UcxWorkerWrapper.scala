@@ -82,18 +82,25 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
 
     override def run(): Unit = {
       logDebug(s"UCX-worker $id started")
-      while (!isInterrupted) {
-        Option(taskQueue.poll()) match {
-          case Some(task) => task.run
-          case None => {}
-        }
-        worker.synchronized {
+      if (useWakeup) {
+        while (!isInterrupted) {
+          Option(taskQueue.poll()) match {
+            case Some(task) => task.run
+            case None => {}
+          }
           while (worker.progress() != 0) {}
+          if(taskQueue.isEmpty) {
+            worker.waitForEvents()
+          }
         }
-        if(taskQueue.isEmpty && useWakeup) {
-          worker.waitForEvents()
-        }
-      }
+      } else {
+        while (!isInterrupted) {
+          Option(taskQueue.poll()) match {
+            case Some(task) => task.run
+            case None => {}
+          }
+          worker.progress()
+      }    
       logDebug(s"UCX-worker $id stopped")
     }
 
@@ -255,10 +262,8 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
 
   def connectByWorkerAddress(executorId: transport.ExecutorId, workerAddress: ByteBuffer): Unit = {
     logDebug(s"Worker $this connecting back to $executorId by worker address")
-    val ep = worker.synchronized {
-      worker.newEndpoint(new UcpEndpointParams().setName(s"Server connection to $executorId")
+    val ep = worker.newEndpoint(new UcpEndpointParams().setName(s"Server connection to $executorId")
         .setUcpAddress(workerAddress))
-    }
     connections.put(executorId, ep)
   }
 
@@ -285,13 +290,12 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
 
       logDebug(s"Worker $this connecting to Executor($executorId, " +
         s"${SerializationUtils.deserializeInetAddress(address)}")
-      worker.synchronized {
         val ep = worker.newEndpoint(endpointParams)
         val header = Platform.allocateDirectBuffer(UnsafeUtils.LONG_SIZE)
         header.putLong(id)
         header.rewind()
         val workerAddress = worker.getAddress
-
+  
         ep.sendAmNonBlocking(1, UcxUtils.getAddress(header), UnsafeUtils.LONG_SIZE,
           UcxUtils.getAddress(workerAddress), workerAddress.capacity().toLong, UcpConstants.UCP_AM_SEND_FLAG_EAGER,
           new UcxCallback() {
@@ -302,8 +306,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
           }, MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
         flushRequests.add(ep.flushNonBlocking(null))
         ep
-      }
-    })
+      })
   }
 
   def fetchBlocksByBlockIds(executorId: transport.ExecutorId, blockIds: Seq[BlockId],
