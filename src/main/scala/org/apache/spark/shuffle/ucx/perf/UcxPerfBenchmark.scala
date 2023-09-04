@@ -128,6 +128,7 @@ object UcxPerfBenchmark extends App with Logging {
 
     for (_ <- 0 until options.numIterations) {
       for  (b <- blockCollection) {
+        val latch = new CountDownLatch(options.numOutstanding)
         requestInFlight.set(options.numOutstanding)
         for (o <- 0 until options.numOutstanding) {
           val fileIdx = if (options.randOrder) rnd.nextInt(options.files.length) else (b+o) % options.files.length
@@ -135,6 +136,7 @@ object UcxPerfBenchmark extends App with Logging {
           blocks(o) = UcxShuffleBockId(0, fileIdx, blockIdx)
           callbacks(o) = (result: OperationResult) => {
             result.getData.close()
+            latch.countDown()
             val stats = result.getStats.get
             if (requestInFlight.decrementAndGet() == 0) {
               printf(s"Received ${options.numOutstanding} block of size: ${stats.recvSize}  " +
@@ -144,10 +146,8 @@ object UcxPerfBenchmark extends App with Logging {
             }
           }
         }
-        val requests = ucxTransport.fetchBlocksByBlockIds(1, blocks, resultBufferAllocator, callbacks)
-        // while (!requests.forall(_.isCompleted)) {
-        //   ucxTransport.progress()
-        // }
+        ucxTransport.fetchBlocksByBlockIds(1, blocks, resultBufferAllocator, callbacks)
+        latch.await()
       }
     }
     ucxTransport.close()
