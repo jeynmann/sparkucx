@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-package org.apache.spark.network.yarn;
+package org.apache.spark.network.yarn.ucx;
 
 import java.io.File;
 import java.io.IOException;
@@ -50,47 +50,51 @@ import org.apache.spark.network.sasl.ShuffleSecretManager;
 import org.apache.spark.network.server.TransportServer;
 import org.apache.spark.network.server.TransportServerBootstrap;
 import org.apache.spark.network.shuffle.ExternalShuffleBlockHandler;
+import org.apache.spark.network.shuffle.ExternalShuffleBlockResolver;
 import org.apache.spark.network.util.TransportConf;
+import org.apache.spark.network.yarn.YarnShuffleService;
 import org.apache.spark.network.yarn.util.HadoopConfigProvider;
 
 import org.apache.spark.shuffle.ucx.UcxServiceConf;
 import org.apache.spark.shuffle.ucx.UcxShuffleTransportServer;
 
 public class UcxYarnShuffleService extends YarnShuffleService {
-  static final Logger logger = LoggerFactory.getLogger(YarnShuffleService.class)
+  static final Logger logger = LoggerFactory.getLogger(YarnShuffleService.class);
 
   UcxShuffleTransportServer ucxTransport;
-  ExternalShuffleBlockHandler blockHandlerReflect;
-  ExternalShuffleBlockResolver blockManagerReflect;
+  ExternalShuffleBlockResolver blockManager;
 
-  @Override
-  protected void serviceInit(Configuration conf) {
-    super().serviceInit(conf)
-    blockHandlerReflect = blockHandler
-    blockManagerReflect = blockHandlerReflect.blockManager
-
-    logger.logInfo(s"Start launching UcxShuffleTransportServer")
-    val ucxConf = new UcxServiceConf(conf)
-    ucxTransport = new UcxShuffleTransportServer(ucxConf, blockManagerReflect)
-    val address = ucxTransport.init
+  public UcxYarnShuffleService() {
+    super();
   }
 
   @Override
-  void stopApplication(ApplicationTerminationContext context) {
-    super().stopApplication(context)
-    // ucxTransport.applicationRemoved(appId, false /* clean up local dirs */)
+  protected void serviceInit(Configuration conf) throws Exception {
+    super.serviceInit(conf);
+    blockManager = blockHandler.blockManager;
+
+    logger.info("Start launching UcxShuffleTransportServer");
+    UcxServiceConf ucxConf = new UcxServiceConf(conf);
+    ucxTransport = new UcxShuffleTransportServer(ucxConf, blockManager);
+    ucxTransport.init();
   }
 
   @Override
-  void serviceStop() {
+  public void stopApplication(ApplicationTerminationContext context) {
+    super.stopApplication(context);
+    // ucxTransport.applicationRemoved(appId, false /* clean up local dirs */);
+  }
+
+  @Override
+  protected void serviceStop() {
     try {
-      super().serviceStop()
+      super.serviceStop();
       if (ucxTransport != null) {
-          ucxTransport.close()
-          ucxTransport = null
+          ucxTransport.close();
+          ucxTransport = null;
       }
     } catch (Exception e) {
-      logger.logError("Exception when stopping service", e)
+      logger.error("Exception when stopping service", e);
     }
   }
 }

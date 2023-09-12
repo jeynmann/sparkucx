@@ -12,10 +12,10 @@ import org.apache.spark.rpc._
 import org.apache.spark.shuffle.ucx.rpc.UcxRpcMessages.{PushServiceAddress, PushAllServiceAddress}
 import org.apache.spark.shuffle.ucx.utils.SerializableDirectBuffer
 
-class UcxDriverRpcEndpoint(override val rpcEnv: RpcEnv) extends ThreadSafeRpcEndpoint with Logging {
+class ExternalUcxDriverRpcEndpoint(override val rpcEnv: RpcEnv) extends ThreadSafeRpcEndpoint with Logging {
 
   private val endpoints = mutable.HashSet.empty[RpcEndpointRef]
-  private var shuffleServerSet = mutable.HashSet.empty[Long, SerializableDirectBuffer]
+  private var shuffleServerSet = mutable.HashSet.empty[SerializableDirectBuffer]
 
 
   override def receiveAndReply(context: RpcCallContext): PartialFunction[Any, Unit] = {
@@ -24,7 +24,7 @@ class UcxDriverRpcEndpoint(override val rpcEnv: RpcEnv) extends ThreadSafeRpcEnd
       // 1. Introduce existing members of a cluster
       logDebug(s"Received $message")
       if (shuffleServerSet.nonEmpty) {
-        val msg = PushAllServiceAddress(shuffleServerSet)
+        val msg = PushAllServiceAddress(shuffleServerSet.toSet)
         logDebug(s"replying $msg to $endpoint")
         context.reply(msg)
       }

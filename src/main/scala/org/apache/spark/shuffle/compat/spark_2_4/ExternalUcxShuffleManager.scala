@@ -5,14 +5,14 @@
 package org.apache.spark.shuffle
 
 import org.apache.spark.shuffle.compat.spark_2_4.ExternalUcxShuffleReader
-import org.apache.spark.shuffle.ucx.ExternaBaseUcxShuffleManager
+import org.apache.spark.shuffle.ucx.ExternalBaseUcxShuffleManager
 import org.apache.spark.{SparkConf, TaskContext}
 
 /**
  * Common part for all spark versions for UcxShuffleManager logic
  */
 class ExternalUcxShuffleManager(override val conf: SparkConf, isDriver: Boolean)
-  extends ExternaBaseUcxShuffleManager(conf, isDriver) {
+  extends ExternalBaseUcxShuffleManager(conf, isDriver) {
   override def getReader[K, C](handle: ShuffleHandle, startPartition: Int,
                                endPartition: Int, context: TaskContext): ShuffleReader[K, C] = {
     new ExternalUcxShuffleReader(handle.asInstanceOf[BaseShuffleHandle[K,_,C]], startPartition,
