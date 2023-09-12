@@ -19,4 +19,8 @@ object UcxRpcMessages {
    * Reply from driver with all executors in the cluster with their worker addresses.
    */
   case class IntroduceAllExecutors(executorIdToAddress: Map[Long, SerializableDirectBuffer])
+
+  case class PushServiceAddress(shuffleServer: SerializableDirectBuffer, endpoint: RpcEndpointRef)
+
+  case class PushAllServiceAddress(shuffleServerSet: Set[SerializableDirectBuffer])
 }
