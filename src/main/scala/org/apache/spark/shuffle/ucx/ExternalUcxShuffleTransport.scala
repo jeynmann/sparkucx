@@ -23,13 +23,14 @@ import java.util.concurrent.atomic.AtomicInteger
 import scala.collection.concurrent.TrieMap
 import scala.collection.mutable
 
-case class UcxWorkerId(appId: Int, exeId: Int, workerId: Int) extends BlockId {
-  override def serializedSize: Int = 12
+case class UcxWorkerId(appId: String, exeId: Int, workerId: Int) extends BlockId {
+  override def serializedSize: Int = 12 + appId.size
 
   override def serialize(byteBuffer: ByteBuffer): Unit = {
-    byteBuffer.putInt(appId)
     byteBuffer.putInt(exeId)
     byteBuffer.putInt(workerId)
+    byteBuffer.putInt(appId.size)
+    byteBuffer.put(appId.getBytes)
   }
 
   override def toString(): String = s"UcxWorkerId($appId, $exeId, $workerId)"
@@ -37,10 +38,12 @@ case class UcxWorkerId(appId: Int, exeId: Int, workerId: Int) extends BlockId {
 
 object UcxWorkerId {
   def deserialize(byteBuffer: ByteBuffer): UcxWorkerId = {
-    val appId = byteBuffer.getInt
     val exeId = byteBuffer.getInt
     val workerId = byteBuffer.getInt
-    UcxWorkerId(appId, exeId, workerId)
+    val appIdSize = byteBuffer.getInt
+    val appIdBytes = new Array[Byte](appIdSize)
+    byteBuffer.get(appIdBytes)
+    UcxWorkerId(new String(appIdBytes), exeId, workerId)
   }
 }
 
@@ -104,7 +107,7 @@ class UcxShuffleTransportClient(clientConf: UcxShuffleConf, blockManagerId: Bloc
 
     allocatedClientThreads = new Array[ExternalUcxWorkerThread](ucxShuffleConf.numWorkers)
     logInfo(s"Allocating ${ucxShuffleConf.numWorkers} client workers")
-    val appId = ucxShuffleConf.getSparkConf.getAppId.toLong.toInt
+    val appId = ucxShuffleConf.getSparkConf.getAppId
     val exeId = blockManagerId.executorId.toLong.toInt
     for (i <- 0 until ucxShuffleConf.numWorkers) {
       val workerId = new UcxWorkerId(appId, exeId, i)

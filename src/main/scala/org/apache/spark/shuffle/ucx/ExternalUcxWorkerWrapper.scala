@@ -263,7 +263,7 @@ case class ExternalUcxWorkerWrapper(worker: UcpWorker,
 
 class ExternalUcxWorkerThread(
   worker: UcpWorker, transport: ExternalShuffleTransport,
-  isClientWorker: Boolean, workerId: UcxWorkerId = new UcxWorkerId(0, 0, 0))
+  isClientWorker: Boolean, workerId: UcxWorkerId = new UcxWorkerId("_", 0, 0))
   extends Thread with Logging {
   val workerWrapper = ExternalUcxWorkerWrapper(worker, transport, isClientWorker, workerId)
 

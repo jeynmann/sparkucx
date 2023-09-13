@@ -15,6 +15,7 @@ import org.apache.spark.shuffle.ucx.utils.SerializableDirectBuffer
 import org.apache.spark.util.{RpcUtils, ThreadUtils}
 import org.apache.spark.{SecurityManager, SparkConf, SparkEnv}
 import org.openucx.jucx.NativeLibs
+import java.nio.ByteBuffer
 
 /**
  * Common part for all spark versions for UcxShuffleManager logic
@@ -65,7 +66,12 @@ abstract class ExternalBaseUcxShuffleManager(val conf: SparkConf, isDriver: Bool
   def startUcxTransport(): Unit = if (ucxTransport == null) {
     val blockManager = SparkEnv.get.blockManager.blockManagerId
     val transport = new UcxShuffleTransportClient(ucxShuffleConf, blockManager)
-    val address = transport.init()
+    val address: ByteBuffer = try {
+      transport.init()
+    } catch {
+      case e: Exception => logError("Error in transport init", e)
+      null
+    }
     ucxTransport = transport
     val rpcEnv = RpcEnv.create("ucx-rpc-env", blockManager.host, blockManager.port,
       conf, new SecurityManager(conf), clientMode = false)
