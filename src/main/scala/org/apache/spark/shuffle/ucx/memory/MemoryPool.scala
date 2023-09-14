@@ -28,12 +28,14 @@ class UcxBounceBufferMemoryBlock(private[ucx] val memory: UcpMemory, private[ucx
 /**
  * Base class to implement memory pool
  */
-case class MemoryPool(ucxShuffleConf: UcxShuffleConf, ucxContext: UcpContext, memoryType: Int)
+case class MemoryPool(ucxContext: UcpContext, memoryType: Int)
   extends Closeable with Logging {
+  protected var minBufferSize: Long = 4096L
+  protected var minRegistrationSize: Long = 1024L * 1024
 
   protected def roundUpToTheNextPowerOf2(size: Long): Long = {
-    if (size < ucxShuffleConf.minBufferSize) {
-      ucxShuffleConf.minBufferSize
+    if (size < minBufferSize) {
+      minBufferSize
     } else {
       // Round up length to the nearest power of two
       var length = size
@@ -62,9 +64,9 @@ case class MemoryPool(ucxShuffleConf: UcxShuffleConf, ucxContext: UcpContext, me
       var result = stack.pollFirst()
       if (result == null) {
         numAllocs.incrementAndGet()
-        if (length < ucxShuffleConf.minRegistrationSize) {
+        if (length < minRegistrationSize) {
           while (result == null) {
-            preallocate((ucxShuffleConf.minRegistrationSize / length).toInt)
+            preallocate((minRegistrationSize / length).toInt)
             result = stack.pollFirst()
           }
         } else {
@@ -138,10 +140,13 @@ case class MemoryPool(ucxShuffleConf: UcxShuffleConf, ucxContext: UcpContext, me
   }
 }
 
-class UcxHostBounceBuffersPool(ucxShuffleConf: UcxShuffleConf, ucxContext: UcpContext)
-  extends MemoryPool(ucxShuffleConf, ucxContext, UcsConstants.MEMORY_TYPE.UCS_MEMORY_TYPE_HOST) {
-
-  ucxShuffleConf.preallocateBuffersMap.foreach{
-    case (bufferSize, count) => preAllocate(bufferSize, count)
+class UcxHostBounceBuffersPool(ucxContext: UcpContext)
+  extends MemoryPool(ucxContext, UcsConstants.MEMORY_TYPE.UCS_MEMORY_TYPE_HOST) {
+  def init(minRegSize: Long, minBufSize: Long, preAllocMap: Map[Long, Int]): Unit = {
+    minRegistrationSize = minRegSize
+    minBufferSize = minBufSize
+    preAllocMap.foreach{
+      case (bufferSize, count) => preAllocate(bufferSize, count)
+    }
   }
 }

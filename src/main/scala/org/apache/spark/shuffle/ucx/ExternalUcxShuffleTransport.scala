@@ -4,13 +4,13 @@
  */
 package org.apache.spark.shuffle.ucx
 
-import org.apache.spark.SparkEnv
-import org.apache.spark.internal.Logging
+// import org.apache.spark.SparkEnv
 import org.apache.spark.shuffle.ucx.memory.UcxHostBounceBuffersPool
 import org.apache.spark.shuffle.ucx.rpc.GlobalWorkerRpcThread
 import org.apache.spark.shuffle.ucx.utils.{SerializableDirectBuffer, SerializationUtils}
 import org.apache.spark.shuffle.utils.UnsafeUtils
-import org.apache.spark.network.shuffle.ExternalShuffleBlockResolver
+import org.apache.spark.network.shuffle.UcxLogging
+import org.apache.spark.network.shuffle.ExternalUcxShuffleBlockResolver
 import org.apache.spark.storage.BlockManagerId
 import org.openucx.jucx.UcxException
 import org.openucx.jucx.ucp._
@@ -47,7 +47,7 @@ object UcxWorkerId {
   }
 }
 
-class ExternalShuffleTransport(var ucxShuffleConf: UcxShuffleConf) extends Logging {
+class ExternalShuffleTransport(var ucxShuffleConf: ExternalUcxConf) extends UcxLogging {
   @volatile protected var initialized: Boolean = false
   var ucxContext: UcpContext = _
   var hostBounceBufferMemoryPool: UcxHostBounceBuffersPool = _
@@ -69,7 +69,7 @@ class ExternalShuffleTransport(var ucxShuffleConf: UcxShuffleConf) extends Loggi
   }
 
   def initMemoryPool(): Unit = {
-    hostBounceBufferMemoryPool = new UcxHostBounceBuffersPool(ucxShuffleConf, ucxContext)
+    hostBounceBufferMemoryPool = new UcxHostBounceBuffersPool(ucxContext)
   }
 
   def init(): ByteBuffer = ???
@@ -83,46 +83,53 @@ class ExternalShuffleTransport(var ucxShuffleConf: UcxShuffleConf) extends Loggi
   }
 }
 
-class UcxShuffleTransportClient(clientConf: UcxShuffleConf, blockManagerId: BlockManagerId)
-  extends ExternalShuffleTransport(clientConf) with Logging {
+class UcxShuffleTransportClient(clientConf: ExternalUcxClientConf, blockManagerId: BlockManagerId)
+  extends ExternalShuffleTransport(clientConf) with UcxLogging {
   private val ucpWorkerParams = new UcpWorkerParams().requestThreadSafety()
 
   private var allocatedClientThreads: Array[ExternalUcxWorkerThread] = _
   private var clientThreadId = new AtomicInteger()
 
-  override def estimateNumEps(): Int = ucxShuffleConf.numWorkers *
-      ucxShuffleConf.getSparkConf.getInt("spark.executor.instances", 1)
+  override def estimateNumEps(): Int = clientConf.numWorkers *
+      clientConf.sparkConf.getInt("spark.executor.instances", 1)
 
   override def init(): ByteBuffer = {
-    // if (ucxShuffleConf == null) {
-    //   ucxShuffleConf = new UcxShuffleConf(SparkEnv.get.conf)
+    // if (clientConf == null) {
+    //   clientConf = new UcxShuffleConf(SparkEnv.get.conf)
     // }
 
     super.initContext()
     super.initMemoryPool()
   
-    if (ucxShuffleConf.useWakeup) {
+    if (clientConf.useWakeup) {
       ucpWorkerParams.requestWakeupRX().requestWakeupTX().requestWakeupEdge()
     }
 
-    allocatedClientThreads = new Array[ExternalUcxWorkerThread](ucxShuffleConf.numWorkers)
-    logInfo(s"Allocating ${ucxShuffleConf.numWorkers} client workers")
-    val appId = ucxShuffleConf.getSparkConf.getAppId
+    allocatedClientThreads = new Array[ExternalUcxWorkerThread](clientConf.numWorkers)
+    logInfo(s"Allocating ${clientConf.numWorkers} client workers")
+    val appId = clientConf.sparkConf.getAppId
     val exeId = blockManagerId.executorId.toLong.toInt
-    for (i <- 0 until ucxShuffleConf.numWorkers) {
+    for (i <- 0 until clientConf.numWorkers) {
       val workerId = new UcxWorkerId(appId, exeId, i)
       ucpWorkerParams.setClientId((workerId.exeId.toLong << 32) | workerId.workerId.toLong)
       val worker = ucxContext.newWorker(ucpWorkerParams)
       allocatedClientThreads(i) = new ExternalUcxWorkerThread(worker, this, isClientWorker = true, workerId)
     }
 
-    logInfo(s"Launch ${ucxShuffleConf.numWorkers} client workers")
+    logInfo(s"Launch ${clientConf.numWorkers} client workers")
     allocatedClientThreads.foreach(_.start)
     initialized = true
 
-    val shuffleServer = new InetSocketAddress(blockManagerId.host, blockManagerId.port)
+    val shuffleServer = new InetSocketAddress(blockManagerId.host, 3338) // @C
     logInfo(s"Shuffle server ${shuffleServer}")
     SerializationUtils.serializeInetAddress(shuffleServer)
+  }
+
+  override def initMemoryPool(): Unit = {
+    hostBounceBufferMemoryPool = new UcxHostBounceBuffersPool(ucxContext)
+    hostBounceBufferMemoryPool.init(clientConf.minRegistrationSize,
+      clientConf.minBufferSize,
+      clientConf.preallocateBuffersMap)
   }
 
   def connect(shuffleServer: SerializableDirectBuffer): Unit = {
@@ -130,6 +137,7 @@ class UcxShuffleTransportClient(clientConf: UcxShuffleConf, blockManagerId: Bloc
       override def run(): Unit = {
         val addressBuffer = shuffleServer.value
         val address = SerializationUtils.deserializeInetAddress(addressBuffer)
+        logInfo(s"Connect ${t.workerId.workerId} to $address")
         t.workerWrapper.connect(address, addressBuffer)
         t.workerWrapper.progressConnect()
       }})
@@ -142,6 +150,7 @@ class UcxShuffleTransportClient(clientConf: UcxShuffleConf, blockManagerId: Bloc
         shuffleServerSet.foreach{shuffleServer => {
           val addressBuffer = shuffleServer.value
           val address = SerializationUtils.deserializeInetAddress(addressBuffer)
+          logInfo(s"ConnectAll ${t.workerId.workerId} to $address")
           t.workerWrapper.connect(address, addressBuffer)
         }}
         t.workerWrapper.progressConnect()
@@ -166,8 +175,10 @@ class UcxShuffleTransportClient(clientConf: UcxShuffleConf, blockManagerId: Bloc
                             callbacks: Seq[OperationCallback]): Unit = {
     val client = selectClientThread
     client.submit(new Runnable {
-      override def run(): Unit = client.workerWrapper.fetchBlocksByBlockIds(
-        shuffleServer, blockIds, callbacks)
+      override def run(): Unit = {
+        logInfo(s"@D Send fetch to $shuffleServer")
+        client.workerWrapper.fetchBlocksByBlockIds(shuffleServer, blockIds, callbacks)
+      }
     })
   }
 
@@ -177,9 +188,9 @@ class UcxShuffleTransportClient(clientConf: UcxShuffleConf, blockManagerId: Bloc
 }
 
 class UcxShuffleTransportServer(
-  serviceConf: UcxServiceConf, blockManager: ExternalShuffleBlockResolver)
-  extends ExternalShuffleTransport(serviceConf)
-  with Logging {
+  serverConf: ExternalUcxServerConf, blockManager: ExternalUcxShuffleBlockResolver)
+  extends ExternalShuffleTransport(serverConf)
+  with UcxLogging {
   private val ucpWorkerParams = new UcpWorkerParams().requestThreadSafety()
 
   private val errorHandler = new UcpEndpointErrorHandler {
@@ -201,21 +212,20 @@ class UcxShuffleTransportServer(
   private var allocatedServerThreads: Array[ExternalUcxWorkerThread] = _
   private val serverThreadId = new AtomicInteger()
 
-  override def estimateNumEps(): Int = ucxShuffleConf.getSparkConf.getInt(
-    "eps.num", 1)
+  override def estimateNumEps(): Int = serverConf.ucxEpsNum
 
   override def init(): ByteBuffer = {
     super.initContext()
     super.initMemoryPool()
 
-    if (ucxShuffleConf.useWakeup) {
+    if (serverConf.useWakeup) {
       ucpWorkerParams.requestWakeupRX().requestWakeupTX().requestWakeupEdge()
     }
 
     logInfo(s"Allocating global workers")
     val globalWorker = ucxContext.newWorker(ucpWorkerParams)
     listener = globalWorker.newListener(new UcpListenerParams().setSockAddr(
-      new InetSocketAddress("0.0.0.0", serviceConf.ucxServicePort))
+      new InetSocketAddress("0.0.0.0", serverConf.ucxServicePort))
       .setConnectionHandler((ucpConnectionRequest: UcpConnectionRequest) => {
         endpoints.add(globalWorker.newEndpoint(new UcpEndpointParams().setConnectionRequest(ucpConnectionRequest)
           .setPeerErrorHandlingMode().setErrorHandler(errorHandler)
@@ -228,6 +238,7 @@ class UcxShuffleTransportServer(
       val workerId = UcxWorkerId.deserialize(header)
       val replyTag = header.getInt
       handleFetchBlockRequest(workerId, replyTag, amData)
+      logInfo(s"@D Receive fetch from $workerId")
       UcsConstants.STATUS.UCS_INPROGRESS
     }, UcpConstants.UCP_AM_FLAG_PERSISTENT_DATA | UcpConstants.UCP_AM_FLAG_WHOLE_MSG )
     // AM to get worker address for client worker and connect server workers to it
@@ -236,19 +247,20 @@ class UcxShuffleTransportServer(
       val header = UnsafeUtils.getByteBufferView(headerAddress, headerSize.toInt)
       val workerAddress = UnsafeUtils.getByteBufferView(amData.getDataAddress, amData.getLength.toInt)
       val workerId = UcxWorkerId.deserialize(header)
+      logInfo(s"@D Receive connect from $workerId")
       connectBack(workerId, workerAddress)
       UcsConstants.STATUS.UCS_OK
     }, UcpConstants.UCP_AM_FLAG_WHOLE_MSG)
     globalThread = new ExternalUcxWorkerThread(globalWorker, this, false)
 
-    allocatedServerThreads = new Array[ExternalUcxWorkerThread](ucxShuffleConf.numListenerThreads)
-    logInfo(s"Allocating ${ucxShuffleConf.numListenerThreads} server workers")
-    for (i <- 0 until ucxShuffleConf.numListenerThreads) {
+    allocatedServerThreads = new Array[ExternalUcxWorkerThread](serverConf.numListenerThreads)
+    logInfo(s"Allocating ${serverConf.numListenerThreads} server workers")
+    for (i <- 0 until serverConf.numListenerThreads) {
       val worker = ucxContext.newWorker(ucpWorkerParams)
       allocatedServerThreads(i) = new ExternalUcxWorkerThread(worker, this, false)
     }
 
-    logInfo(s"Launch ${ucxShuffleConf.numListenerThreads} server workers")
+    logInfo(s"Launch ${serverConf.numListenerThreads} server workers")
     allocatedServerThreads.foreach(_.start)
     globalThread.start
 

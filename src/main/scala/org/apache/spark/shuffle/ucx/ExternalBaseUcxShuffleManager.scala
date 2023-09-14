@@ -30,7 +30,7 @@ abstract class ExternalBaseUcxShuffleManager(val conf: SparkConf, isDriver: Bool
     NativeLibs.load();
   }
 
-  val ucxShuffleConf = new UcxShuffleConf(conf)
+  val ucxShuffleConf = new ExternalUcxClientConf(conf)
 
   @volatile var ucxTransport: UcxShuffleTransportClient = _
 
@@ -73,8 +73,7 @@ abstract class ExternalBaseUcxShuffleManager(val conf: SparkConf, isDriver: Bool
       null
     }
     ucxTransport = transport
-    val rpcEnv = RpcEnv.create("ucx-rpc-env", blockManager.host, blockManager.port,
-      conf, new SecurityManager(conf), clientMode = false)
+    val rpcEnv = SparkEnv.get.rpcEnv
     executorEndpoint = new ExternalUcxExecutorRpcEndpoint(rpcEnv, ucxTransport, setupThread)
     val endpoint = rpcEnv.setupEndpoint(
       s"ucx-shuffle-executor-${blockManager.executorId}",

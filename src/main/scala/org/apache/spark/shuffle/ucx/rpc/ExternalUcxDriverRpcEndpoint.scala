@@ -4,38 +4,40 @@
 */
 package org.apache.spark.shuffle.ucx.rpc
 
+import java.net.InetSocketAddress
+
 import scala.collection.immutable.HashMap
 import scala.collection.mutable
 
 import org.apache.spark.internal.Logging
 import org.apache.spark.rpc._
 import org.apache.spark.shuffle.ucx.rpc.UcxRpcMessages.{PushServiceAddress, PushAllServiceAddress}
-import org.apache.spark.shuffle.ucx.utils.SerializableDirectBuffer
+import org.apache.spark.shuffle.ucx.utils.{SerializableDirectBuffer, SerializationUtils}
 
 class ExternalUcxDriverRpcEndpoint(override val rpcEnv: RpcEnv) extends ThreadSafeRpcEndpoint with Logging {
 
   private val endpoints = mutable.HashSet.empty[RpcEndpointRef]
-  private var shuffleServerSet = mutable.HashSet.empty[SerializableDirectBuffer]
+  private var shuffleServerMap = mutable.HashMap.empty[InetSocketAddress, SerializableDirectBuffer]
 
 
   override def receiveAndReply(context: RpcCallContext): PartialFunction[Any, Unit] = {
-    case message@PushServiceAddress(shuffleServer: SerializableDirectBuffer, endpoint: RpcEndpointRef) => {
+    case message@PushServiceAddress(addressBuffer: SerializableDirectBuffer, endpoint: RpcEndpointRef) => {
       // Driver receives a message from executor with it's workerAddress
-      // 1. Introduce existing members of a cluster
-      logDebug(s"Received $message")
-      if (shuffleServerSet.nonEmpty) {
-        val msg = PushAllServiceAddress(shuffleServerSet.toSet)
-        logDebug(s"replying $msg to $endpoint")
-        context.reply(msg)
-      }
-      // 2. For each existing member introduce newly joined executor.
-      if (!shuffleServerSet.contains(shuffleServer)) {
-        shuffleServerSet += shuffleServer
+      val shuffleServer = SerializationUtils.deserializeInetAddress(addressBuffer.value)
+      logInfo(s"Received message $shuffleServer from ${context.senderAddress}")
+      // 1. For each existing member introduce newly joined executor.
+      if (!shuffleServerMap.contains(shuffleServer)) {
+        shuffleServerMap += shuffleServer -> addressBuffer
         endpoints.foreach(ep => {
-          logDebug(s"Sending $message to $ep")
+          logInfo(s"Sending message $shuffleServer to $ep")
           ep.send(message)
         })
-        logDebug(s"Connecting back to address: ${context.senderAddress}")
+      }
+      // 2. Introduce existing members of a cluster
+      if (shuffleServerMap.nonEmpty) {
+        val msg = PushAllServiceAddress(shuffleServerMap.values.toSet)
+        logInfo(s"Replying $msg to $endpoint")
+        context.reply(msg)
       }
       // 3. Add ep to registered eps.
       endpoints.add(endpoint)

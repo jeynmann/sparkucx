@@ -23,19 +23,26 @@ import org.apache.hadoop.yarn.server.api.{ApplicationInitializationContext, Appl
 import org.apache.spark.network.shuffle.ExternalShuffleBlockHandler
 import org.apache.spark.network.shuffle.ExternalShuffleBlockResolver
 import org.apache.spark.network.yarn.YarnShuffleService
+import org.apache.spark.network.server.OneForOneStreamManager
 
 import org.apache.spark.network.yarn.UcxYarnUtils
 import org.apache.spark.network.shuffle.UcxShuffleUtils
+import org.apache.spark.network.shuffle.ucx.ExternalUcxShuffleBlockResolver
 import org.apache.spark.shuffle.ucx.UcxServiceConf
 import org.apache.spark.shuffle.ucx.UcxShuffleTransportServer
 
 class UcxYarnShuffleService extends YarnShuffleService with UcxLogging {
+  override var blockHandler: ExternalShuffleBlockHandler = _
   var sparkBlockHandler: ExternalShuffleBlockHandler = _
   var sparkBlockManager: ExternalShuffleBlockResolver = _
   var ucxTransport: UcxShuffleTransportServer = _
 
   protected override def serviceInit(conf: Configuration): Unit = {
     super.serviceInit(conf)
+    val registeredFile = UcxYarnUtils.getExecutorFileFromService(this.asInstanceOf[YarnShuffleService])
+    val transportConf = new TransportConf("shuffle", new HadoopConfigProvider(conf));
+    blockHandler = new ExternalShuffleBlockHandler(new OneForOneStreamManager(),
+      new ExternalUcxShuffleBlockResolver(transportConf, registeredFile))
     sparkBlockHandler = UcxYarnUtils.getHandlerFromService(this.asInstanceOf[YarnShuffleService])
     sparkBlockManager = UcxShuffleUtils.getManagerFromHandler(sparkBlockHandler)
 
