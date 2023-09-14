@@ -28,7 +28,7 @@ class ExternalUcxShuffleBlockResolver(conf: TransportConf, registeredExecutorFil
       execId: String,
       executorInfo: ExecutorShuffleInfo): Unit = {
     val fullId = new AppExecId(appId, execId)
-    logInfo("Registered executor ${fullId} with ${executorInfo}")
+    logInfo(s"Registered executor ${fullId} with ${executorInfo}")
     if (!knownManagers.contains(executorInfo.shuffleManager)) {
       throw new UnsupportedOperationException(
         "Unsupported shuffle manager of executor: " + executorInfo)

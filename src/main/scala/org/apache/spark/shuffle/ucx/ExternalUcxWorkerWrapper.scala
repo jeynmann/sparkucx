@@ -175,7 +175,7 @@ case class ExternalUcxWorkerWrapper(worker: UcpWorker,
       val workerAddress = worker.getAddress
 
       val ep = worker.newEndpoint(endpointParams)
-      ep.sendAmNonBlocking(1, UcxUtils.getAddress(header), UnsafeUtils.LONG_SIZE,
+      ep.sendAmNonBlocking(1, UcxUtils.getAddress(header), header.remaining,
         UcxUtils.getAddress(workerAddress), workerAddress.capacity().toLong, UcpConstants.UCP_AM_SEND_FLAG_EAGER,
         new UcxCallback() {
           override def onSuccess(request: UcpRequest): Unit = {
@@ -242,6 +242,7 @@ case class ExternalUcxWorkerWrapper(worker: UcpWorker,
       blocks(i).getBlock(localBuffers(i))
     }
 
+    logInfo(s"@D Sent to $clientWorker ${blocks.length} blocks size ${resultMemory.size} tag $replyTag")
     val startTime = System.nanoTime()
     getConnectionBack(clientWorker).sendAmNonBlocking(1, resultMemory.address, tagAndSizes,
       resultMemory.address + tagAndSizes, resultMemory.size - tagAndSizes, 0, new UcxCallback {

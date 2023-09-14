@@ -13,9 +13,9 @@ import org.apache.spark.SparkConf
  * Plugin configuration properties.
  */
 class ExternalUcxServerConf(val yarnConf: Configuration) extends ExternalUcxConf {
-  lazy val ucxServicePort: Int = yarnConf.getInt(
-    ExternalUcxServerConf.SPARK_UCX_SHUFFLE_SERVICE_PORT_KEY,
-    ExternalUcxServerConf.SPARK_UCX_SHUFFLE_SERVICE_PORT_DEFAULT)
+  override lazy val ucxServerPort: Int = yarnConf.getInt(
+    ExternalUcxConf.SPARK_UCX_SHUFFLE_SERVICE_PORT_KEY,
+    ExternalUcxConf.SPARK_UCX_SHUFFLE_SERVICE_PORT_DEFAULT)
 
   lazy val ucxEpsNum: Int = yarnConf.getInt(
     ExternalUcxServerConf.SPARK_UCX_SHUFFLE_EPS_NUM_KEY,
@@ -23,9 +23,6 @@ class ExternalUcxServerConf(val yarnConf: Configuration) extends ExternalUcxConf
 }
 
 object ExternalUcxServerConf {
-  lazy val SPARK_UCX_SHUFFLE_SERVICE_PORT_KEY = "spark.shuffle.ucx.service.port"
-  lazy val SPARK_UCX_SHUFFLE_SERVICE_PORT_DEFAULT = 3338
-
   lazy val SPARK_UCX_SHUFFLE_EPS_NUM_KEY = "spark.shuffle.ucx.eps.num"
   lazy val SPARK_UCX_SHUFFLE_EPS_NUM_DEFAULT = 8
   // @C

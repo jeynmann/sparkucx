@@ -90,6 +90,8 @@ class UcxShuffleTransportClient(clientConf: ExternalUcxClientConf, blockManagerI
   private var allocatedClientThreads: Array[ExternalUcxWorkerThread] = _
   private var clientThreadId = new AtomicInteger()
 
+  val serverPort = clientConf.ucxServerPort
+
   override def estimateNumEps(): Int = clientConf.numWorkers *
       clientConf.sparkConf.getInt("spark.executor.instances", 1)
 
@@ -120,7 +122,7 @@ class UcxShuffleTransportClient(clientConf: ExternalUcxClientConf, blockManagerI
     allocatedClientThreads.foreach(_.start)
     initialized = true
 
-    val shuffleServer = new InetSocketAddress(blockManagerId.host, 3338) // @C
+    val shuffleServer = new InetSocketAddress(blockManagerId.host, serverPort)
     logInfo(s"Shuffle server ${shuffleServer}")
     SerializationUtils.serializeInetAddress(shuffleServer)
   }
@@ -133,10 +135,10 @@ class UcxShuffleTransportClient(clientConf: ExternalUcxClientConf, blockManagerI
   }
 
   def connect(shuffleServer: SerializableDirectBuffer): Unit = {
+    val addressBuffer = shuffleServer.value
+    val address = SerializationUtils.deserializeInetAddress(addressBuffer)
     allocatedClientThreads.foreach { t => t.submit(new Runnable {
       override def run(): Unit = {
-        val addressBuffer = shuffleServer.value
-        val address = SerializationUtils.deserializeInetAddress(addressBuffer)
         logInfo(s"Connect ${t.workerId.workerId} to $address")
         t.workerWrapper.connect(address, addressBuffer)
         t.workerWrapper.progressConnect()
@@ -145,11 +147,12 @@ class UcxShuffleTransportClient(clientConf: ExternalUcxClientConf, blockManagerI
   }
 
   def connectAll(shuffleServerSet: Set[SerializableDirectBuffer]): Unit = {
+    val addressSet = shuffleServerSet.map {
+      x => (SerializationUtils.deserializeInetAddress(x.value), x.value)
+    }
     allocatedClientThreads.foreach { t => t.submit(new Runnable {
       override def run(): Unit = {
-        shuffleServerSet.foreach{shuffleServer => {
-          val addressBuffer = shuffleServer.value
-          val address = SerializationUtils.deserializeInetAddress(addressBuffer)
+        addressSet.foreach { case (address, addressBuffer) => {
           logInfo(s"ConnectAll ${t.workerId.workerId} to $address")
           t.workerWrapper.connect(address, addressBuffer)
         }}
@@ -225,7 +228,7 @@ class UcxShuffleTransportServer(
     logInfo(s"Allocating global workers")
     val globalWorker = ucxContext.newWorker(ucpWorkerParams)
     listener = globalWorker.newListener(new UcpListenerParams().setSockAddr(
-      new InetSocketAddress("0.0.0.0", serverConf.ucxServicePort))
+      new InetSocketAddress("0.0.0.0", serverConf.ucxServerPort))
       .setConnectionHandler((ucpConnectionRequest: UcpConnectionRequest) => {
         endpoints.add(globalWorker.newEndpoint(new UcpEndpointParams().setConnectionRequest(ucpConnectionRequest)
           .setPeerErrorHandlingMode().setErrorHandler(errorHandler)
@@ -245,8 +248,8 @@ class UcxShuffleTransportServer(
     globalWorker.setAmRecvHandler(1,
       (headerAddress: Long, headerSize: Long, amData: UcpAmData, _: UcpEndpoint) => {
       val header = UnsafeUtils.getByteBufferView(headerAddress, headerSize.toInt)
-      val workerAddress = UnsafeUtils.getByteBufferView(amData.getDataAddress, amData.getLength.toInt)
       val workerId = UcxWorkerId.deserialize(header)
+      val workerAddress = UnsafeUtils.getByteBufferView(amData.getDataAddress, amData.getLength.toInt)
       logInfo(s"@D Receive connect from $workerId")
       connectBack(workerId, workerAddress)
       UcsConstants.STATUS.UCS_OK
@@ -316,6 +319,7 @@ class UcxShuffleTransportServer(
 
         amData.close()
 
+        logInfo(s"@D fetch blocks $blockIds")
         val blocks = blockIds.map{ bid => {
           new Block {
             private[this] val blockBuffer = blockManager.getBlockData(
@@ -330,6 +334,7 @@ class UcxShuffleTransportServer(
             override def getSize: Long = blockBuffer.size()
           }
         }}
+        logInfo(s"@D reply blocks $blocks")
         server.workerWrapper.handleFetchBlockRequest(clientWorker, replyTag, blocks)
       }
     })

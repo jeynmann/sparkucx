@@ -4,7 +4,21 @@ import org.slf4j.Logger
 import org.slf4j.LoggerFactory
 
 trait UcxLogging {
-  val log = UcxLogging.logger
+  @transient private var log_ : Logger = null
+
+  // Method to get the logger name for this object
+  protected def logName = {
+    // Ignore trailing $'s in the class names for Scala objects
+    this.getClass.getName.stripSuffix("$")
+  }
+
+  protected def log: Logger = {
+    if (log_ == null) {
+      log_ = LoggerFactory.getLogger(logName)
+    }
+    log_
+  }
+
   // Log methods that take only a String
   protected def logInfo(msg: => String) {
     if (log.isInfoEnabled) log.info(msg)

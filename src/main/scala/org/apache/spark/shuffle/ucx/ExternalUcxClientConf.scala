@@ -89,4 +89,8 @@ class ExternalUcxClientConf(val sparkConf: SparkConf) extends SparkConf with Ext
     .createWithDefault(50)
 
   override lazy val maxBlocksPerRequest: Int = sparkConf.getInt(MAX_BLOCKS_IN_FLIGHT.key, MAX_BLOCKS_IN_FLIGHT.defaultValue.get)
+
+  override lazy val ucxServerPort: Int = sparkConf.getInt(
+    ExternalUcxConf.SPARK_UCX_SHUFFLE_SERVICE_PORT_KEY,
+    ExternalUcxConf.SPARK_UCX_SHUFFLE_SERVICE_PORT_DEFAULT)
 }
