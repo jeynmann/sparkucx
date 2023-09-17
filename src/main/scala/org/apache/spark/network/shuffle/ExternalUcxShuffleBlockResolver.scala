@@ -44,6 +44,22 @@ class ExternalUcxShuffleBlockResolver(conf: TransportConf, registeredExecutorFil
     }
     executors.put(fullId, executorInfo)
   }
+
+  override def getBlockData(
+      appId: String,
+      execId: String,
+      shuffleId: Int,
+      mapId: Int,
+      reduceId: Int) = {
+    val id = new AppExecId(appId, execId);
+    val tmp = executors.get(id)
+    logInfo(s"@D $id exsit=${tmp} mapper=${ExternalUcxShuffleBlockResolver.mapper} key=${ExternalUcxShuffleBlockResolver.dbAppExecKey(id)}")
+    if (tmp == null) {
+      executors.forEach((x: AppExecId, y: ExecutorShuffleInfo) => logInfo(s"${x} -> ${y}"))
+    }
+    val ans = super.getBlockData(appId, execId, shuffleId, mapId, reduceId);
+    ans
+  }
 }
 
 object ExternalUcxShuffleBlockResolver {

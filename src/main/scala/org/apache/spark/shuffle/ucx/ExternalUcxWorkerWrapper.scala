@@ -13,12 +13,11 @@ import org.openucx.jucx.ucp._
 import org.openucx.jucx.ucs.UcsConstants
 import org.openucx.jucx.ucs.UcsConstants.MEMORY_TYPE
 import org.openucx.jucx.{UcxCallback, UcxException, UcxUtils}
-import org.apache.spark.internal.Logging
+import org.apache.spark.network.shuffle.UcxLogging
 import org.apache.spark.shuffle.ucx.memory.UcxBounceBufferMemoryBlock
 import org.apache.spark.shuffle.ucx.utils.SerializationUtils
 import org.apache.spark.shuffle.utils.UnsafeUtils
 import org.apache.spark.unsafe.Platform
-import org.apache.spark.util.ThreadUtils
 
 import java.nio.ByteBuffer
 import java.net.InetSocketAddress
@@ -29,7 +28,7 @@ import java.net.InetSocketAddress
 case class ExternalUcxWorkerWrapper(worker: UcpWorker,
                                     transport: ExternalShuffleTransport,
                                     isClientWorker: Boolean, workerId: UcxWorkerId)
-  extends Closeable with Logging {
+  extends Closeable with UcxLogging {
   private lazy val shuffleServers = new TrieMap[InetSocketAddress, UcpEndpoint]
   private lazy val shuffleClients = new TrieMap[UcxWorkerId, UcpEndpoint]
   private lazy val requestData = new TrieMap[Int, (Seq[OperationCallback], UcxRequest)]
@@ -220,26 +219,45 @@ case class ExternalUcxWorkerWrapper(worker: UcpWorker,
   }
 
   def handleFetchBlockRequest(clientWorker: UcxWorkerId, replyTag: Int, blocks: Seq[Block]): Unit = try {
+    // val tagAndSizes = UnsafeUtils.INT_SIZE + UnsafeUtils.INT_SIZE * blocks.size
+    // val resultMemory = memPool.get(tagAndSizes + blocks.map(_.getSize).sum)
+    //   .asInstanceOf[UcxBounceBufferMemoryBlock]
+    // val resultBuffer = UcxUtils.getByteBufferView(resultMemory.address,
+    //   resultMemory.size)
+    // resultBuffer.putInt(replyTag)
+
+    // var offset = 0
+    // val localBuffers = blocks.zipWithIndex.map {
+    //   case (block, i) => {
+    //     logInfo(s"@DD ${i} -> ${block.getSize.toInt}")
+    //     resultBuffer.putInt(UnsafeUtils.INT_SIZE + i * UnsafeUtils.INT_SIZE, block.getSize.toInt)
+    //     resultBuffer.position(tagAndSizes + offset)
+    //     val localBuffer = resultBuffer.slice()
+    //     offset += block.getSize.toInt
+    //     localBuffer.limit(block.getSize.toInt)
+    //     localBuffer
+    //   }
+    // }
+
+    // for (i <- blocks.indices) {
+    //   blocks(i).getBlock(localBuffers(i))
+    // }
     val tagAndSizes = UnsafeUtils.INT_SIZE + UnsafeUtils.INT_SIZE * blocks.size
-    val resultMemory = memPool.get(tagAndSizes + blocks.map(_.getSize).sum)
+    val blockSizeSeq = blocks.map(_.getSize)
+    val resultMemory = memPool.get(tagAndSizes + blockSizeSeq.sum)
       .asInstanceOf[UcxBounceBufferMemoryBlock]
     val resultBuffer = UcxUtils.getByteBufferView(resultMemory.address,
       resultMemory.size)
-    resultBuffer.putInt(replyTag)
 
-    var offset = 0
-    val localBuffers = blocks.zipWithIndex.map {
-      case (block, i) =>
-        resultBuffer.putInt(UnsafeUtils.INT_SIZE + i * UnsafeUtils.INT_SIZE, block.getSize.toInt)
-        resultBuffer.position(tagAndSizes + offset)
-        val localBuffer = resultBuffer.slice()
-        offset += block.getSize.toInt
-        localBuffer.limit(block.getSize.toInt)
-        localBuffer
+    resultBuffer.putInt(replyTag)
+    for (i <- 0 until blockSizeSeq.size) {
+      resultBuffer.putInt(blockSizeSeq(i).toInt)
     }
 
-    for (i <- blocks.indices) {
-      blocks(i).getBlock(localBuffers(i))
+    for (i <- 0 until blockSizeSeq.size) {
+      logInfo(s"D ${i} -> ${blockSizeSeq(i)}")
+      resultBuffer.limit(resultBuffer.position + blockSizeSeq(i).toInt)
+      blocks(i).getBlock(resultBuffer)
     }
 
     logInfo(s"@D Sent to $clientWorker ${blocks.length} blocks size ${resultMemory.size} tag $replyTag")
@@ -267,7 +285,7 @@ class ExternalUcxWorkerThread(
   val transport: ExternalShuffleTransport,
   val isClientWorker: Boolean,
   val workerId: UcxWorkerId = new UcxWorkerId("_", 0, 0))
-  extends Thread with Logging {
+  extends Thread with UcxLogging {
   val workerWrapper = ExternalUcxWorkerWrapper(worker, transport, isClientWorker, workerId)
 
   private[this] val useWakeup = transport.ucxShuffleConf.useWakeup
@@ -277,6 +295,7 @@ class ExternalUcxWorkerThread(
   setName(s"UCX-worker $workerId")
 
   override def run(): Unit = {
+    logInfo(s"@D UCX-worker $workerId started")
     logDebug(s"UCX-worker $workerId started")
     if (useWakeup) {
       while (!isInterrupted) {
