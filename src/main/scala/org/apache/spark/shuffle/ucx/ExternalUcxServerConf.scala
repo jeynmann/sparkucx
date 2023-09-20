@@ -24,8 +24,10 @@ class ExternalUcxServerConf(val yarnConf: Configuration) extends ExternalUcxConf
 
 object ExternalUcxServerConf {
   lazy val SPARK_UCX_SHUFFLE_EPS_NUM_KEY = "spark.shuffle.ucx.eps.num"
-  lazy val SPARK_UCX_SHUFFLE_EPS_NUM_DEFAULT = 8
-  // @C
+  lazy val SPARK_UCX_SHUFFLE_EPS_NUM_DEFAULT = 1024
+
+  // Copied from spark ExternalShuffleService.java
+
   // Port on which the shuffle server listens for fetch requests
   lazy val SPARK_SHUFFLE_SERVICE_PORT_KEY = "spark.shuffle.service.port"
   lazy val DEFAULT_SPARK_SHUFFLE_SERVICE_PORT = 7337

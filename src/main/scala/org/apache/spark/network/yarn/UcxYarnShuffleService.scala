@@ -55,52 +55,18 @@ import org.apache.spark.network.shuffle.ExternalUcxShuffleBlockHandler
 import org.apache.spark.shuffle.ucx.ExternalUcxServerConf
 import org.apache.spark.shuffle.ucx.UcxShuffleTransportServer
 
-class UcxYarnShuffleService extends AuxiliaryService("spark_shuffle") with UcxLogging {
+class UcxYarnShuffleService extends YarnShuffleService() with UcxLogging {
   var ucxTransport: UcxShuffleTransportServer = _
-  // An entity that manages the shuffle secret per application
-  // This is used only if authentication is enabled
-  var secretManager: ShuffleSecretManager = _
-
-  // The actual server that serves shuffle files
-  var shuffleServer: TransportServer = _
-
-  var _conf: Configuration = _
-
-  // The recovery path used to shuffle service recovery
-  var _recoveryPath: Path = _
-
-  // Handles registering executors and opening shuffle blocks
-  var blockHandler: ExternalUcxShuffleBlockHandler = _
-
-  // Where to store & reload executor info for recovering state after an NM restart
-  var registeredExecutorFile: File = _
-
-  // Where to store & reload application secrets for recovering state after an NM restart
-  var secretsFile: File = _
-
-  var db: DB = _
-
-  init()
-
-  def init(): Unit = {
-    logInfo("Initializing YARN shuffle service for Spark")
-    UcxYarnShuffleService.instance = this
-  }
-
-  /**
-   * Return whether authentication is enabled as specified by the configuration.
-   * If so, fetch requests will fail unless the appropriate authentication secret
-   * for the application is provided.
-   */
-  def isAuthenticationEnabled()  = {
-    secretManager != null
-  }
 
   /**
    * Start the shuffle server with the given configuration.
    */
   override protected def serviceInit(conf: Configuration) = {
-    _conf = conf
+    val clazz = Class.forName("org.apache.spark.network.yarn.YarnShuffleService")
+    // Ucx reflect private filed: _conf
+    val confFiled = clazz.getDeclaredField("_conf")
+    confFiled.setAccessible(true)
+    confFiled.set(this, conf)
 
     val stopOnFailure = conf.getBoolean(
       ExternalUcxServerConf.STOP_ON_FAILURE_KEY,
@@ -117,7 +83,10 @@ class UcxYarnShuffleService extends AuxiliaryService("spark_shuffle") with UcxLo
       }
 
       val transportConf = new TransportConf("shuffle", new HadoopConfigProvider(conf))
-      blockHandler = new ExternalUcxShuffleBlockHandler(transportConf, registeredExecutorFile)
+
+      // Ucx RPC handler
+      val ucxHandler = new ExternalUcxShuffleBlockHandler(transportConf, registeredExecutorFile)
+      blockHandler = ucxHandler
 
       // If authentication is enabled, set up the shuffle server to use a
       // special RPC handler that filters out unauthenticated fetch requests
@@ -128,7 +97,10 @@ class UcxYarnShuffleService extends AuxiliaryService("spark_shuffle") with UcxLo
       if (authEnabled) {
         secretManager = new ShuffleSecretManager()
         if (_recoveryPath != null) {
-          loadSecretsFromDb()
+          // Reflect private method: loadSecretsFromDb
+          val loadSecretsFromDbMethod = clazz.getDeclaredMethod("loadSecretsFromDb")
+          loadSecretsFromDbMethod.setAccessible(true)
+          loadSecretsFromDbMethod.invoke(this)
         }
         bootstraps.add(new AuthServerBootstrap(transportConf, secretManager))
       }
@@ -137,210 +109,34 @@ class UcxYarnShuffleService extends AuxiliaryService("spark_shuffle") with UcxLo
         ExternalUcxServerConf.SPARK_SHUFFLE_SERVICE_PORT_KEY,
         ExternalUcxServerConf.DEFAULT_SPARK_SHUFFLE_SERVICE_PORT)
       val transportContext = new TransportContext(transportConf, blockHandler)
-      shuffleServer = transportContext.createServer(portConf, bootstraps)
+      // Ucx Reflect shuffleServer
+      val shuffleServerField = clazz.getDeclaredField("shuffleServer")
+      shuffleServerField.setAccessible(true)
+      shuffleServerField.set(this, transportContext.createServer(portConf, bootstraps))
       // the port should normally be fixed, but for tests its useful to find an open port
-      val port = shuffleServer.getPort()
-      UcxYarnShuffleService.boundPort = port
+      val port = shuffleServerField.get(this).asInstanceOf[TransportServer].getPort()
+      YarnShuffleService.boundPort = port
       val authEnabledString = if (authEnabled) "enabled" else "not enabled"
       logInfo(s"Started YARN shuffle service for Spark on port ${port}. " +
         s"Authentication is ${authEnabledString}.  Registered executor file is ${registeredExecutorFile}")
 
+      // Ucx Transport
       logInfo("Start launching UcxShuffleTransportServer")
       val ucxConf = new ExternalUcxServerConf(conf)
-      ucxTransport = new UcxShuffleTransportServer(ucxConf, blockHandler.blockManager)
+      ucxTransport = new UcxShuffleTransportServer(ucxConf, ucxHandler.ucxBlockManager)
       ucxTransport.init()
     } catch {
       case e: Exception => if (stopOnFailure) {
         throw e
       } else {
+        logError(s"Start UcxYarnShuffleService failed: $e")
         // noteFailure(e)
       }
     }
   }
 
-  def loadSecretsFromDb(): Unit = {
-    secretsFile = initRecoveryDb(ExternalUcxServerConf.SECRETS_RECOVERY_FILE_NAME)
-
-    // Make sure this is protected in case its not in the NM recovery dir
-    val fs = FileSystem.getLocal(_conf)
-    fs.mkdirs(new Path(secretsFile.getPath()), new FsPermission(448.toShort)) // 0700=448
-
-    db = LevelDBProvider.initLevelDB(secretsFile, UcxYarnShuffleService.CURRENT_VERSION, UcxYarnShuffleService.mapper)
-    logInfo("Recovery location is: " + secretsFile.getPath())
-    if (db != null) {
-      logInfo("Going to reload spark shuffle data")
-      val itr = db.iterator()
-      itr.seek(UcxYarnShuffleService.APP_CREDS_KEY_PREFIX.getBytes(StandardCharsets.UTF_8))
-      while (itr.hasNext()) {
-        val e = itr.next()
-        val key = new String(e.getKey(), StandardCharsets.UTF_8)
-        if (!key.startsWith(UcxYarnShuffleService.APP_CREDS_KEY_PREFIX)) {
-          return
-        }
-        val id = UcxYarnShuffleService.parseDbAppKey(key)
-        val secret = UcxYarnShuffleService.mapper.readValue(e.getValue(), classOf[ByteBuffer])
-        logInfo("Reloading tokens for app: " + id)
-        secretManager.registerApp(id, secret)
-      }
-    }
-  }
-
-  override def initializeApplication(context: ApplicationInitializationContext) = {
-    val appId = context.getApplicationId().toString()
-    try {
-      val shuffleSecret = context.getApplicationDataForService()
-      if (isAuthenticationEnabled()) {
-        val fullId = new AppId(appId)
-        if (db != null) {
-          val key = UcxYarnShuffleService.dbAppKey(fullId)
-          val value = UcxYarnShuffleService.mapper.writeValueAsString(shuffleSecret).getBytes(StandardCharsets.UTF_8)
-          db.put(key, value)
-        }
-        secretManager.registerApp(appId, shuffleSecret)
-      }
-    } catch {
-      case e: Exception => logError(s"Exception when initializing application ${appId}", e)
-    }
-  }
-
-  override def stopApplication(context: ApplicationTerminationContext) = {
-    val appId = context.getApplicationId().toString()
-    try {
-      if (isAuthenticationEnabled()) {
-        val fullId = new AppId(appId)
-        if (db != null) {
-          try {
-            db.delete(UcxYarnShuffleService.dbAppKey(fullId))
-          } catch {
-            case e: IOException => logError(s"Error deleting ${appId} from executor state db", e)
-          }
-        }
-        secretManager.unregisterApp(appId)
-      }
-      blockHandler.applicationRemoved(appId, false /* clean up local dirs */)
-    } catch {
-      case e: Exception => logError(s"Exception when stopping application ${appId}", e)
-    }
-  }
-
-  override def initializeContainer(context: ContainerInitializationContext) = {
-    val containerId = context.getContainerId()
-    logInfo(s"Initializing container ${containerId}")
-  }
-
-  override def stopContainer(context: ContainerTerminationContext) = {
-    val containerId = context.getContainerId()
-    logInfo(s"Stopping container ${containerId}")
-  }
-
-  /**
-   * Close the shuffle server to clean up any associated state.
-   */
-  override protected def serviceStop() = {
-    try {
-      if (ucxTransport != null) {
-          ucxTransport.close()
-          ucxTransport = null
-      }
-      if (shuffleServer != null) {
-        shuffleServer.close()
-      }
-      if (blockHandler != null) {
-        blockHandler.close()
-      }
-      if (db != null) {
-        db.close()
-      }
-    } catch {
-      case e: Exception => logError("Exception when stopping service", e)
-    }
-  }
-
-  // Not currently used
-  override def getMetaData(): ByteBuffer = {
-    return ByteBuffer.allocate(0)
-  }
-
-  /**
-   * Set the recovery path for shuffle service recovery when NM is restarted. This will be call
-   * by NM if NM recovery is enabled.
-   */
-  override def setRecoveryPath(recoveryPath: Path) = {
-    _recoveryPath = recoveryPath
-  }
-
-  /**
-   * Get the path specific to this auxiliary service to use for recovery.
-   */
-  protected def getRecoveryPath(fileName: String): Path = {
-    return _recoveryPath
-  }
-
-  /**
-   * Figure out the recovery path and handle moving the DB if YARN NM recovery gets enabled
-   * and DB exists in the local dir of NM by old version of shuffle service.
-   */
-  protected def initRecoveryDb(dbName: String): File = {
-    require(_recoveryPath != null, 
-      "recovery path should not be null if NM recovery is enabled")
-
-    val recoveryFile = new File(_recoveryPath.toUri().getPath(), dbName)
-    if (recoveryFile.exists()) {
-      return recoveryFile
-    }
-
-    // db doesn't exist in recovery path go check local dirs for it
-    val localDirs = _conf.getTrimmedStrings("yarn.nodemanager.local-dirs")
-    for (dir <- localDirs) {
-      val f = new File(new Path(dir).toUri().getPath(), dbName)
-      if (f.exists()) {
-        // If the recovery path is set then either NM recovery is enabled or another recovery
-        // DB has been initialized. If NM recovery is enabled and had set the recovery path
-        // make sure to move all DBs to the recovery path from the old NM local dirs.
-        // If another DB was initialized first just make sure all the DBs are in the same
-        // location.
-        val newLoc = new Path(_recoveryPath, dbName)
-        val copyFrom = new Path(f.toURI())
-        if (!newLoc.equals(copyFrom)) {
-          logInfo("Moving " + copyFrom + " to: " + newLoc)
-          try {
-            // The move here needs to handle moving non-empty directories across NFS mounts
-            val fs = FileSystem.getLocal(_conf)
-            fs.rename(copyFrom, newLoc)
-          } catch {
-            // Fail to move recovery file to new path, just continue on with new DB location
-            case e: Exception => logError(s"Failed to move recovery file ${dbName} to the path ${_recoveryPath.toString()}", e)
-          }
-        }
-        return new File(newLoc.toUri().getPath())
-      }
-    }
-
-    return new File(_recoveryPath.toUri().getPath(), dbName)
-  }
-}
-
-object UcxYarnShuffleService {
-  // just for testing when you want to find an open port
-  var boundPort = -1
-  val mapper = new ObjectMapper()
-  val APP_CREDS_KEY_PREFIX = "AppCreds"
-  val CURRENT_VERSION = new LevelDBProvider.StoreVersion(1, 0)
-  var instance: UcxYarnShuffleService = _
-
-  def parseDbAppKey(s: String) = {
-    if (!s.startsWith(APP_CREDS_KEY_PREFIX)) {
-      throw new IllegalArgumentException("expected a string starting with " + APP_CREDS_KEY_PREFIX)
-    }
-    val json = s.substring(APP_CREDS_KEY_PREFIX.length() + 1)
-    val parsed = mapper.readValue(json, classOf[AppId])
-    parsed.appId
-  }
-
-  def dbAppKey(appExecId: AppId) = {
-    // we stick a common prefix on all the keys so we can find them in the DB
-    val appExecJson = mapper.writeValueAsString(appExecId)
-    val key = (APP_CREDS_KEY_PREFIX + ";" + appExecJson)
-    key.getBytes(StandardCharsets.UTF_8)
+  override protected def serviceStop(): Unit = {
+    ucxTransport.close()
+    super.serviceStop()
   }
 }

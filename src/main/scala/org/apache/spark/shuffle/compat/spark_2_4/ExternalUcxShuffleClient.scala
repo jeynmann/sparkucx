@@ -30,7 +30,7 @@ class ExternalUcxShuffleClient(val transport: UcxShuffleTransportClient) extends
       }
     }
     val resultBufferAllocator = (size: Long) => transport.hostBounceBufferMemoryPool.get(size)
-    transport.fetchBlocksByBlockIds(new InetSocketAddress(host, transport.serverPort), ucxBlockIds, callbacks)
+    transport.fetchBlocksByBlockIds(new InetSocketAddress(host, transport.serverPort), execId.toInt, ucxBlockIds, callbacks)
   }
 
   override def close(): Unit = {

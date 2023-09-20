@@ -174,13 +174,14 @@ class UcxShuffleTransportClient(clientConf: ExternalUcxClientConf, blockManagerI
   /**
    * Batch version of [[ fetchBlocksByBlockIds ]].
    */
-  def fetchBlocksByBlockIds(shuffleServer: InetSocketAddress, blockIds: Seq[BlockId],
+  def fetchBlocksByBlockIds(shuffleServer: InetSocketAddress, exeId: Int,
+                            blockIds: Seq[BlockId],
                             callbacks: Seq[OperationCallback]): Unit = {
     val client = selectClientThread
     client.submit(new Runnable {
       override def run(): Unit = {
         logInfo(s"@D Send fetch to $shuffleServer")
-        client.workerWrapper.fetchBlocksByBlockIds(shuffleServer, blockIds, callbacks)
+        client.workerWrapper.fetchBlocksByBlockIds(shuffleServer, exeId, blockIds, callbacks)
       }
     })
   }
@@ -240,8 +241,9 @@ class UcxShuffleTransportServer(
       val header = UnsafeUtils.getByteBufferView(headerAddress, headerSize.toInt)
       val workerId = UcxWorkerId.deserialize(header)
       val replyTag = header.getInt
+      val exeId = header.getInt
       logInfo(s"@D Receive fetch from $workerId")
-      handleFetchBlockRequest(workerId, replyTag, amData)
+      handleFetchBlockRequest(workerId, exeId, replyTag, amData)
       UcsConstants.STATUS.UCS_INPROGRESS
     }, UcpConstants.UCP_AM_FLAG_PERSISTENT_DATA | UcpConstants.UCP_AM_FLAG_WHOLE_MSG )
     // AM to get worker address for client worker and connect server workers to it
@@ -308,7 +310,7 @@ class UcxShuffleTransportServer(
     }))
   }
 
-  def handleFetchBlockRequest(clientWorker: UcxWorkerId, replyTag: Int, amData: UcpAmData): Unit = {
+  def handleFetchBlockRequest(clientWorker: UcxWorkerId, exeId: Int, replyTag: Int, amData: UcpAmData): Unit = {
     val server = selectServerThread
     server.submit(new Runnable {
       override def run(): Unit = {
@@ -323,18 +325,17 @@ class UcxShuffleTransportServer(
         amData.close()
 
         val blocks = blockIds.map{ bid => {
-          logInfo(s"D Getting block $bid")
+          logInfo(s"@D Getting block $bid for $replyTag")
 
           val blockBuffer = blockManager.getBlockData(
-            clientWorker.appId.toString, clientWorker.exeId.toString,
-            bid.shuffleId, bid.mapId, bid.reduceId)
+            clientWorker.appId.toString, exeId.toString, bid.shuffleId,
+            bid.mapId, bid.reduceId)
 
-          logInfo(s"D Got block $bid size ${blockBuffer.size}")
+          logInfo(s"@D Got block $bid size ${blockBuffer.size}")
 
-          val blockChannel = Channels.newChannel(
-            blockBuffer.createInputStream)
+          val blockChannel = Channels.newChannel(blockBuffer.createInputStream)
 
-          logInfo(s"D Got block-ch $bid size ${blockBuffer.size} ch $blockChannel")
+          logInfo(s"@D Got block-ch $bid size ${blockBuffer.size} ch $blockChannel")
           new Block {
             override def getBlock(byteBuffer: ByteBuffer): Unit = {
               blockChannel.read(byteBuffer)

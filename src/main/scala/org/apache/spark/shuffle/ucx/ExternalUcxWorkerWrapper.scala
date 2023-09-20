@@ -187,16 +187,18 @@ case class ExternalUcxWorkerWrapper(worker: UcpWorker,
     })
   }
 
-  def fetchBlocksByBlockIds(shuffleServer: InetSocketAddress, blockIds: Seq[BlockId],
+  def fetchBlocksByBlockIds(shuffleServer: InetSocketAddress, execId: Int,
+                            blockIds: Seq[BlockId],
                             callbacks: Seq[OperationCallback]): Unit = {
     val startTime = System.nanoTime()
-    val headerSize = workerId.serializedSize + UnsafeUtils.INT_SIZE
+    val headerSize = UnsafeUtils.INT_SIZE + UnsafeUtils.INT_SIZE + workerId.serializedSize
 
     val t = tag.incrementAndGet()
 
     val buffer = Platform.allocateDirectBuffer(headerSize + blockIds.map(_.serializedSize).sum)
     workerId.serialize(buffer)
     buffer.putInt(t)
+    buffer.putInt(execId)
     blockIds.foreach(b => b.serialize(buffer))
 
     val request = new UcxRequest(null, new UcxStats())
@@ -255,7 +257,7 @@ case class ExternalUcxWorkerWrapper(worker: UcpWorker,
     }
 
     for (i <- 0 until blockSizeSeq.size) {
-      logInfo(s"D ${i} -> ${blockSizeSeq(i)}")
+      logInfo(s"@D ${i} -> ${blockSizeSeq(i)}")
       resultBuffer.limit(resultBuffer.position + blockSizeSeq(i).toInt)
       blocks(i).getBlock(resultBuffer)
     }
