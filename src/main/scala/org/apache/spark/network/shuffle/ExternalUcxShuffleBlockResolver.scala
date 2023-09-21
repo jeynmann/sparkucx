@@ -3,7 +3,6 @@ package org.apache.spark.network.shuffle
 import java.io._
 import java.nio.charset.StandardCharsets
 import java.util.concurrent.Executor
-import java.util.concurrent.Executors
 import java.lang.reflect.{Method, Field}
 
 import scala.collection.mutable
@@ -61,30 +60,11 @@ class ExternalUcxShuffleBlockResolver(conf: TransportConf, registeredExecutorFil
       if (db != null) {
         val key = dbAppExecKey(fullId)
         val value = ucxMapper.writeValueAsString(executorInfo).getBytes(StandardCharsets.UTF_8)
-        logInfo(s"@D DB saved $key -> $value")
         db.put(key, value)
       }
+      executors.put(fullId, executorInfo)
     } catch {
       case e: Exception => logError("Error saving registered executors", e)
     }
-    executors.put(fullId, executorInfo)
-    logInfo(s"@D executors=$executors ucxMapper=${ucxMapper} key=${dbAppExecKey(fullId)}")
-  }
-
-  override def getBlockData(
-      appId: String,
-      execId: String,
-      shuffleId: Int,
-      mapId: Int,
-      reduceId: Int): ManagedBuffer = {
-    logInfo(s"@D ($appId,$execId) ($shuffleId,$mapId,$reduceId)")
-    val id = new AppExecId(appId, execId);
-    val tmp = executors.get(id)
-    logInfo(s"@D $id exsit=${tmp}")
-    if (tmp == null) {
-      executors.forEach((x: AppExecId, y: ExecutorShuffleInfo) => logInfo(s"${x} -> ${y}"))
-    }
-    val ans = super.getBlockData(appId, execId, shuffleId, mapId, reduceId);
-    ans
   }
 }

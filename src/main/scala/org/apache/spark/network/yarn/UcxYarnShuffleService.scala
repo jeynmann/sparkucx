@@ -17,29 +17,9 @@
 
 package org.apache.spark.network.yarn
 
-import java.io.File
-import java.io.IOException
-import java.nio.charset.StandardCharsets
-import java.nio.ByteBuffer
-import java.util.List
-import java.util.Map
-
-import com.fasterxml.jackson.annotation.JsonCreator
-import com.fasterxml.jackson.annotation.JsonProperty
-import com.fasterxml.jackson.databind.ObjectMapper
-import com.google.common.annotations.VisibleForTesting
-import com.google.common.base.Objects
-import com.google.common.base.Preconditions
 import com.google.common.collect.Lists
 import org.apache.hadoop.conf.Configuration
-import org.apache.hadoop.fs.FileSystem
-import org.apache.hadoop.fs.Path
-import org.apache.hadoop.fs.permission.FsPermission
-import org.apache.hadoop.yarn.api.records.ContainerId
 import org.apache.hadoop.yarn.server.api._
-import org.apache.spark.network.util.LevelDBProvider
-import org.iq80.leveldb.DB
-import org.iq80.leveldb.DBIterator
 
 import org.apache.spark.network.TransportContext
 import org.apache.spark.network.crypto.AuthServerBootstrap

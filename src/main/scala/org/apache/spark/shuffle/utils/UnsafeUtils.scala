@@ -10,9 +10,9 @@ import java.nio.channels.FileChannel
 
 import org.openucx.jucx.UcxException
 import sun.nio.ch.{DirectBuffer, FileChannelImpl}
-import org.apache.spark.internal.Logging
+import org.apache.spark.network.shuffle.UcxLogging
 
-object UnsafeUtils extends Logging {
+object UnsafeUtils extends UcxLogging {
   val INT_SIZE: Int = 4
   val LONG_SIZE: Int = 8
 

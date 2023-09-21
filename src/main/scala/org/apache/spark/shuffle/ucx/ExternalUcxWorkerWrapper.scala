@@ -149,8 +149,14 @@ case class ExternalUcxWorkerWrapper(worker: UcpWorker,
   }
 
   def connectBack(shuffleClient: UcxWorkerId, workerAddress: ByteBuffer): Unit = {
-    logDebug(s"Worker $this connecting back to $UcxWorkerId by worker address")
-    val ep = worker.newEndpoint(new UcpEndpointParams().setName(s"Server connection to $UcxWorkerId")
+    logInfo(s"$workerId connecting back to $shuffleClient by worker address")
+    val ep = worker.newEndpoint(new UcpEndpointParams()
+      .setErrorHandler(new UcpEndpointErrorHandler() {
+        override def onError(ep: UcpEndpoint, status: Int, errorMsg: String): Unit = {
+          logInfo(s"Endpoint to $shuffleClient got an error: $errorMsg")
+          shuffleClients.remove(shuffleClient)
+        }
+      }).setName(s"Server connection to $UcxWorkerId")
       .setUcpAddress(workerAddress))
     shuffleClients.put(shuffleClient, ep)
   }
@@ -166,7 +172,7 @@ case class ExternalUcxWorkerWrapper(worker: UcpWorker,
           }
         }).setName(s"Endpoint to $shuffleServer")
 
-      logDebug(s"Worker $this connecting to ExternalShuffleService($shuffleServer)")
+      logInfo(s"$workerId connecting to external service $shuffleServer")
 
       val header = Platform.allocateDirectBuffer(workerId.serializedSize)
       workerId.serialize(header)
@@ -214,7 +220,7 @@ case class ExternalUcxWorkerWrapper(worker: UcpWorker,
       UcpConstants.UCP_AM_SEND_FLAG_EAGER, new UcxCallback() {
        override def onSuccess(request: UcpRequest): Unit = {
          buffer.clear()
-         logDebug(s"Sent message on $ep to $shuffleServer to fetch ${blockIds.length} blocks on tag $t $workerId" +
+         logDebug(s"Sent message to $shuffleServer to fetch ${blockIds.length} blocks on tag $t" +
            s"in ${System.nanoTime() - startTime} ns")
        }
      }, MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
@@ -257,18 +263,16 @@ case class ExternalUcxWorkerWrapper(worker: UcpWorker,
     }
 
     for (i <- 0 until blockSizeSeq.size) {
-      logInfo(s"@D ${i} -> ${blockSizeSeq(i)}")
       resultBuffer.limit(resultBuffer.position + blockSizeSeq(i).toInt)
       blocks(i).getBlock(resultBuffer)
     }
 
-    logInfo(s"@D Sent to $clientWorker ${blocks.length} blocks size ${resultMemory.size} tag $replyTag")
     val startTime = System.nanoTime()
     getConnectionBack(clientWorker).sendAmNonBlocking(1, resultMemory.address, tagAndSizes,
       resultMemory.address + tagAndSizes, resultMemory.size - tagAndSizes, 0, new UcxCallback {
         override def onSuccess(request: UcpRequest): Unit = {
-          logTrace(s"Sent ${blocks.length} blocks of size: ${resultMemory.size} " +
-            s"to tag $replyTag in ${System.nanoTime() - startTime} ns.")
+          logInfo(s"@D Sent to ${clientWorker} ${blocks.length} blocks of size: ${resultMemory.size} " +
+            s"tag $replyTag in ${System.nanoTime() - startTime} ns.")
           memPool.put(resultMemory)
         }
 
@@ -297,7 +301,6 @@ class ExternalUcxWorkerThread(
   setName(s"UCX-worker $workerId")
 
   override def run(): Unit = {
-    logInfo(s"@D UCX-worker $workerId started")
     logDebug(s"UCX-worker $workerId started")
     if (useWakeup) {
       while (!isInterrupted) {

@@ -10,7 +10,7 @@ import java.nio.ByteBuffer
 import java.nio.channels.Channels
 import java.nio.charset.StandardCharsets
 
-import org.apache.spark.internal.Logging
+import org.apache.spark.network.shuffle.UcxLogging
 import org.apache.spark.util.Utils
 
 /**
@@ -18,7 +18,7 @@ import org.apache.spark.util.Utils
  * it easier to pass ByteBuffers in case class messages.
  */
 class SerializableDirectBuffer(@transient var buffer: ByteBuffer) extends Serializable
-  with Logging {
+  with UcxLogging {
 
   def value: ByteBuffer = buffer
 
@@ -48,7 +48,7 @@ class SerializableDirectBuffer(@transient var buffer: ByteBuffer) extends Serial
 }
 
 class DeserializableToExternalMemoryBuffer(@transient var buffer: ByteBuffer)() extends Serializable
-  with Logging {
+  with UcxLogging {
 
   def value: ByteBuffer = buffer
 
@@ -78,8 +78,16 @@ object SerializationUtils {
     new InetSocketAddress(host, port)
   }
 
-  def serializeInetAddress(address: InetSocketAddress): ByteBuffer = {
+  def serializeLocalInetAddress(address: InetSocketAddress): ByteBuffer = {
     val hostAddress = new InetSocketAddress(Utils.localCanonicalHostName(), address.getPort)
+    val hostString = hostAddress.getHostName.getBytes(StandardCharsets.UTF_8)
+    val result = ByteBuffer.allocateDirect(hostString.length + 4)
+    result.putInt(hostAddress.getPort)
+    result.put(hostString)
+  }
+
+  def serializeInetAddress(address: InetSocketAddress): ByteBuffer = {
+    val hostAddress = new InetSocketAddress(address.getAddress.getCanonicalHostName, address.getPort)
     val hostString = hostAddress.getHostName.getBytes(StandardCharsets.UTF_8)
     val result = ByteBuffer.allocateDirect(hostString.length + 4)
     result.putInt(hostAddress.getPort)

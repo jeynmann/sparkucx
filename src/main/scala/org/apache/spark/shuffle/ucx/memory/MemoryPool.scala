@@ -10,8 +10,8 @@ import java.util.concurrent.{ConcurrentHashMap, ConcurrentLinkedDeque}
 
 import org.openucx.jucx.ucp.{UcpContext, UcpMemMapParams, UcpMemory}
 import org.openucx.jucx.ucs.UcsConstants
-import org.apache.spark.internal.Logging
 import org.apache.spark.shuffle.ucx.{MemoryBlock, UcxShuffleConf}
+import org.apache.spark.network.shuffle.UcxLogging
 import org.apache.spark.util.Utils
 
 class UcxBounceBufferMemoryBlock(private[ucx] val memory: UcpMemory, private[ucx] val refCount: AtomicInteger,
@@ -29,7 +29,7 @@ class UcxBounceBufferMemoryBlock(private[ucx] val memory: UcpMemory, private[ucx
  * Base class to implement memory pool
  */
 case class MemoryPool(ucxContext: UcpContext, memoryType: Int)
-  extends Closeable with Logging {
+  extends Closeable with UcxLogging {
   protected var minBufferSize: Long = 4096L
   protected var minRegistrationSize: Long = 1024L * 1024
 
