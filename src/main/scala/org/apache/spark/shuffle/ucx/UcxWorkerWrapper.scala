@@ -62,16 +62,16 @@ class UcxRefCountMemoryBlock(baseBlock: MemoryBlock, offset: Long, size: Long,
 case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, isClientWorker: Boolean,
                             id: Long = 0L)
   extends Closeable with Logging {
-  private val useWakeup = transport.ucxShuffleConf.useWakeup
+  private[ucx] final val timeout = transport.ucxShuffleConf.getSparkConf.getTimeAsMs("spark.network.timeout", "100")
+  private[ucx] final val connections =  new TrieMap[transport.ExecutorId, UcpEndpoint]
+  private[ucx] lazy val requestData = new TrieMap[Int, (Seq[OperationCallback], UcxRequest, transport.BufferAllocator)]
+  private[ucx] lazy val tag = new AtomicInteger(Random.nextInt())
+  private[ucx] lazy val flushRequests = new ConcurrentLinkedQueue[UcpRequest]()
 
-  private final val connections =  new TrieMap[transport.ExecutorId, UcpEndpoint]
-  private val requestData = new TrieMap[Int, (Seq[OperationCallback], UcxRequest, transport.BufferAllocator)]
-  private val tag = new AtomicInteger(Random.nextInt())
-  private val flushRequests = new ConcurrentLinkedQueue[UcpRequest]()
-
-  private val ioThreadPool = ThreadUtils.newForkJoinPool("IO threads",
+  private[ucx] lazy val ioThreadOn = transport.ucxShuffleConf.numIoThreads > 1
+  private[ucx] lazy val ioThreadPool = ThreadUtils.newForkJoinPool("IO threads",
     transport.ucxShuffleConf.numIoThreads)
-  private val ioTaskSupport = new ForkJoinTaskSupport(ioThreadPool)
+  private[ucx] lazy val ioTaskSupport = new ForkJoinTaskSupport(ioThreadPool)
 
   if (isClientWorker) {
     // Receive block data handler
@@ -155,8 +155,10 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
     while (!closeRequests.forall(_.isCompleted)) {
       progress()
     }
-    ioThreadPool.shutdown()
     connections.clear()
+    if (ioThreadOn) {
+      ioThreadPool.shutdown()
+    }
     worker.close()
   }
 
@@ -190,6 +192,12 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
     logDebug(s"Worker $this connecting back to $executorId by worker address")
     val ep = worker.synchronized {
       worker.newEndpoint(new UcpEndpointParams().setName(s"Server connection to $executorId")
+        .setErrorHandler(new UcpEndpointErrorHandler() {
+          override def onError(ep: UcpEndpoint, status: Int, errorMsg: String): Unit = {
+            logWarning(s"Endpoint to $executorId got an error: $errorMsg")
+            connections.remove(executorId)
+          }
+        })
         .setUcpAddress(workerAddress))
     }
     connections.put(executorId, ep)
@@ -198,17 +206,19 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
   def getConnection(executorId: transport.ExecutorId): UcpEndpoint = {
 
     val startTime = System.currentTimeMillis()
-    while (!transport.executorAddresses.contains(executorId)) {
-      if  (System.currentTimeMillis() - startTime >
-        transport.ucxShuffleConf.getSparkConf.getTimeAsMs("spark.network.timeout", "100")) {
-        throw new UcxException(s"Don't get a worker address for $executorId")
+    if (!connections.contains(executorId)) {
+      while (!transport.executorAddresses.contains(executorId)) {
+        if  (System.currentTimeMillis() - startTime > timeout) {
+          throw new UcxException(s"Don't get a worker address for $executorId")
+        }
       }
     }
 
     connections.getOrElseUpdate(executorId, {
       val address = transport.executorAddresses(executorId)
+      val inetAddress = SerializationUtils.deserializeInetAddress(address)
       val endpointParams = new UcpEndpointParams().setPeerErrorHandlingMode()
-        .setSocketAddress(SerializationUtils.deserializeInetAddress(address)).sendClientId()
+        .setSocketAddress(inetAddress).sendClientId()
         .setErrorHandler(new UcpEndpointErrorHandler() {
           override def onError(ep: UcpEndpoint, status: Int, errorMsg: String): Unit = {
             logError(s"Endpoint to $executorId got an error: $errorMsg")
@@ -216,8 +226,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
           }
         }).setName(s"Endpoint to $executorId")
 
-      logDebug(s"Worker $this connecting to Executor($executorId, " +
-        s"${SerializationUtils.deserializeInetAddress(address)}")
+      logDebug(s"@D Worker ${id.toInt}:${id>>32} connecting to Executor($executorId -> $inetAddress)")
       val header = Platform.allocateDirectBuffer(UnsafeUtils.LONG_SIZE)
       header.putLong(id)
       header.rewind()
@@ -246,21 +255,21 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
     val headerSize = UnsafeUtils.INT_SIZE + UnsafeUtils.LONG_SIZE
     
     val t = tag.incrementAndGet()
-    
+
     val buffer = Platform.allocateDirectBuffer(headerSize + blockIds.map(_.serializedSize).sum)
     buffer.putInt(t)
     buffer.putLong(id)
     blockIds.foreach(b => b.serialize(buffer))
-    
+
     val request = new UcxRequest(null, new UcxStats())
     requestData.put(t, (callbacks, request, resultBufferAllocator))
-    
+
     buffer.rewind()
     val address = UnsafeUtils.getAdress(buffer)
     val dataAddress = address + headerSize
-    
+
+    val ep = getConnection(executorId)
     worker.synchronized {
-      val ep = getConnection(executorId)
       ep.sendAmNonBlocking(0, address,
         headerSize, dataAddress, buffer.capacity() - headerSize,
         UcpConstants.UCP_AM_SEND_FLAG_EAGER, new UcxCallback() {
@@ -292,7 +301,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
         localBuffer
     }
     // Do parallel read of blocks
-    val blocksCollection = if (transport.ucxShuffleConf.numIoThreads > 1) {
+    val blocksCollection = if (ioThreadOn) {
       val parCollection = blocks.indices.par
       parCollection.tasksupport = ioTaskSupport
       parCollection
@@ -305,9 +314,11 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
     }
 
     val startTime = System.nanoTime()
+    val ep = getConnection(replyExecutor)
     worker.synchronized {
-      getConnection(replyExecutor).sendAmNonBlocking(1, resultMemory.address, tagAndSizes,
-        resultMemory.address + tagAndSizes, resultMemory.size - tagAndSizes, 0, new UcxCallback {
+      ep.sendAmNonBlocking(1, resultMemory.address, tagAndSizes,
+        resultMemory.address + tagAndSizes, resultMemory.size - tagAndSizes,
+        UcpConstants.UCP_AM_SEND_FLAG_RNDV, new UcxCallback {
           override def onSuccess(request: UcpRequest): Unit = {
             logTrace(s"Sent ${blocks.length} blocks of size: ${resultMemory.size} " +
               s"to tag $replyTag in ${System.nanoTime() - startTime} ns.")
