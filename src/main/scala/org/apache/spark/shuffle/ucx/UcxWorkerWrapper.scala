@@ -314,7 +314,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
     }
 
     val startTime = System.nanoTime()
-    val ep = getConnection(replyExecutor)
+    val ep = connections(replyExecutor)
     worker.synchronized {
       ep.sendAmNonBlocking(1, resultMemory.address, tagAndSizes,
         resultMemory.address + tagAndSizes, resultMemory.size - tagAndSizes,
