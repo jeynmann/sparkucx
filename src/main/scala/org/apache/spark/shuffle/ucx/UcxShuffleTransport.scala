@@ -287,7 +287,7 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
   }
 
   def connectServerWorkers(executorId: ExecutorId, workerAddress: ByteBuffer): Unit = {
-    executorAddresses.put(executorId, workerAddress)
+    // executorAddresses.put(executorId, workerAddress)
     allocatedServerThreads.foreach(t => {
       t.workerWrapper.connectByWorkerAddress(executorId, workerAddress)
     })
