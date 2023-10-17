@@ -103,13 +103,14 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
   private[ucx] val rxBps = new BpsMonitor
 
   private[ucx] var monitorRun = new java.util.concurrent.CountDownLatch(1)
-  private[ucx] val monitor = new MonitorThread 
+  private[ucx] val monitor = new MonitorThread
+
   class MonitorThread extends Thread {
     override def run(): Unit = {
       monitorRun.await
       while (!isInterrupted) {
           logInfo(s"@D pollSend->$pollSend pollRecv->$pollRecv flySend->$flySend flyRecv->$flyRecv txBps->$txBps rxBps->$rxBps")
-          Thread.sleep(2)
+          Thread.sleep(1000)
       }
     }
   }
@@ -118,12 +119,12 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
     monitor.start
   }
 
-  private[ucx] def runMon(): Unit = {
-    monitorRun.countDown
-  }
-
   private[ucx] def closeMon(): Unit = {
     monitor.interrupt()
+  }
+
+  private[ucx] def runMon(): Unit = {
+    monitorRun.countDown
   }
   //
   private val errorHandler = new UcpEndpointErrorHandler {
