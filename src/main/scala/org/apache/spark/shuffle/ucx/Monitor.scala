@@ -5,6 +5,8 @@ import scala.collection.concurrent.TrieMap
 import scala.collection.mutable.HashMap
 import javax.swing.text.StyledEditorKit.UnderlineAction
 
+class Wrap[T](var value: T){}
+
 class Record[T, V] {
     type Value = T
     type Underlying = V
@@ -21,14 +23,18 @@ class Record[T, V] {
     def initialize(): V = ???
 }
 
-class LongRecord extends Record[Long, Array[Long]] {
-    override def add(x: Long): Unit = recordTls.get()(0) += x
-    override def local(): Long = recordTls.get()(0)
-    override def aggregate(): Long = recordMap.map(_._2(0)).sum
-    override def initialize(): Array[Long] = new Array[Long](1)
+class LongRecord extends Record[Long, Wrap[Long]] {
+    override def add(x: Long): Unit = recordTls.get.value += x
+    override def local(): Long = recordTls.get.value
+    override def aggregate(): Long = recordMap.map(_._2.value).sum
+    override def initialize(): Wrap[Long] = new Wrap[Long](0)
 }
 
 class LongArrayRecord(val size: Int) extends Record[Array[Long], Array[Long]] {
+    def update(x: (Int, Long)): Unit = {
+        recordTls.get()(x._1) = x._2
+        recordTls.get()(size) += 1
+    }
     override def add(x: Array[Long]): Unit = {
         recordTls.get()(x(0).toInt) = x(1)
         recordTls.get()(size) += 1
@@ -81,7 +87,7 @@ class PsMonitor extends Monitor[Array[Long]] {
     val id = new LongRecord
 
     def add(x: Long): Unit = {
-        record.add(Array(id.local().abs % 100, x))
+        record.update((id.local().toInt.abs % 100, x))
         id.add(1)
     }
 
