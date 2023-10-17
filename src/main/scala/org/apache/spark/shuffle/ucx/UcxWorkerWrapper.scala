@@ -137,7 +137,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
                 val recvTime = UcxUtils.getByteBufferView(mem.address, ucpAmData.getLength).getLong
                 offset += UnsafeUtils.LONG_SIZE
                 flyRecv.append((System.currentTimeMillis - recvTime).toInt)
-                rxBps.add(mem.size)
+                rxBps.add(headerBuffer.capacity + mem.size)
                 for (b <- 0 until numBlocks) {
                   val blockSize = headerBuffer.getInt
                   callbacks(b).onComplete(new OperationResult {

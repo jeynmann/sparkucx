@@ -124,7 +124,7 @@ class BpsMonitor extends LongMonitor {
 
     def currentStats(currentTime: Long): Long = {
         val currentData = recordMap.map{ case (k,v) => k.value }.sum
-        val r = (currentData - dataStamp) / (currentTime - timeStamp).max(1)
+        val r = (currentData - dataStamp) / (currentTime - timeStamp).max(1L) / 1000L
         if (currentTime - timeStamp > 1000) {
             timeStamp = currentTime
             dataStamp = currentData
