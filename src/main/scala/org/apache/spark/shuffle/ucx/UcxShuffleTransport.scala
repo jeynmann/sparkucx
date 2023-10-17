@@ -114,15 +114,15 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
     }
   }
 
-  def startMon(): Unit = {
+  private[ucx] def startMon(): Unit = {
     monitor.start
   }
 
-  def runMon(): Unit = {
+  private[ucx] def runMon(): Unit = {
     monitorRun.countDown
   }
 
-  def closeMon(): Unit = {
+  private[ucx] def closeMon(): Unit = {
     monitor.interrupt()
   }
   //
@@ -335,7 +335,7 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
         val blockIds = mutable.ArrayBuffer.empty[BlockId]
 
         val sendTime = buffer.getLong()
-        flySend.append((System.currentTimeMillis - sendTime).toInt)
+        flySend.add(System.currentTimeMillis - sendTime)
         // 1. Deserialize blockIds from header
         while (buffer.remaining() > 8) {
           val blockId = UcxShuffleBockId.deserialize(buffer)

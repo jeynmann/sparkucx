@@ -135,7 +135,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
                 //   s"time from amHandle: ${System.nanoTime() - stats.amHandleTime} ns")
                 val recvTime = UcxUtils.getByteBufferView(mem.address, ucpAmData.getLength).getLong
                 offset += UnsafeUtils.LONG_SIZE
-                flyRecv.append((System.currentTimeMillis - recvTime).toInt)
+                flyRecv.add(System.currentTimeMillis - recvTime)
                 rxBps.add(headerBuffer.capacity + mem.size)
                 for (b <- 0 until numBlocks) {
                   val blockSize = headerBuffer.getInt
@@ -286,7 +286,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
         UcpConstants.UCP_AM_SEND_FLAG_EAGER, new UcxCallback() {
         override def onSuccess(request: UcpRequest): Unit = {
           buffer.clear()
-          pollSend.append((System.currentTimeMillis - startTime).toInt)
+          pollSend.add(System.currentTimeMillis - startTime)
         }
       }, MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
     }
@@ -332,9 +332,11 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
         resultMemory.address + tagAndSizes, resultMemory.size - tagAndSizes,
         0, new UcxCallback {
           override def onSuccess(request: UcpRequest): Unit = {
-            pollRecv.append((System.currentTimeMillis - startTime).toInt)
-            txBps.add(resultMemory.size)
             transport.hostBounceBufferMemoryPool.put(resultMemory)
+            // logTrace(s"Sent ${blocks.length} blocks of size: ${resultMemory.size} " +
+            //   s"to tag $replyTag in ${System.nanoTime() - startTime} ns.")
+            pollRecv.add(System.currentTimeMillis - startTime)
+            txBps.add(resultMemory.size)
           }
           override def onError(ucsStatus: Int, errorMsg: String): Unit = {
             logError(s"Failed to send $errorMsg")
