@@ -50,7 +50,7 @@ class LongArrayRecord(val size: Int) extends Record[Array[Long], Array[Long]] {
                 for (i <- 0 until size) {
                     r(i + offset) = value(i)
                 }
-                offset += 100
+                offset += size
             }
         }
         r.sorted.slice(num - real.toInt.min(num), num)
@@ -81,13 +81,13 @@ class BpsMonitor extends Monitor[Long] {
 }
 
 class PsMonitor extends Monitor[Array[Long]] {
-    val record = new LongArrayRecord(100)
+    val record = new LongArrayRecord(1000)
     var timeStamp = System.currentTimeMillis()
     var dataStamp = new Array[Long](5) // 50,90,99,999,M
     val id = new LongRecord
 
     def add(x: Long): Unit = {
-        record.update((id.local().toInt.abs % 100, x))
+        record.update((id.local().toInt.abs % 1000, x))
         id.add(1)
     }
 
