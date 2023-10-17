@@ -94,6 +94,38 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
   private var progressThread: Thread = _
   var hostBounceBufferMemoryPool: UcxHostBounceBuffersPool = _
 
+  //
+  private[ucx] val pollSend = new PsMonitor
+  private[ucx] val pollRecv = new PsMonitor
+  private[ucx] val flySend = new PsMonitor
+  private[ucx] val flyRecv = new PsMonitor
+  private[ucx] val txBps = new BpsMonitor
+  private[ucx] val rxBps = new BpsMonitor
+
+  private[ucx] var monitorRun = new java.util.concurrent.CountDownLatch(1)
+  private[ucx] val monitor = new MonitorThread 
+  class MonitorThread extends Thread {
+    override def run(): Unit = {
+      monitorRun.await
+      while (!isInterrupted) {
+          logInfo(s"@D pollSend->$pollSend pollRecv->$pollRecv flySend->$flySend flyRecv->$flyRecv txBps->$txBps rxBps->$rxBps")
+          Thread.sleep(2)
+      }
+    }
+  }
+
+  def startMon(): Unit = {
+    monitor.start
+  }
+
+  def runMon(): Unit = {
+    monitorRun.countDown
+  }
+
+  def closeMon(): Unit = {
+    monitor.interrupt()
+  }
+  //
   private val errorHandler = new UcpEndpointErrorHandler {
     override def onError(ucpEndpoint: UcpEndpoint, errorCode: Int, errorString: String): Unit = {
       if (errorCode == UcsConstants.STATUS.UCS_ERR_CONNECTION_RESET) {
@@ -160,6 +192,7 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
       allocatedClientThreads(i).start()
     }
 
+    startMon()
     initialized = true
     logInfo(s"Started listener on ${listener.getAddress}")
     SerializationUtils.serializeInetAddress(listener.getAddress)
@@ -169,6 +202,7 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
    * Close all transport resources
    */
   override def close(): Unit = {
+    closeMon()
     if (initialized) {
       endpoints.foreach(_.closeNonBlockingForce())
       endpoints.clear()
@@ -284,6 +318,7 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
       override def run = client.workerWrapper.fetchBlocksByBlockIds(
         executorId, blockIds, resultBufferAllocator, callbacks)
     })
+    runMon
   }
 
   def connectServerWorkers(executorId: ExecutorId, workerAddress: ByteBuffer): Unit = {
@@ -300,8 +335,10 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
         val buffer = UnsafeUtils.getByteBufferView(amData.getDataAddress, amData.getLength.toInt)
         val blockIds = mutable.ArrayBuffer.empty[BlockId]
 
+        val sendTime = buffer.getLong()
+        flySend.append((System.currentTimeMillis - sendTime).toInt)
         // 1. Deserialize blockIds from header
-        while (buffer.remaining() > 0) {
+        while (buffer.remaining() > 8) {
           val blockId = UcxShuffleBockId.deserialize(buffer)
           if (!registeredBlocks.contains(blockId)) {
             throw new UcxException(s"$blockId is not registered")

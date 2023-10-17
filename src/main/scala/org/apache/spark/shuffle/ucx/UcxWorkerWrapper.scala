@@ -73,6 +73,13 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
     transport.ucxShuffleConf.numIoThreads)
   private[ucx] lazy val ioTaskSupport = new ForkJoinTaskSupport(ioThreadPool)
 
+  private[this] val pollSend = transport.pollSend
+  private[this] val pollRecv = transport.pollRecv
+  private[this] val flySend = transport.flySend
+  private[this] val flyRecv = transport.flyRecv
+  private[this] val txBps = transport.txBps
+  private[this] val rxBps = transport.rxBps
+
   if (isClientWorker) {
     // Receive block data handler
     worker.setAmRecvHandler(1,
@@ -118,15 +125,19 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
           if (callbacks.isEmpty) UcsConstants.STATUS.UCS_OK else UcsConstants.STATUS.UCS_INPROGRESS
         } else {
           val mem = allocator(ucpAmData.getLength)
-          stats.amHandleTime = System.nanoTime()
+          // stats.amHandleTime = System.nanoTime()
           request.setRequest(worker.recvAmDataNonBlocking(ucpAmData.getDataHandle, mem.address, ucpAmData.getLength,
             new UcxCallback() {
               override def onSuccess(r: UcpRequest): Unit = {
                 request.completed = true
-                stats.endTime = System.nanoTime()
-                logDebug(s"Received rndv data of size: ${mem.size} for tag $i in " +
-                  s"${stats.getElapsedTimeNs} ns " +
-                  s"time from amHandle: ${System.nanoTime() - stats.amHandleTime} ns")
+                // stats.endTime = System.nanoTime()
+                // logDebug(s"Received rndv data of size: ${mem.size} for tag $i in " +
+                //   s"${stats.getElapsedTimeNs} ns " +
+                //   s"time from amHandle: ${System.nanoTime() - stats.amHandleTime} ns")
+                val recvTime = UcxUtils.getByteBufferView(mem.address, ucpAmData.getLength).getLong
+                offset += UnsafeUtils.LONG_SIZE
+                flyRecv.append((System.currentTimeMillis - recvTime).toInt)
+                rxBps.add(mem.size)
                 for (b <- 0 until numBlocks) {
                   val blockSize = headerBuffer.getInt
                   callbacks(b).onComplete(new OperationResult {
@@ -251,20 +262,22 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
   def fetchBlocksByBlockIds(executorId: transport.ExecutorId, blockIds: Seq[BlockId],
                             resultBufferAllocator: transport.BufferAllocator,
                             callbacks: Seq[OperationCallback]): Unit = {
-    val startTime = System.nanoTime()
     val headerSize = UnsafeUtils.INT_SIZE + UnsafeUtils.LONG_SIZE
     
     val t = tag.incrementAndGet()
 
-    val buffer = Platform.allocateDirectBuffer(headerSize + blockIds.map(_.serializedSize).sum)
+    val buffer = Platform.allocateDirectBuffer(headerSize + UnsafeUtils.LONG_SIZE + blockIds.map(_.serializedSize).sum)
     buffer.putInt(t)
     buffer.putLong(id)
+    buffer.putLong(0L)
     blockIds.foreach(b => b.serialize(buffer))
 
     val request = new UcxRequest(null, new UcxStats())
     requestData.put(t, (callbacks, request, resultBufferAllocator))
 
-    buffer.rewind()
+    val startTime = System.currentTimeMillis
+    buffer.putLong(headerSize, startTime)
+    buffer.clear()
     val address = UnsafeUtils.getAdress(buffer)
     val dataAddress = address + headerSize
 
@@ -275,8 +288,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
         UcpConstants.UCP_AM_SEND_FLAG_EAGER, new UcxCallback() {
         override def onSuccess(request: UcpRequest): Unit = {
           buffer.clear()
-          logDebug(s"Sent message on $ep to $executorId to fetch ${blockIds.length} blocks on tag $t id $id" +
-            s"in ${System.nanoTime() - startTime} ns")
+          pollSend.append((System.currentTimeMillis - startTime).toInt)
         }
       }, MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
     }
@@ -284,7 +296,8 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
 
   def handleFetchBlockRequest(blocks: Seq[Block], replyTag: Int, replyExecutor: Long): Unit = try {
     val tagAndSizes = UnsafeUtils.INT_SIZE + UnsafeUtils.INT_SIZE * blocks.length
-    val resultMemory = transport.hostBounceBufferMemoryPool.get(tagAndSizes + blocks.map(_.getSize).sum)
+    val tagAndStamp = tagAndSizes + UnsafeUtils.LONG_SIZE
+    val resultMemory = transport.hostBounceBufferMemoryPool.get(tagAndStamp + blocks.map(_.getSize).sum)
       .asInstanceOf[UcxBounceBufferMemoryBlock]
     val resultBuffer = UcxUtils.getByteBufferView(resultMemory.address,
       resultMemory.size)
@@ -294,7 +307,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
     val localBuffers = blocks.zipWithIndex.map {
       case (block, i) =>
         resultBuffer.putInt(UnsafeUtils.INT_SIZE + i * UnsafeUtils.INT_SIZE, block.getSize.toInt)
-        resultBuffer.position(tagAndSizes + offset)
+        resultBuffer.position(tagAndStamp + offset)
         val localBuffer = resultBuffer.slice()
         offset += block.getSize.toInt
         localBuffer.limit(block.getSize.toInt)
@@ -313,15 +326,16 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
       blocks(i).getBlock(localBuffers(i))
     }
 
-    val startTime = System.nanoTime()
+    val startTime = System.currentTimeMillis()
+    resultBuffer.putLong(tagAndSizes, startTime)
     val ep = connections(replyExecutor)
     worker.synchronized {
       ep.sendAmNonBlocking(1, resultMemory.address, tagAndSizes,
         resultMemory.address + tagAndSizes, resultMemory.size - tagAndSizes,
         UcpConstants.UCP_AM_SEND_FLAG_RNDV, new UcxCallback {
           override def onSuccess(request: UcpRequest): Unit = {
-            logTrace(s"Sent ${blocks.length} blocks of size: ${resultMemory.size} " +
-              s"to tag $replyTag in ${System.nanoTime() - startTime} ns.")
+            pollRecv.append((System.currentTimeMillis - startTime).toInt)
+            txBps.add(resultMemory.size)
             transport.hostBounceBufferMemoryPool.put(resultMemory)
           }
 
