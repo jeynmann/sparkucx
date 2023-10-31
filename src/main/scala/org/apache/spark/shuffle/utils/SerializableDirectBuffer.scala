@@ -4,14 +4,30 @@
 */
 package org.apache.spark.shuffle.ucx.utils
 
-import java.io.{EOFException, ObjectInputStream, ObjectOutputStream}
+import java.io.{IOException, EOFException, ObjectInputStream, ObjectOutputStream}
 import java.net.InetSocketAddress
 import java.nio.ByteBuffer
 import java.nio.channels.Channels
 import java.nio.charset.StandardCharsets
+import scala.util.control.{ControlThrowable, NonFatal}
 
 import org.apache.spark.network.shuffle.UcxLogging
-import org.apache.spark.util.Utils
+// import org.apache.spark.util.Utils
+
+object UcxUtils extends UcxLogging {
+  def tryOrIOException[T](block: => T): T = {
+    try {
+      block
+    } catch {
+      case e: IOException =>
+        logError("Exception encountered", e)
+        throw e
+      case NonFatal(e) =>
+        logError("Exception encountered", e)
+        throw new IOException(e)
+    }
+  }
+}
 
 /**
  * A wrapper around a java.nio.ByteBuffer that is serializable through Java serialization, to make
@@ -22,7 +38,7 @@ class SerializableDirectBuffer(@transient var buffer: ByteBuffer) extends Serial
 
   def value: ByteBuffer = buffer
 
-  private def readObject(in: ObjectInputStream): Unit = Utils.tryOrIOException {
+  private def readObject(in: ObjectInputStream): Unit = UcxUtils.tryOrIOException {
     val length = in.readInt()
     buffer = ByteBuffer.allocateDirect(length)
     var amountRead = 0
@@ -37,7 +53,7 @@ class SerializableDirectBuffer(@transient var buffer: ByteBuffer) extends Serial
     buffer.rewind() // Allow us to read it later
   }
 
-  private def writeObject(out: ObjectOutputStream): Unit = Utils.tryOrIOException {
+  private def writeObject(out: ObjectOutputStream): Unit = UcxUtils.tryOrIOException {
     out.writeInt(buffer.limit())
     buffer.rewind()
     while (buffer.position() < buffer.limit()) {
@@ -52,7 +68,7 @@ class DeserializableToExternalMemoryBuffer(@transient var buffer: ByteBuffer)() 
 
   def value: ByteBuffer = buffer
 
-  private def readObject(in: ObjectInputStream): Unit = Utils.tryOrIOException {
+  private def readObject(in: ObjectInputStream): Unit = UcxUtils.tryOrIOException {
     val length = in.readInt()
     var amountRead = 0
     val channel = Channels.newChannel(in)
@@ -76,14 +92,6 @@ object SerializationUtils {
     val port = address.getInt()
     val host = StandardCharsets.UTF_8.decode(address.slice()).toString
     new InetSocketAddress(host, port)
-  }
-
-  def serializeLocalInetAddress(address: InetSocketAddress): ByteBuffer = {
-    val hostAddress = new InetSocketAddress(Utils.localCanonicalHostName(), address.getPort)
-    val hostString = hostAddress.getHostName.getBytes(StandardCharsets.UTF_8)
-    val result = ByteBuffer.allocateDirect(hostString.length + 4)
-    result.putInt(hostAddress.getPort)
-    result.put(hostString)
   }
 
   def serializeInetAddress(address: InetSocketAddress): ByteBuffer = {

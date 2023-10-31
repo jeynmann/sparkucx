@@ -10,6 +10,7 @@ import org.apache.spark.shuffle.ucx.memory.UcxHostBounceBuffersPool
 import org.apache.spark.shuffle.ucx.rpc.GlobalWorkerRpcThread
 import org.apache.spark.shuffle.ucx.utils.{SerializableDirectBuffer, SerializationUtils}
 import org.apache.spark.shuffle.utils.UnsafeUtils
+import org.apache.spark.util.Utils
 import org.openucx.jucx.UcxException
 import org.openucx.jucx.ucp._
 import org.openucx.jucx.ucs.UcsConstants
@@ -140,7 +141,7 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
 
     val Array(host, port) = ucxShuffleConf.listenerAddress.split(":")
     listener = globalWorker.newListener(new UcpListenerParams().setSockAddr(
-      new InetSocketAddress(host, port.toInt))
+      new InetSocketAddress(Utils.localCanonicalHostName, port.toInt))
       .setConnectionHandler((ucpConnectionRequest: UcpConnectionRequest) => {
         endpoints.add(globalWorker.newEndpoint(new UcpEndpointParams().setConnectionRequest(ucpConnectionRequest)
           .setPeerErrorHandlingMode().setErrorHandler(errorHandler)
@@ -162,7 +163,7 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
 
     initialized = true
     logInfo(s"Started listener on ${listener.getAddress}")
-    SerializationUtils.serializeLocalInetAddress(listener.getAddress)
+    SerializationUtils.serializeInetAddress(listener.getAddress)
   }
 
   /**
