@@ -9,7 +9,7 @@ import org.apache.spark.shuffle.ucx.memory.UcxHostBounceBuffersPool
 import org.apache.spark.shuffle.ucx.rpc.GlobalWorkerRpcThread
 import org.apache.spark.shuffle.ucx.utils.{SerializableDirectBuffer, SerializationUtils}
 import org.apache.spark.shuffle.utils.UnsafeUtils
-import org.apache.spark.network.shuffle.UcxLogging
+import org.apache.spark.shuffle.utils.UcxLogging
 import org.apache.spark.network.shuffle.ExternalUcxShuffleBlockResolver
 import org.apache.spark.storage.BlockManagerId
 import org.openucx.jucx.UcxException

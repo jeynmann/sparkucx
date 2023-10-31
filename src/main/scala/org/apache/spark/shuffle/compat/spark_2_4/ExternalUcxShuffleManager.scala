@@ -4,7 +4,7 @@
 */
 package org.apache.spark.shuffle
 
-import org.apache.spark.shuffle.compat.spark_2_4.ExternalUcxShuffleReader
+import org.apache.spark.shuffle.compat.spark_2_4.{ExternalUcxShuffleClient, ExternalUcxShuffleReader}
 import org.apache.spark.shuffle.ucx.ExternalBaseUcxShuffleManager
 import org.apache.spark.{SparkConf, TaskContext}
 
@@ -13,9 +13,11 @@ import org.apache.spark.{SparkConf, TaskContext}
  */
 class ExternalUcxShuffleManager(override val conf: SparkConf, isDriver: Boolean)
   extends ExternalBaseUcxShuffleManager(conf, isDriver) {
+  private[spark] lazy val transport = awaitUcxTransport
+  private[spark] lazy val shuffleClient = new ExternalUcxShuffleClient(transport)
   override def getReader[K, C](handle: ShuffleHandle, startPartition: Int,
                                endPartition: Int, context: TaskContext): ShuffleReader[K, C] = {
     new ExternalUcxShuffleReader(handle.asInstanceOf[BaseShuffleHandle[K,_,C]], startPartition,
-      endPartition, context, ucxTransport)
+      endPartition, context, shuffleClient)
   }
 }

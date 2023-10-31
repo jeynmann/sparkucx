@@ -11,8 +11,7 @@ import java.nio.channels.Channels
 import java.nio.charset.StandardCharsets
 import scala.util.control.{ControlThrowable, NonFatal}
 
-import org.apache.spark.network.shuffle.UcxLogging
-// import org.apache.spark.util.Utils
+import org.apache.spark.shuffle.utils.UcxLogging
 
 object UcxUtils extends UcxLogging {
   def tryOrIOException[T](block: => T): T = {

@@ -29,14 +29,14 @@ class ExternalUcxDriverRpcEndpoint(override val rpcEnv: RpcEnv) extends ThreadSa
       if (!shuffleServerMap.contains(shuffleServer)) {
         shuffleServerMap += shuffleServer -> addressBuffer
         endpoints.foreach(ep => {
-          logInfo(s"Sending message $shuffleServer to $ep")
+          logDebug(s"Sending message $shuffleServer to $ep")
           ep.send(message)
         })
       }
       // 2. Introduce existing members of a cluster
       if (shuffleServerMap.nonEmpty) {
         val msg = PushAllServiceAddress(shuffleServerMap.values.toSet)
-        logInfo(s"Replying $msg to $endpoint")
+        logDebug(s"Replying $msg to $endpoint")
         context.reply(msg)
       }
       // 3. Add ep to registered eps.

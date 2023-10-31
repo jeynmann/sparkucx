@@ -24,7 +24,7 @@ class ExternalUcxShuffleReader[K, C](handle: BaseShuffleHandle[K, _, C],
                              startPartition: Int,
                              endPartition: Int,
                              context: TaskContext,
-                             transport: UcxShuffleTransportClient,
+                             shuffleClient: ExternalUcxShuffleClient,
                              serializerManager: SerializerManager = SparkEnv.get.serializerManager,
                              blockManager: BlockManager = SparkEnv.get.blockManager,
                              mapOutputTracker: MapOutputTracker = SparkEnv.get.mapOutputTracker)
@@ -35,7 +35,6 @@ class ExternalUcxShuffleReader[K, C](handle: BaseShuffleHandle[K, _, C],
     /** Read the combined key-values for this reduce task */
     override def read(): Iterator[Product2[K, C]] = {
       val shuffleMetrics = context.taskMetrics().createTempShuffleReadMetrics()
-      val shuffleClient = new ExternalUcxShuffleClient(transport)
       val wrappedStreams = new ShuffleBlockFetcherIterator(
         context,
         shuffleClient,

@@ -1,7 +1,8 @@
-package org.apache.spark.network.shuffle
+package org.apache.spark.shuffle.utils
 
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
+import org.apache.log4j.LogManager
 
 trait UcxLogging {
   @transient private var log_ : Logger = null
@@ -60,8 +61,4 @@ trait UcxLogging {
   protected def logError(msg: => String, throwable: Throwable) {
     if (log.isErrorEnabled) log.error(msg, throwable)
   }
-}
-
-private[spark] object UcxLogging {
-  val logger = LoggerFactory.getLogger(UcxLogging.getClass)
 }

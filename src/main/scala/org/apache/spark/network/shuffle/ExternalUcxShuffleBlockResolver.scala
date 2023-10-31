@@ -1,28 +1,24 @@
 package org.apache.spark.network.shuffle
 
-import java.io._
+import java.io.File
 import java.nio.charset.StandardCharsets
-import java.util.concurrent.Executor
 import java.lang.reflect.{Method, Field}
 
 import scala.collection.mutable
 
 import com.fasterxml.jackson.databind.ObjectMapper
 
-import org.apache.spark.network.buffer.ManagedBuffer
 import org.apache.spark.network.shuffle.protocol.ExecutorShuffleInfo
-import org.apache.spark.network.util.LevelDBProvider
-import org.apache.spark.network.util.LevelDBProvider.StoreVersion
 import org.apache.spark.network.util.TransportConf
 import org.apache.spark.network.shuffle.ExternalShuffleBlockResolver.AppExecId
 
+import org.apache.spark.shuffle.utils.UcxLogging
+
 class ExternalUcxShuffleBlockResolver(conf: TransportConf, registeredExecutorFile: File)
   extends ExternalShuffleBlockResolver(conf, registeredExecutorFile) with UcxLogging {
-  private[this] var dbAppExecKeyMethod: Method = _
-  private[this] var mapperFiled: Field = _
-  lazy val ucxMapper = new ObjectMapper
-
-  val knownManagers = mutable.Set(
+  private[spark] var dbAppExecKeyMethod: Method = _
+  private[spark] lazy val ucxMapper = new ObjectMapper
+  private[spark] val knownManagers = mutable.Set(
     "org.apache.spark.shuffle.sort.SortShuffleManager",
     "org.apache.spark.shuffle.unsafe.UnsafeShuffleManager",
     "org.apache.spark.shuffle.ExternalUcxShuffleManager")

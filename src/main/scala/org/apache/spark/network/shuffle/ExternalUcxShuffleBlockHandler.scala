@@ -5,6 +5,8 @@ import java.io.File
 import org.apache.spark.network.server.OneForOneStreamManager
 import org.apache.spark.network.util.TransportConf
 
+import org.apache.spark.shuffle.utils.UcxLogging
+
 class ExternalUcxShuffleBlockHandler(conf: TransportConf, registeredExecutorFile: File)
   extends ExternalShuffleBlockHandler(new OneForOneStreamManager(),
   new ExternalUcxShuffleBlockResolver(conf, registeredExecutorFile)) with UcxLogging {

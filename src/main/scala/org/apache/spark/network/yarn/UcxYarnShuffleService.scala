@@ -28,9 +28,8 @@ import org.apache.spark.network.server.TransportServer
 import org.apache.spark.network.server.TransportServerBootstrap
 import org.apache.spark.network.util.TransportConf
 import org.apache.spark.network.yarn.util.HadoopConfigProvider
-import org.apache.spark.network.yarn.YarnShuffleService.AppId
 
-import org.apache.spark.network.shuffle.UcxLogging
+import org.apache.spark.shuffle.utils.UcxLogging
 import org.apache.spark.network.shuffle.ExternalUcxShuffleBlockHandler
 import org.apache.spark.shuffle.ucx.ExternalUcxServerConf
 import org.apache.spark.shuffle.ucx.UcxShuffleTransportServer

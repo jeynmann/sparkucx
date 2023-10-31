@@ -298,7 +298,6 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
     val copiedAddress = ByteBuffer.allocateDirect(workerAddress.remaining)
     copiedAddress.put(workerAddress)
     copiedAddress.rewind()
-    executorAddresses.put(executorId, copiedAddress)
     allocatedServerThreads.foreach(t => t.submit(new Runnable {
       override def run(): Unit = t.workerWrapper.connectByWorkerAddress(executorId, copiedAddress)
     }))

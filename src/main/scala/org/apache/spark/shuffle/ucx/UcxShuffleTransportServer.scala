@@ -1,14 +1,9 @@
 package org.apache.spark.shuffle.ucx
 
 // import org.apache.spark.SparkEnv
-import org.apache.spark.shuffle.ucx.memory.UcxHostBounceBuffersPool
-import org.apache.spark.shuffle.ucx.rpc.GlobalWorkerRpcThread
-import org.apache.spark.shuffle.ucx.utils.{SerializableDirectBuffer, SerializationUtils}
-import org.apache.spark.shuffle.utils.UnsafeUtils
-import org.apache.spark.network.shuffle.UcxLogging
+import org.apache.spark.shuffle.utils.{UcxLogging, UnsafeUtils}
+import org.apache.spark.shuffle.ucx.utils.SerializationUtils
 import org.apache.spark.network.shuffle.ExternalUcxShuffleBlockResolver
-import org.apache.spark.storage.BlockManagerId
-import org.openucx.jucx.UcxException
 import org.openucx.jucx.ucp._
 import org.openucx.jucx.ucs.UcsConstants
 
@@ -16,7 +11,6 @@ import java.net.InetSocketAddress
 import java.nio.ByteBuffer
 import java.nio.channels.Channels
 import java.util.concurrent.atomic.AtomicInteger
-import scala.collection.concurrent.TrieMap
 import scala.collection.mutable
 
 class UcxShuffleTransportServer(
