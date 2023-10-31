@@ -112,11 +112,15 @@ case class ExternalUcxWorkerWrapper(worker: UcpWorker,
   }
 
   override def close(): Unit = {
-    val closeRequests = shuffleServers.map {
-      case (_, endpoint) => endpoint.closeNonBlockingForce()
-    }
-    while (!closeRequests.forall(_.isCompleted)) {
-      progress()
+    try {
+      val closeRequests = shuffleServers.map {
+        case (_, endpoint) => endpoint.closeNonBlockingForce()
+      }
+      while (!closeRequests.forall(_.isCompleted)) {
+        progress()
+      }
+    } catch {
+      case _: Exception => {}
     }
     shuffleServers.clear()
     worker.close()
