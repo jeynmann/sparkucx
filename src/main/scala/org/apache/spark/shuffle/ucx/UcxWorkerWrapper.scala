@@ -76,8 +76,8 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
   private[this] val pollRecv = transport.pollRecv
   private[this] val flySend = transport.flySend
   private[this] val flyRecv = transport.flyRecv
-  private[this] val txBps = transport.txBps
-  private[this] val rxBps = transport.rxBps
+  // private[this] val txBps = transport.txBps
+  // private[this] val rxBps = transport.rxBps
 
   if (isClientWorker) {
     // Receive block data handler
@@ -136,7 +136,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
                 val recvTime = UcxUtils.getByteBufferView(mem.address, ucpAmData.getLength).getLong
                 offset += UnsafeUtils.LONG_SIZE
                 flyRecv.add(System.currentTimeMillis - recvTime)
-                rxBps.add(headerBuffer.capacity + mem.size)
+                // rxBps.add(headerBuffer.capacity + mem.size)
                 for (b <- 0 until numBlocks) {
                   val blockSize = headerBuffer.getInt
                   callbacks(b).onComplete(new OperationResult {
@@ -159,13 +159,19 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
   }
 
   override def close(): Unit = {
-    val closeRequests = connections.map {
-      case (_, endpoint) => endpoint.closeNonBlockingForce()
+    if (isClientWorker) {
+      try {
+        val closeRequests = connections.map {
+          case (_, endpoint) => endpoint.closeNonBlockingForce()
+        }
+        while (!closeRequests.forall(_.isCompleted)) {
+          progress()
+        }
+      } catch {
+        case _: Exception => {}
+      }
+      connections.clear()
     }
-    while (!closeRequests.forall(_.isCompleted)) {
-      progress()
-    }
-    connections.clear()
     if (ioThreadOn) {
       ioThreadPool.shutdown()
     }
@@ -336,7 +342,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
             // logTrace(s"Sent ${blocks.length} blocks of size: ${resultMemory.size} " +
             //   s"to tag $replyTag in ${System.nanoTime() - startTime} ns.")
             pollRecv.add(System.currentTimeMillis - startTime)
-            txBps.add(resultMemory.size)
+            // txBps.add(resultMemory.size)
           }
           override def onError(ucsStatus: Int, errorMsg: String): Unit = {
             logError(s"Failed to send $errorMsg")
