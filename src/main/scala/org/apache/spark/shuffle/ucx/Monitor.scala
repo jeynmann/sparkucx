@@ -83,7 +83,7 @@ class BpsMonitor extends Monitor[Long] {
 class PsMonitor extends Monitor[Array[Long]] {
     val record = new LongArrayRecord(1000)
     var timeStamp = System.currentTimeMillis()
-    var dataStamp = new Array[Long](5) // 50,90,99,999,M
+    var dataStamp = new Array[Long](6) // 50,90,99,999,M
     val id = new LongRecord
 
     def add(x: Long): Unit = {
@@ -100,10 +100,11 @@ class PsMonitor extends Monitor[Array[Long]] {
             dataStamp(2) = sorted(num * 99 / 100)
             dataStamp(3) = sorted(num * 999 / 1000)
             dataStamp(4) = sorted(num - 1)
+            dataStamp(5) = sorted.sum / sorted.size
             timeStamp = currentTime
         }
         dataStamp
     }
 
-    override def toString(): String = s"${currentStats(System.currentTimeMillis()).toSeq}"
+    override def toString(): String = s"${currentStats(System.currentTimeMillis()).toSeq}:${id.aggregate()}"
 }
