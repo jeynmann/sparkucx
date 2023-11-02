@@ -96,9 +96,6 @@ abstract class CommonUcxShuffleManager(val conf: SparkConf, isDriver: Boolean) e
       } catch {
         case e: SparkException => {
           Thread.sleep(5)
-          if (driverCost == 0) {
-            logWarning(s"@D Connect driver $e")
-          }
           driverCost += 5
         }
       }
@@ -107,7 +104,7 @@ abstract class CommonUcxShuffleManager(val conf: SparkConf, isDriver: Boolean) e
       new SerializableDirectBuffer(address)))
       .andThen {
         case Success(msg) =>
-          logInfo(s"Driver take $driverCost ms. Receive reply $msg")
+          logInfo(s"Driver take $driverCost ms. Receive reply ${msg.asInstanceOf[IntroduceAllExecutors].executorIdToAddress.keys}")
           executorEndpoint.receive(msg)
       }
   }
