@@ -76,6 +76,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
   private[this] val pollRecv = transport.pollRecv
   private[this] val flySend = transport.flySend
   private[this] val flyRecv = transport.flyRecv
+  private[this] val synSend = transport.synSend
   // private[this] val txBps = transport.txBps
   // private[this] val rxBps = transport.rxBps
 
@@ -287,6 +288,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
 
     val ep = getConnection(executorId)
     worker.synchronized {
+      synSend.add(System.currentTimeMillis - startTime)
       ep.sendAmNonBlocking(0, address,
         headerSize, dataAddress, buffer.capacity() - headerSize,
         UcpConstants.UCP_AM_SEND_FLAG_EAGER, new UcxCallback() {
