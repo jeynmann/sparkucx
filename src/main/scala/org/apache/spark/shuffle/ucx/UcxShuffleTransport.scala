@@ -10,6 +10,7 @@ import org.apache.spark.shuffle.ucx.memory.UcxHostBounceBuffersPool
 import org.apache.spark.shuffle.ucx.rpc.GlobalWorkerRpcThread
 import org.apache.spark.shuffle.ucx.utils.{SerializableDirectBuffer, SerializationUtils}
 import org.apache.spark.shuffle.utils.UnsafeUtils
+import org.apache.spark.util.ThreadUtils
 import org.openucx.jucx.UcxException
 import org.openucx.jucx.ucp._
 import org.openucx.jucx.ucs.UcsConstants
@@ -18,7 +19,7 @@ import java.lang.ThreadLocal
 import java.net.InetSocketAddress
 import java.nio.ByteBuffer
 import java.util.concurrent.atomic.AtomicInteger
-import java.util.concurrent.{Executors, ExecutorService}
+import java.util.concurrent.ExecutorService
 import scala.collection.concurrent.TrieMap
 import scala.collection.mutable
 
@@ -146,10 +147,11 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
     globalWorker = ucxContext.newWorker(ucpWorkerParams)
     hostBounceBufferMemoryPool = new UcxHostBounceBuffersPool(ucxShuffleConf, ucxContext)
 
-    // replyExecutors = Executors.newFixedThreadPool(ucxShuffleConf.numListenerThreads)
-    replyExecutors = Executors.newWorkStealingPool(ucxShuffleConf.numListenerThreads)
-    progressExecutors = Executors.newFixedThreadPool(
-      ucxShuffleConf.numListenerThreads + ucxShuffleConf.numWorkers + 1)
+    // replyExecutors = ThreadUtils.newDaemonFixedThreadPool(ucxShuffleConf.numListenerThreads)
+    replyExecutors = ThreadUtils.newForkJoinPool(
+      "UCX-listener", ucxShuffleConf.numListenerThreads)
+    progressExecutors = ThreadUtils.newDaemonFixedThreadPool(
+      ucxShuffleConf.numListenerThreads + ucxShuffleConf.numWorkers + 1, "UCX-progress")
 
     allocatedServerWorkers = new Array[UcxWorkerWrapper](ucxShuffleConf.numListenerThreads)
     logInfo(s"Allocating ${ucxShuffleConf.numListenerThreads} server workers")
