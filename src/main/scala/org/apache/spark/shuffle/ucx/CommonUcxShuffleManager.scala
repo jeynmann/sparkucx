@@ -69,6 +69,7 @@ abstract class CommonUcxShuffleManager(val conf: SparkConf, isDriver: Boolean) e
       if (ucxTransport == null) {
         throw new UcxException("UcxShuffleTransport init timeout")
       }
+      logInfo(s"@D awaitUcxTransport")
     }
     ucxTransport
   }
