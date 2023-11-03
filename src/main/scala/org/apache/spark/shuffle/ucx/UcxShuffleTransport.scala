@@ -146,8 +146,8 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
     globalWorker = ucxContext.newWorker(ucpWorkerParams)
     hostBounceBufferMemoryPool = new UcxHostBounceBuffersPool(ucxShuffleConf, ucxContext)
 
-    replyExecutors = Executors.newFixedThreadPool(ucxShuffleConf.numListenerThreads)
-    // replyExecutors = Executors.newWorkStealingPool(ucxShuffleConf.numListenerThreads)
+    // replyExecutors = Executors.newFixedThreadPool(ucxShuffleConf.numListenerThreads)
+    replyExecutors = Executors.newWorkStealingPool(ucxShuffleConf.numListenerThreads)
     progressExecutors = Executors.newFixedThreadPool(
       ucxShuffleConf.numListenerThreads + ucxShuffleConf.numWorkers + 1)
 
