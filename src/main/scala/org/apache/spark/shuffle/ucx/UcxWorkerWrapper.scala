@@ -318,13 +318,12 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
     worker.synchronized {
       ep.sendAmNonBlocking(1, resultMemory.address, tagAndSizes,
         resultMemory.address + tagAndSizes, resultMemory.size - tagAndSizes,
-        UcpConstants.UCP_AM_SEND_FLAG_RNDV, new UcxCallback {
+        0, new UcxCallback {
           override def onSuccess(request: UcpRequest): Unit = {
             logTrace(s"Sent ${blocks.length} blocks of size: ${resultMemory.size} " +
               s"to tag $replyTag in ${System.nanoTime() - startTime} ns.")
             transport.hostBounceBufferMemoryPool.put(resultMemory)
           }
-
           override def onError(ucsStatus: Int, errorMsg: String): Unit = {
             logError(s"Failed to send $errorMsg")
           }
