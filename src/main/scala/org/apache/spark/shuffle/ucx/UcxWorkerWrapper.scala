@@ -199,15 +199,17 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
 
   def getConnection(executorId: transport.ExecutorId): UcpEndpoint = {
     if (!connections.contains(executorId)) {
-      val startTime = System.currentTimeMillis()
-      while (!transport.executorAddresses.contains(executorId)) {
-        if  (System.currentTimeMillis() - startTime > timeout) {
-          throw new UcxException(s"Don't get a worker address for $executorId")
+      if (!transport.executorAddresses.contains(executorId)) {
+        val startTime = System.currentTimeMillis()
+        while (!transport.executorAddresses.contains(executorId)) {
+          if  (System.currentTimeMillis() - startTime > timeout) {
+            throw new UcxException(s"Don't get a worker address for $executorId")
+          }
         }
-      }
-      val cost = System.currentTimeMillis() - startTime
-      if (cost > 1000) {
-        logInfo(s"@D get ${executorId} ${cost} ms")
+        val cost = System.currentTimeMillis() - startTime
+        if (cost > 1000) {
+          logInfo(s"@D get ${executorId} ${cost} ms")
+        }
       }
     }
 
