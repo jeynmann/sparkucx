@@ -100,6 +100,7 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
   private[ucx] val flySend = new PsMonitor
   private[ucx] val flyRecv = new PsMonitor
   private[ucx] val synSend = new PsMonitor
+  private[ucx] val synRecv = new PsMonitor
   // private[ucx] val txBps = new BpsMonitor
   // private[ucx] val rxBps = new BpsMonitor
 
@@ -112,7 +113,7 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
       while (!isInterrupted) {
           // logInfo(s"@D pollSend->$pollSend pollRecv->$pollRecv flySend->$flySend flyRecv->$flyRecv txBps->$txBps rxBps->$rxBps")
           val stamp = System.currentTimeMillis()
-          logInfo(s"@D synSend->${synSend.currentStats(stamp).toSeq} pollSend->${pollSend.currentStats(stamp).toSeq} flyRecv->${flyRecv.currentStats(stamp).toSeq} flySend->${flySend.currentStats(stamp).toSeq} pollRecv->${pollRecv.currentStats(stamp).toSeq}")
+          logInfo(s"@D synSend->${synSend.currentStats(stamp).toSeq} synRecv->${synRecv.currentStats(stamp).toSeq} pollSend->${pollSend.currentStats(stamp).toSeq} flyRecv->${flyRecv.currentStats(stamp).toSeq} flySend->${flySend.currentStats(stamp).toSeq} pollRecv->${pollRecv.currentStats(stamp).toSeq}")
           Thread.sleep(1000)
       }
     }
