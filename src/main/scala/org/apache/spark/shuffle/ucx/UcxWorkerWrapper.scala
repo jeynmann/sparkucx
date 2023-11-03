@@ -334,54 +334,54 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
 
 }
 
-class UcxWorkerThread(val workerWrapper: UcxWorkerWrapper) extends Thread with Logging {
-  val id = workerWrapper.id
-  val worker = workerWrapper.worker
-  val transport = workerWrapper.transport
-  val useWakeup = workerWrapper.transport.ucxShuffleConf.useWakeup
+// class UcxWorkerThread(val workerWrapper: UcxWorkerWrapper) extends Thread with Logging {
+//   val id = workerWrapper.id
+//   val worker = workerWrapper.worker
+//   val transport = workerWrapper.transport
+//   val useWakeup = workerWrapper.transport.ucxShuffleConf.useWakeup
 
-  private val taskQueue = new ConcurrentLinkedQueue[Runnable]()
+//   private val taskQueue = new ConcurrentLinkedQueue[Runnable]()
 
-  setDaemon(true)
-  setName(s"UCX-worker $id")
+//   setDaemon(true)
+//   setName(s"UCX-worker $id")
 
-  override def run(): Unit = {
-    logDebug(s"UCX-worker $id started")
-    while (!isInterrupted) {
-      Option(taskQueue.poll()) match {
-        case Some(task) => task.run
-        case None => {}
-      }
-      worker.synchronized {
-        while (worker.progress() != 0) {}
-      }
-      if(taskQueue.isEmpty && useWakeup) {
-        worker.waitForEvents()
-      }
-    }
-    logDebug(s"UCX-worker $id stopped")
-  }
+//   override def run(): Unit = {
+//     logDebug(s"UCX-worker $id started")
+//     while (!isInterrupted) {
+//       Option(taskQueue.poll()) match {
+//         case Some(task) => task.run
+//         case None => {}
+//       }
+//       worker.synchronized {
+//         while (worker.progress() != 0) {}
+//       }
+//       if(taskQueue.isEmpty && useWakeup) {
+//         worker.waitForEvents()
+//       }
+//     }
+//     logDebug(s"UCX-worker $id stopped")
+//   }
 
-  @inline
-  def submit(task: Callable[_]): Future[_] = {
-    val future = new FutureTask(task)
-    taskQueue.offer(future)
-    worker.signal()
-    future
-  }
+//   @inline
+//   def submit(task: Callable[_]): Future[_] = {
+//     val future = new FutureTask(task)
+//     taskQueue.offer(future)
+//     worker.signal()
+//     future
+//   }
 
-  @inline
-  def submit(task: Runnable): Future[Unit.type] = {
-    val future = new FutureTask(task, Unit)
-    taskQueue.offer(future)
-    worker.signal()
-    future
-  }
+//   @inline
+//   def submit(task: Runnable): Future[Unit.type] = {
+//     val future = new FutureTask(task, Unit)
+//     taskQueue.offer(future)
+//     worker.signal()
+//     future
+//   }
 
-  @inline
-  def close(): Unit = {
-    interrupt()
-    join(10)
-    workerWrapper.close()
-  }
-}
+//   @inline
+//   def close(): Unit = {
+//     interrupt()
+//     join(10)
+//     workerWrapper.close()
+//   }
+// }
