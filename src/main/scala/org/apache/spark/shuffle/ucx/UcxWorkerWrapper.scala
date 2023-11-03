@@ -205,8 +205,8 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
         if  (System.currentTimeMillis() - startTime > timeout) {
           throw new UcxException(s"Don't get a worker address for $executorId")
         }
-        logInfo(s"@D get ${executorId} ${System.currentTimeMillis() - startTime} ms")
       }
+      logInfo(s"@D get ${executorId} ${System.currentTimeMillis() - startTime} ms")
     }
 
     connections.getOrElseUpdate(executorId, {
