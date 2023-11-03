@@ -66,7 +66,6 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
   private[ucx] final val connections =  new TrieMap[transport.ExecutorId, UcpEndpoint]
   private[ucx] lazy val requestData = new TrieMap[Int, (Seq[OperationCallback], UcxRequest, transport.BufferAllocator)]
   private[ucx] lazy val tag = new AtomicInteger(Random.nextInt())
-  private[ucx] lazy val flushRequests = new ConcurrentLinkedQueue[UcpRequest]()
 
   private[ucx] lazy val ioThreadOn = transport.ucxShuffleConf.numIoThreads > 1
   private[ucx] lazy val ioThreadPool = ThreadUtils.newForkJoinPool("IO threads",
@@ -177,11 +176,6 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
    * Blocking progress until there's outstanding flush requests.
    */
   def progressConnect(): Unit = {
-    while (!flushRequests.isEmpty) {
-      progress()
-      flushRequests.removeIf(_.isCompleted)
-    }
-    logTrace(s"Flush completed. Number of connections: ${connections.keys.size}")
   }
 
   /**
@@ -215,12 +209,17 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
   }
 
   def getConnection(executorId: transport.ExecutorId): UcpEndpoint = {
-
-    val startTime = System.currentTimeMillis()
     if (!connections.contains(executorId)) {
-      while (!transport.executorAddresses.contains(executorId)) {
-        if  (System.currentTimeMillis() - startTime > timeout) {
-          throw new UcxException(s"Don't get a worker address for $executorId")
+      if (!transport.executorAddresses.contains(executorId)) {
+        val startTime = System.currentTimeMillis()
+        while (!transport.executorAddresses.contains(executorId)) {
+          if  (System.currentTimeMillis() - startTime > timeout) {
+            throw new UcxException(s"Don't get a worker address for $executorId")
+          }
+        }
+        val cost = System.currentTimeMillis() - startTime
+        if (cost > 1000) {
+          logInfo(s"@D get ${executorId} ${cost} ms")
         }
       }
     }
@@ -253,7 +252,6 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
               workerAddress.clear()
             }
           }, MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
-        flushRequests.add(ep.flushNonBlocking(null))
         ep
       }
     })
@@ -332,13 +330,12 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
     worker.synchronized {
       ep.sendAmNonBlocking(1, resultMemory.address, tagAndSizes,
         resultMemory.address + tagAndSizes, resultMemory.size - tagAndSizes,
-        UcpConstants.UCP_AM_SEND_FLAG_RNDV, new UcxCallback {
+        0, new UcxCallback {
           override def onSuccess(request: UcpRequest): Unit = {
             pollRecv.append((System.currentTimeMillis - startTime).toInt)
             txBps.add(resultMemory.size)
             transport.hostBounceBufferMemoryPool.put(resultMemory)
           }
-
           override def onError(ucsStatus: Int, errorMsg: String): Unit = {
             logError(s"Failed to send $errorMsg")
           }
