@@ -17,7 +17,7 @@ class GlobalWorkerRpcThread(globalWorker: UcpWorker, transport: UcxShuffleTransp
   setDaemon(true)
   setName("Global worker progress thread")
 
-  private val replyWorkersThreadPool = ThreadUtils.newForkJoinPool(
+  private lazy val replyWorkersThreadPool = ThreadUtils.newForkJoinPool(
     "UcxListenerThread", transport.ucxShuffleConf.numListenerThreads)
 
   // Main RPC thread. Submit each RPC request to separate thread and send reply back from separate worker.
