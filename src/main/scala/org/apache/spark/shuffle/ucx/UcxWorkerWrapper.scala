@@ -171,11 +171,13 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
   }
 
   override def close(): Unit = {
-    val closeRequests = connections.map {
-      case (_, endpoint) => endpoint.closeNonBlockingForce()
-    }
-    while (!closeRequests.forall(_.isCompleted)) {
-      progress()
+    if (isClientWorker) {
+      val closeRequests = connections.map {
+        case (_, endpoint) => endpoint.closeNonBlockingForce()
+      }
+      while (!closeRequests.forall(_.isCompleted)) {
+        progress()
+      }
     }
     connections.clear()
     if (progressThread != null) {
@@ -218,13 +220,6 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
     logDebug(s"Worker $this connecting back to $executorId by worker address")
     val ep = worker.synchronized {
       worker.newEndpoint(new UcpEndpointParams().setName(s"Server connection to $executorId")
-        .setPeerErrorHandlingMode()
-        .setErrorHandler(new UcpEndpointErrorHandler() {
-          override def onError(ep: UcpEndpoint, status: Int, errorMsg: String): Unit = {
-            logWarning(s"Endpoint to $executorId got an error: $errorMsg")
-            connections.remove(executorId)
-          }
-        })
         .setUcpAddress(workerAddress))
     }
     connections.put(executorId, ep)
