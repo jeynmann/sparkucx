@@ -102,35 +102,37 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
   //
   private[ucx] val pollSend = new PsMonitor
   private[ucx] val pollRecv = new PsMonitor
-  private[ucx] val flySend = new PsMonitor
-  private[ucx] val flyRecv = new PsMonitor
+  private[ucx] val flySend = new TrieMap[ExecutorId, PsMonitor]
+  private[ucx] val flyRecv = new TrieMap[ExecutorId, PsMonitor]
   private[ucx] val synSend = new PsMonitor
   private[ucx] val synRecv = new PsMonitor
   // private[ucx] val txBps = new BpsMonitor
   // private[ucx] val rxBps = new BpsMonitor
 
   private[ucx] var monitorRun = new java.util.concurrent.CountDownLatch(1)
-  private[ucx] val monitor = new MonitorThread
 
-  class MonitorThread extends Thread {
+  class MonitorTask extends Runnable {
     override def run(): Unit = {
       monitorRun.await
-      while (!isInterrupted) {
+      while (running) {
+        try {
           // logInfo(s"@D pollSend->$pollSend pollRecv->$pollRecv flySend->$flySend flyRecv->$flyRecv txBps->$txBps rxBps->$rxBps")
           val stamp = System.currentTimeMillis()
-          logInfo(s"@D synSend->${synSend.currentStats(stamp).toSeq} synRecv->${synRecv.currentStats(stamp).toSeq} pollSend->${pollSend.currentStats(stamp).toSeq} flyRecv->${flyRecv.currentStats(stamp).toSeq} flySend->${flySend.currentStats(stamp).toSeq} pollRecv->${pollRecv.currentStats(stamp).toSeq}")
+          logInfo(s"@D synSend->${synSend.currentStats(stamp).toSeq} synRecv->${synRecv.currentStats(stamp).toSeq} pollSend->${pollSend.currentStats(stamp).toSeq} pollRecv->${pollRecv.currentStats(stamp).toSeq}")
           Thread.sleep(1000)
+        } catch {
+          case _: Exception => {}
+        }
       }
     }
   }
 
   private[ucx] def startMon(): Unit = {
-    monitor.start
+    progressExecutors.execute(new MonitorTask())
   }
 
   private[ucx] def closeMon(): Unit = {
-    monitor.interrupt()
-    logInfo(s"@D pollSend->${pollSend.id.aggregate} pollRecv->${pollRecv.id.aggregate}")
+    logInfo(s"@D flyRecv {${flyRecv}} flySend {${flySend}} pollSend->${pollSend.id.aggregate} pollRecv->${pollRecv.id.aggregate}")
   }
 
   /* private[ucx]  */def runMon(): Unit = {
@@ -189,14 +191,14 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
     replyExecutors = ThreadUtils.newForkJoinPool(
       "UCX-listener", ucxShuffleConf.numListenerThreads)
     progressExecutors = ThreadUtils.newDaemonFixedThreadPool(
-      ucxShuffleConf.numListenerThreads + ucxShuffleConf.numWorkers + 1, "UCX-progress")
+      ucxShuffleConf.numListenerThreads + ucxShuffleConf.numWorkers + 1 + 1, "UCX-progress")
 
     allocatedServerWorkers = new Array[UcxWorkerWrapper](ucxShuffleConf.numListenerThreads)
     logInfo(s"Allocating ${ucxShuffleConf.numListenerThreads} server workers")
     for (i <- 0 until ucxShuffleConf.numListenerThreads) {
       val worker = ucxContext.newWorker(ucpWorkerParams)
       allocatedServerWorkers(i) = UcxWorkerWrapper(worker, this, isClientWorker = false, i.toLong)
-      progressExecutors.submit(new ProgressTask(worker))
+      progressExecutors.execute(new ProgressTask(worker))
     }
 
     val Array(host, port) = ucxShuffleConf.listenerAddress.split(":")
@@ -224,7 +226,7 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
       connectServerWorkers(executorId, workerAddress)
       UcsConstants.STATUS.UCS_OK
     }, UcpConstants.UCP_AM_FLAG_WHOLE_MSG)
-    progressExecutors.submit(new ProgressTask(globalWorker))
+    progressExecutors.execute(new ProgressTask(globalWorker))
 
     allocatedClientWorkers = new Array[UcxWorkerWrapper](ucxShuffleConf.numWorkers)
     logInfo(s"Allocating ${ucxShuffleConf.numWorkers} client workers")
@@ -233,9 +235,9 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
       ucpWorkerParams.setClientId(clientId)
       val worker = ucxContext.newWorker(ucpWorkerParams)
       allocatedClientWorkers(i) = UcxWorkerWrapper(worker, this, isClientWorker = true, clientId)
-      progressExecutors.submit(new ProgressTask(worker))
+      progressExecutors.execute(new ProgressTask(worker))
     }
-
+    
     startMon()
     initialized = true
     logInfo(s"Started listener on ${listener.getAddress}")
@@ -361,13 +363,13 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
   }
 
   def handleFetchBlockRequest(replyTag: Int, amData: UcpAmData, replyExecutor: Long): Unit = {
-    replyExecutors.submit(new Runnable {
+    replyExecutors.execute(new Runnable {
       override def run = {
         val buffer = UnsafeUtils.getByteBufferView(amData.getDataAddress, amData.getLength.toInt)
         val blockIds = mutable.ArrayBuffer.empty[BlockId]
 
         val sendTime = buffer.getLong()
-        flySend.add(System.currentTimeMillis - sendTime)
+        flySend(replyExecutor).add(System.currentTimeMillis - sendTime)
         // 1. Deserialize blockIds from header
         while (buffer.remaining() > 8) {
           val blockId = UcxShuffleBockId.deserialize(buffer)

@@ -64,8 +64,9 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
   extends Closeable with Logging {
   private[ucx] final val timeout = transport.ucxShuffleConf.getSparkConf.getTimeAsMs("spark.network.timeout", "100")
   private[ucx] final val connections =  new TrieMap[transport.ExecutorId, UcpEndpoint]
-  private[ucx] lazy val requestData = new TrieMap[Int, (Seq[OperationCallback], UcxRequest, transport.BufferAllocator)]
+  private[ucx] lazy val requestData = new TrieMap[Int, (Seq[OperationCallback], UcxRequest, transport.ExecutorId)]
   private[ucx] lazy val tag = new AtomicInteger(Random.nextInt())
+  private[ucx] lazy val memPool = transport.hostBounceBufferMemoryPool
 
   private[ucx] lazy val ioThreadOn = transport.ucxShuffleConf.numIoThreads > 1
   private[ucx] lazy val ioThreadPool = ThreadUtils.newForkJoinPool("IO threads",
@@ -93,7 +94,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
           throw new UcxException(s"No data for tag $i.")
         }
 
-        val (callbacks, request, allocator) = data.get
+        val (callbacks, request, execId) = data.get
         val stats = request.getStats.get.asInstanceOf[UcxStats]
         stats.receiveSize = ucpAmData.getLength
 
@@ -125,7 +126,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
           }
           if (callbacks.isEmpty) UcsConstants.STATUS.UCS_OK else UcsConstants.STATUS.UCS_INPROGRESS
         } else {
-          val mem = allocator(ucpAmData.getLength)
+          val mem = memPool.get(ucpAmData.getLength)
           // stats.amHandleTime = System.nanoTime()
           request.setRequest(worker.recvAmDataNonBlocking(ucpAmData.getDataHandle, mem.address, ucpAmData.getLength,
             new UcxCallback() {
@@ -137,7 +138,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
                 //   s"time from amHandle: ${System.nanoTime() - stats.amHandleTime} ns")
                 val recvTime = UcxUtils.getByteBufferView(mem.address, ucpAmData.getLength).getLong
                 offset += UnsafeUtils.LONG_SIZE
-                flyRecv.add(System.currentTimeMillis - recvTime)
+                flyRecv(execId).add(System.currentTimeMillis - recvTime)
                 // rxBps.add(headerBuffer.capacity + mem.size)
                 for (b <- 0 until numBlocks) {
                   val blockSize = headerBuffer.getInt
@@ -162,17 +163,12 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
 
   override def close(): Unit = {
     if (isClientWorker) {
-      try {
-        val closeRequests = connections.map {
-          case (_, endpoint) => endpoint.closeNonBlockingForce()
-        }
-        while (!closeRequests.forall(_.isCompleted)) {
-          progress()
-        }
-      } catch {
-        case _: Exception => {}
+      val closeRequests = connections.map {
+        case (_, endpoint) => endpoint.closeNonBlockingForce()
       }
-      connections.clear()
+      while (!closeRequests.forall(_.isCompleted)) {
+        progress()
+      }
     }
     if (ioThreadOn) {
       ioThreadPool.shutdown()
@@ -204,13 +200,8 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
   def connectByWorkerAddress(executorId: transport.ExecutorId, workerAddress: ByteBuffer): Unit = {
     logDebug(s"Worker $this connecting back to $executorId by worker address")
     val ep = worker.synchronized {
+      flySend.getOrElseUpdate(executorId, new PsMonitor)
       worker.newEndpoint(new UcpEndpointParams().setName(s"Server connection to $executorId")
-        .setErrorHandler(new UcpEndpointErrorHandler() {
-          override def onError(ep: UcpEndpoint, status: Int, errorMsg: String): Unit = {
-            logWarning(s"Endpoint to $executorId got an error: $errorMsg")
-            connections.remove(executorId)
-          }
-        })
         .setUcpAddress(workerAddress))
     }
     connections.put(executorId, ep)
@@ -252,6 +243,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
 
       worker.synchronized {
         val ep = worker.newEndpoint(endpointParams)
+        flyRecv.getOrElseUpdate(executorId, new PsMonitor)
         ep.sendAmNonBlocking(1, UcxUtils.getAddress(header), UnsafeUtils.LONG_SIZE,
           UcxUtils.getAddress(workerAddress), workerAddress.capacity().toLong, UcpConstants.UCP_AM_SEND_FLAG_EAGER,
           new UcxCallback() {
@@ -279,7 +271,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
     blockIds.foreach(b => b.serialize(buffer))
 
     val request = new UcxRequest(null, new UcxStats())
-    requestData.put(t, (callbacks, request, resultBufferAllocator))
+    requestData.put(t, (callbacks, request, executorId))
 
     val startTime = System.currentTimeMillis
     buffer.putLong(headerSize, startTime)
