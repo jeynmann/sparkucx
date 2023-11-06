@@ -138,7 +138,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
                 //   s"time from amHandle: ${System.nanoTime() - stats.amHandleTime} ns")
                 val recvTime = UcxUtils.getByteBufferView(mem.address, ucpAmData.getLength).getLong
                 offset += UnsafeUtils.LONG_SIZE
-                flyRecv(execId).add(System.currentTimeMillis - recvTime)
+                flyRecv(execId.toInt).add(System.currentTimeMillis - recvTime)
                 // rxBps.add(headerBuffer.capacity + mem.size)
                 for (b <- 0 until numBlocks) {
                   val blockSize = headerBuffer.getInt
@@ -200,7 +200,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
   def connectByWorkerAddress(executorId: transport.ExecutorId, workerAddress: ByteBuffer): Unit = {
     logDebug(s"Worker $this connecting back to $executorId by worker address")
     val ep = worker.synchronized {
-      flySend.getOrElseUpdate(executorId, new PsMonitor)
+      flySend.getOrElseUpdate(executorId.toInt, new PsMonitor)
       worker.newEndpoint(new UcpEndpointParams().setName(s"Server connection to $executorId")
         .setUcpAddress(workerAddress))
     }
@@ -243,7 +243,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
 
       worker.synchronized {
         val ep = worker.newEndpoint(endpointParams)
-        flyRecv.getOrElseUpdate(executorId, new PsMonitor)
+        flyRecv.getOrElseUpdate(executorId.toInt, new PsMonitor)
         ep.sendAmNonBlocking(1, UcxUtils.getAddress(header), UnsafeUtils.LONG_SIZE,
           UcxUtils.getAddress(workerAddress), workerAddress.capacity().toLong, UcpConstants.UCP_AM_SEND_FLAG_EAGER,
           new UcxCallback() {

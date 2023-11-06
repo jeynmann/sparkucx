@@ -102,8 +102,8 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
   //
   private[ucx] val pollSend = new PsMonitor
   private[ucx] val pollRecv = new PsMonitor
-  private[ucx] val flySend = new TrieMap[ExecutorId, PsMonitor]
-  private[ucx] val flyRecv = new TrieMap[ExecutorId, PsMonitor]
+  private[ucx] val flySend = new TrieMap[Int, PsMonitor]
+  private[ucx] val flyRecv = new TrieMap[Int, PsMonitor]
   private[ucx] val synSend = new PsMonitor
   private[ucx] val synRecv = new PsMonitor
   // private[ucx] val txBps = new BpsMonitor
@@ -369,7 +369,7 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
         val blockIds = mutable.ArrayBuffer.empty[BlockId]
 
         val sendTime = buffer.getLong()
-        flySend(replyExecutor).add(System.currentTimeMillis - sendTime)
+        flySend(replyExecutor.toInt).add(System.currentTimeMillis - sendTime)
         // 1. Deserialize blockIds from header
         while (buffer.remaining() > 8) {
           val blockId = UcxShuffleBockId.deserialize(buffer)
