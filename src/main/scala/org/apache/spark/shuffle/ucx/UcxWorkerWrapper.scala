@@ -63,7 +63,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
                             id: Long = 0L)
   extends Closeable with Logging {
   private[ucx] final val timeout = transport.ucxShuffleConf.getSparkConf.getTimeAsMs("spark.network.timeout", "100")
-  private[ucx] final val connections =  new TrieMap[transport.ExecutorId, UcpEndpoint]
+  private[ucx] final val connections = new TrieMap[transport.ExecutorId, UcpEndpoint]
   private[ucx] lazy val requestData = new TrieMap[Int, (Seq[OperationCallback], UcxRequest, transport.BufferAllocator)]
   private[ucx] lazy val tag = new AtomicInteger(Random.nextInt())
 
@@ -71,6 +71,29 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
   private[ucx] lazy val ioThreadPool = ThreadUtils.newForkJoinPool("IO threads",
     transport.ucxShuffleConf.numIoThreads)
   private[ucx] lazy val ioTaskSupport = new ForkJoinTaskSupport(ioThreadPool)
+  private[ucx] var progressThread: ProgressThread = _
+
+  class ProgressThread extends Thread {
+    setDaemon(true)
+    setName(s"UCX-progress-$id")
+
+    override def run(): Unit = {
+      if (transport.ucxShuffleConf.useWakeup) {
+        while (!isInterrupted) {
+          worker.synchronized {
+            while (worker.progress != 0) {}
+          }
+          worker.waitForEvents()
+        }
+      } else {
+        while (!isInterrupted) {
+          worker.synchronized {
+            while (worker.progress != 0) {}
+          }
+        }
+      }
+    }
+  }
 
   if (isClientWorker) {
     // Receive block data handler
@@ -155,10 +178,19 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
       progress()
     }
     connections.clear()
+    if (progressThread != null) {
+      progressThread.interrupt()
+      progressThread.join(1)
+    }
     if (ioThreadOn) {
       ioThreadPool.shutdown()
     }
     worker.close()
+  }
+
+  def progressStart(): Unit = {
+    progressThread = new ProgressThread()
+    progressThread.start()
   }
 
   /**
@@ -186,6 +218,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
     logDebug(s"Worker $this connecting back to $executorId by worker address")
     val ep = worker.synchronized {
       worker.newEndpoint(new UcpEndpointParams().setName(s"Server connection to $executorId")
+        .setPeerErrorHandlingMode()
         .setErrorHandler(new UcpEndpointErrorHandler() {
           override def onError(ep: UcpEndpoint, status: Int, errorMsg: String): Unit = {
             logWarning(s"Endpoint to $executorId got an error: $errorMsg")
