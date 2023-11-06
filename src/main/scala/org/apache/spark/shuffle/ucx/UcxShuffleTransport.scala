@@ -250,10 +250,10 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
   override def close(): Unit = {
     closeMon()
     if (initialized) {
+      hostBounceBufferMemoryPool.close()
+
       endpoints.foreach(_.closeNonBlockingForce())
       endpoints.clear()
-
-      hostBounceBufferMemoryPool.close()
 
       allocatedClientWorkers.foreach(_.close)
 
