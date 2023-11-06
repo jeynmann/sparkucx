@@ -158,7 +158,7 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
     for (i <- 0 until ucxShuffleConf.numListenerThreads) {
       val worker = ucxContext.newWorker(ucpWorkerParams)
       allocatedServerWorkers(i) = UcxWorkerWrapper(worker, this, isClientWorker = false, i.toLong)
-      progressExecutors.submit(new ProgressTask(worker))
+      progressExecutors.execute(new ProgressTask(worker))
     }
 
     val Array(host, port) = ucxShuffleConf.listenerAddress.split(":")
@@ -186,7 +186,7 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
       connectServerWorkers(executorId, workerAddress)
       UcsConstants.STATUS.UCS_OK
     }, UcpConstants.UCP_AM_FLAG_WHOLE_MSG)
-    progressExecutors.submit(new ProgressTask(globalWorker))
+    progressExecutors.execute(new ProgressTask(globalWorker))
 
     allocatedClientWorkers = new Array[UcxWorkerWrapper](ucxShuffleConf.numWorkers)
     logInfo(s"Allocating ${ucxShuffleConf.numWorkers} client workers")
@@ -195,7 +195,7 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
       ucpWorkerParams.setClientId(clientId)
       val worker = ucxContext.newWorker(ucpWorkerParams)
       allocatedClientWorkers(i) = UcxWorkerWrapper(worker, this, isClientWorker = true, clientId)
-      progressExecutors.submit(new ProgressTask(worker))
+      progressExecutors.execute(new ProgressTask(worker))
     }
 
     initialized = true
@@ -320,7 +320,7 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
   }
 
   def handleFetchBlockRequest(replyTag: Int, amData: UcpAmData, replyExecutor: Long): Unit = {
-    replyExecutors.submit(new Runnable {
+    replyExecutors.execute(new Runnable {
       override def run = {
         val buffer = UnsafeUtils.getByteBufferView(amData.getDataAddress, amData.getLength.toInt)
         val blockIds = mutable.ArrayBuffer.empty[BlockId]
