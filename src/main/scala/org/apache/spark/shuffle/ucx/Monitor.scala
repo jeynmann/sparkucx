@@ -81,13 +81,14 @@ class BpsMonitor extends Monitor[Long] {
 }
 
 class PsMonitor extends Monitor[Array[Long]] {
-    val record = new LongArrayRecord(1000)
+    final val recordLength = 200
+    val record = new LongArrayRecord(recordLength)
     var timeStamp = System.currentTimeMillis()
     var dataStamp = new Array[Long](6) // 50,90,99,999,M
     val id = new LongRecord
 
     def add(x: Long): Unit = {
-        record.update((id.local().toInt.abs % 1000, x))
+        record.update((id.local().toInt.abs % recordLength, x))
         id.add(1)
     }
 
