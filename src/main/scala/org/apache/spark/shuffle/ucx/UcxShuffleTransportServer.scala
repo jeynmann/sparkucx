@@ -18,6 +18,7 @@ class UcxShuffleTransportServer(
   serverConf: ExternalUcxServerConf, blockManager: ExternalUcxShuffleBlockResolver)
   extends ExternalShuffleTransport(serverConf)
   with UcxLogging {
+  private[ucx] val workerMap = new TrieMap[String, TrieMap[Int, ByteBuffer]]
   private val errorHandler = new UcpEndpointErrorHandler {
     override def onError(ucpEndpoint: UcpEndpoint, errorCode: Int, errorString: String): Unit = {
       if (errorCode == UcsConstants.STATUS.UCS_ERR_CONNECTION_RESET) {
@@ -117,16 +118,29 @@ class UcxShuffleTransportServer(
     }
   }
 
+  def applicationRemoved(appId: String): Unit = {
+    workerMap.remove(appId)
+  }
+
+  def executorRemoved(executorId: String, appId: String): Unit = {
+    // val m = workerMap.get(appId)
+    // if (m != null) {
+    //   m.remove(executorId.toInt)
+    // }
+  }
+
   def connectBack(clientWorker: UcxWorkerId, workerAddress: ByteBuffer): Unit = {
     // TODO: need support application remove
-    // val copiedAddress = ByteBuffer.allocateDirect(workerAddress.remaining)
-    // copiedAddress.put(workerAddress)
-    // replyExecutors.execute(new Runnable {
-    //   override def run(): Unit = {
-    //     allocatedWorker.foreach(_.connectBack(clientWorker, copiedAddress))
-    //   }
-    // })
-    allocatedWorker.foreach(_.connectBack(clientWorker, workerAddress))
+    val copiedAddress = ByteBuffer.allocateDirect(workerAddress.remaining)
+    copiedAddress.put(workerAddress)
+    workerMap.getOrElseUpdate(clientWorker.appId, new TrieMap[Int, ByteBuffer])
+      .getOrElseUpdate(clientWorker.exeId, copiedAddress)
+    replyExecutors.execute(new Runnable {
+      override def run(): Unit = {
+        allocatedWorker.foreach(_.getConnectionBack(clientWorker))
+      }
+    })
+    // allocatedWorker.foreach(_.connectBack(clientWorker, workerAddress))
   }
 
   def handleFetchBlockRequest(clientWorker: UcxWorkerId, exeId: Int, replyTag: Int, amData: UcpAmData): Unit = {

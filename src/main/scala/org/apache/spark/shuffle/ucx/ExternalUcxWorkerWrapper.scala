@@ -133,17 +133,38 @@ case class ExternalUcxWorkerWrapper(val worker: UcpWorker,
   }
 
   def getConnectionBack(shuffleClient: UcxWorkerId): UcpEndpoint = {
-    shuffleClients(shuffleClient)
+    shuffleClients.getOrElseUpdate(shuffleClient, {
+      val workerMap = transport.asInstanceOf[UcxShuffleTransportServer].workerMap
+      if (!workerMap.contains(shuffleClient.appId)) {
+        val startTime = System.currentTimeMillis()
+        while (!workerMap.contains(shuffleClient.appId)) {
+          if  (System.currentTimeMillis() - startTime > 10000) {
+            throw new UcxException(s"Don't get a worker address for $UcxWorkerId")
+          }
+          Thread.`yield`
+        }
+        val appMap = workerMap(shuffleClient.appId)
+        while (!appMap.contains(shuffleClient.exeId)) {
+          if  (System.currentTimeMillis() - startTime > 10000) {
+            throw new UcxException(s"Don't get a worker address for $UcxWorkerId")
+          }
+          Thread.`yield`
+        }
+      }
+      val workerAddress = workerMap(shuffleClient.appId)(shuffleClient.exeId)
+      connectBack(shuffleClient, workerAddress)
+    })
   }
 
-  def connectBack(shuffleClient: UcxWorkerId, workerAddress: ByteBuffer): Unit = {
-    logInfo(s"$workerId connecting back to $shuffleClient by worker address")
-    val ep = worker.synchronized {
-      worker.newEndpoint(new UcpEndpointParams()
-        .setName(s"Server connection to $UcxWorkerId")
-        .setUcpAddress(workerAddress))
-    }
-    shuffleClients.put(shuffleClient, ep)
+  def connectBack(shuffleClient: UcxWorkerId, workerAddress: ByteBuffer): UcpEndpoint = {
+      logDebug(s"$workerId connecting back to $shuffleClient by worker address")
+      worker.synchronized {
+        worker.newEndpoint(new UcpEndpointParams()
+          .setName(s"Server to $UcxWorkerId")
+          .setUcpAddress(workerAddress))
+      }
+      // ep.flushNonBlocking()
+      // ep
   }
 
   def getConnection(shuffleServer: InetSocketAddress): UcpEndpoint = {
@@ -155,7 +176,7 @@ case class ExternalUcxWorkerWrapper(val worker: UcpWorker,
             logError(s"Endpoint to $shuffleServer got an error: $errorMsg")
             shuffleServers.remove(shuffleServer)
           }
-        }).setName(s"Endpoint to $shuffleServer")
+        }).setName(s"Client to $shuffleServer")
 
       logInfo(s"$workerId connecting to external service $shuffleServer")
 

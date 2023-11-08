@@ -104,6 +104,7 @@ class UcxYarnShuffleService extends YarnShuffleService() with UcxLogging {
       val ucxConf = new ExternalUcxServerConf(conf)
       ucxTransport = new UcxShuffleTransportServer(ucxConf, ucxHandler.ucxBlockManager)
       ucxTransport.init()
+      ucxHandler.setTransport(ucxTransport)
     } catch {
       case e: Exception => if (stopOnFailure) {
         throw e

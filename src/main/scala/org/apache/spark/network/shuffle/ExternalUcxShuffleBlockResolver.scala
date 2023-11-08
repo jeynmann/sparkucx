@@ -13,6 +13,7 @@ import org.apache.spark.network.util.TransportConf
 import org.apache.spark.network.shuffle.ExternalShuffleBlockResolver.AppExecId
 
 import org.apache.spark.shuffle.utils.UcxLogging
+import org.apache.spark.shuffle.ucx.UcxShuffleTransportServer
 
 class ExternalUcxShuffleBlockResolver(conf: TransportConf, registeredExecutorFile: File)
   extends ExternalShuffleBlockResolver(conf, registeredExecutorFile) with UcxLogging {
@@ -22,6 +23,7 @@ class ExternalUcxShuffleBlockResolver(conf: TransportConf, registeredExecutorFil
     "org.apache.spark.shuffle.sort.SortShuffleManager",
     "org.apache.spark.shuffle.unsafe.UnsafeShuffleManager",
     "org.apache.spark.shuffle.ExternalUcxShuffleManager")
+  private[spark] var ucxTransport: UcxShuffleTransportServer = _
 
   init()
 
@@ -41,6 +43,9 @@ class ExternalUcxShuffleBlockResolver(conf: TransportConf, registeredExecutorFil
     dbAppExecKeyMethod.invoke(this, fullId).asInstanceOf[Array[Byte]]
   }
 
+  def setTransport(transport: UcxShuffleTransportServer): Unit = {
+    ucxTransport = transport
+  }
   /** Registers a new Executor with all the configuration we need to find its shuffle files. */
   override def registerExecutor(
       appId: String,
@@ -64,7 +69,12 @@ class ExternalUcxShuffleBlockResolver(conf: TransportConf, registeredExecutorFil
     }
   }
 
-  // override def applicationRemoved(appId: String, cleanupLocalDirs: boolean): Unit = {
-  //   super().applicationRemoved(appId, cleanupLocalDirs)
-  // }
+  override def applicationRemoved(appId: String, cleanupLocalDirs: Boolean): Unit = {
+    super.applicationRemoved(appId, cleanupLocalDirs)
+    ucxTransport.applicationRemoved(appId)
+  }
+  override def executorRemoved(executorId: String, appId: String): Unit = {
+    super.executorRemoved(executorId, appId)
+    ucxTransport.executorRemoved(executorId, appId)
+  }
 }
