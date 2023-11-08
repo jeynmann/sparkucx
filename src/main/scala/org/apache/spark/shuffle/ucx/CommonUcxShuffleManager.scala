@@ -81,8 +81,7 @@ abstract class CommonUcxShuffleManager(val conf: SparkConf, isDriver: Boolean) e
     val transport = new UcxShuffleTransport(ucxShuffleConf, blockManager.executorId.toLong)
     val address = transport.init()
     ucxTransport = transport
-    val rpcEnv = RpcEnv.create("ucx-rpc-env", blockManager.host, blockManager.port,
-      conf, new SecurityManager(conf), clientMode = false)
+    val rpcEnv = SparkEnv.get.rpcEnv
     executorEndpoint = new UcxExecutorRpcEndpoint(rpcEnv, ucxTransport, setupThread)
     val endpoint = rpcEnv.setupEndpoint(
       s"ucx-shuffle-executor-${blockManager.executorId}",
