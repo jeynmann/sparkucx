@@ -4,13 +4,14 @@ package org.apache.spark.shuffle.ucx
 import org.apache.spark.shuffle.utils.{UcxLogging, UnsafeUtils}
 import org.apache.spark.shuffle.ucx.utils.SerializationUtils
 import org.apache.spark.network.shuffle.ExternalUcxShuffleBlockResolver
-import org.apache.spark.util.ThreadUtils
+// import org.apache.spark.util.ThreadUtils
 import org.openucx.jucx.ucp._
 import org.openucx.jucx.ucs.UcsConstants
 
 import java.net.InetSocketAddress
 import java.nio.ByteBuffer
 import java.nio.channels.Channels
+import scala.concurrent.forkjoin.{ForkJoinPool => SForkJoinPool, ForkJoinWorkerThread => SForkJoinWorkerThread}
 import scala.collection.concurrent.TrieMap
 import scala.collection.mutable
 
@@ -18,7 +19,7 @@ class UcxShuffleTransportServer(
   serverConf: ExternalUcxServerConf, blockManager: ExternalUcxShuffleBlockResolver)
   extends ExternalShuffleTransport(serverConf)
   with UcxLogging {
-  private[ucx] val workerMap = new TrieMap[String, TrieMap[Int, ByteBuffer]]
+  private[ucx] val workerMap = new TrieMap[String, TrieMap[(Int, Int), ByteBuffer]]
   private val errorHandler = new UcpEndpointErrorHandler {
     override def onError(ucpEndpoint: UcpEndpoint, errorCode: Int, errorString: String): Unit = {
       if (errorCode == UcsConstants.STATUS.UCS_ERR_CONNECTION_RESET) {
@@ -30,8 +31,14 @@ class UcxShuffleTransportServer(
       ucpEndpoint.close()
     }
   }
-  private val replyExecutors = ThreadUtils.newForkJoinPool(
-    "UCX-listener", serverConf.numListenerThreads)
+  private val factory = new SForkJoinPool.ForkJoinWorkerThreadFactory {
+    override def newThread(pool: SForkJoinPool) =
+      new SForkJoinWorkerThread(pool) {
+        setName(s"UCX-listener-${super.getName}")
+      }
+  }
+  private val replyExecutors = new SForkJoinPool(
+    serverConf.numListenerThreads, factory, null, false)
   private val workerLocal = new ThreadLocal[ExternalUcxWorkerWrapper]
 
   private val endpoints = mutable.Set.empty[UcpEndpoint]
@@ -133,8 +140,8 @@ class UcxShuffleTransportServer(
     // TODO: need support application remove
     val copiedAddress = ByteBuffer.allocateDirect(workerAddress.remaining)
     copiedAddress.put(workerAddress)
-    workerMap.getOrElseUpdate(clientWorker.appId, new TrieMap[Int, ByteBuffer])
-      .getOrElseUpdate(clientWorker.exeId, copiedAddress)
+    workerMap.getOrElseUpdate(clientWorker.appId, new TrieMap[(Int,Int), ByteBuffer])
+      .getOrElseUpdate((clientWorker.exeId,clientWorker.workerId), copiedAddress)
     replyExecutors.execute(new Runnable {
       override def run(): Unit = {
         allocatedWorker.foreach(_.getConnectionBack(clientWorker))

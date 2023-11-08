@@ -7,11 +7,11 @@ package org.apache.spark.shuffle.ucx
 // import org.apache.spark.SparkEnv
 import org.apache.spark.shuffle.ucx.memory.UcxHostBounceBuffersPool
 import org.apache.spark.shuffle.utils.UcxLogging
-import org.apache.spark.util.ThreadUtils
+// import org.apache.spark.util.ThreadUtils
 import org.openucx.jucx.ucp._
 
 import java.nio.ByteBuffer
-import java.util.concurrent.ExecutorService
+import java.util.concurrent.{Executors, ExecutorService}
 import java.util.concurrent.atomic.AtomicInteger
 
 case class UcxWorkerId(appId: String, exeId: Int, workerId: Int) extends BlockId {
@@ -84,7 +84,7 @@ class ExternalShuffleTransport(var ucxShuffleConf: ExternalUcxConf) extends UcxL
   }
 
   def initProgressPool(threadNum: Int): Unit = {
-    progressExecutors = ThreadUtils.newDaemonFixedThreadPool(threadNum, "UCX-progress")
+    progressExecutors = Executors.newFixedThreadPool(threadNum)
   }
 
   def initWorker(workerNum: Int, creator: (Int) => ExternalUcxWorkerWrapper): Unit = {

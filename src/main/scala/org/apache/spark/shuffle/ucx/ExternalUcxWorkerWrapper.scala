@@ -144,14 +144,14 @@ case class ExternalUcxWorkerWrapper(val worker: UcpWorker,
           Thread.`yield`
         }
         val appMap = workerMap(shuffleClient.appId)
-        while (!appMap.contains(shuffleClient.exeId)) {
+        while (!appMap.contains((shuffleClient.exeId, shuffleClient.workerId))) {
           if  (System.currentTimeMillis() - startTime > 10000) {
             throw new UcxException(s"Don't get a worker address for $UcxWorkerId")
           }
           Thread.`yield`
         }
       }
-      val workerAddress = workerMap(shuffleClient.appId)(shuffleClient.exeId)
+      val workerAddress = workerMap(shuffleClient.appId)((shuffleClient.exeId, shuffleClient.workerId))
       connectBack(shuffleClient, workerAddress)
     })
   }
@@ -182,11 +182,12 @@ case class ExternalUcxWorkerWrapper(val worker: UcpWorker,
 
       val header = Platform.allocateDirectBuffer(workerId.serializedSize)
       workerId.serialize(header)
+      header.rewind()
       val workerAddress = worker.getAddress
 
       worker.synchronized {
         val ep = worker.newEndpoint(endpointParams)
-        ep.sendAmNonBlocking(1, UcxUtils.getAddress(header), header.capacity(),
+        ep.sendAmNonBlocking(1, UcxUtils.getAddress(header), header.remaining(),
         UcxUtils.getAddress(workerAddress), workerAddress.capacity(),
         UcpConstants.UCP_AM_SEND_FLAG_EAGER,
         new UcxCallback() {
