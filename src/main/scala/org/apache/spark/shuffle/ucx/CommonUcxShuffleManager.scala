@@ -4,12 +4,13 @@
 */
 package org.apache.spark.shuffle.ucx
 
-import java.util.concurrent.{CountDownLatch, TimeUnit}
+import java.util.concurrent.TimeUnit
 
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.util.Success
 
-import org.apache.spark.rpc.RpcEnv
+import org.apache.spark.SparkException
+import org.apache.spark.rpc.{RpcEnv, RpcEndpointRef}
 import org.apache.spark.shuffle.sort.SortShuffleManager
 import org.apache.spark.shuffle.ucx.rpc.{UcxDriverRpcEndpoint, UcxExecutorRpcEndpoint}
 import org.apache.spark.shuffle.ucx.rpc.UcxRpcMessages.{ExecutorAdded, IntroduceAllExecutors}
@@ -33,7 +34,6 @@ abstract class CommonUcxShuffleManager(val conf: SparkConf, isDriver: Boolean) e
 
   val ucxShuffleConf = new UcxShuffleConf(conf)
 
-  private[this] val latch = new CountDownLatch(1)
   @volatile var ucxTransport: UcxShuffleTransport = _
 
   private var executorEndpoint: UcxExecutorRpcEndpoint = _
@@ -43,7 +43,7 @@ abstract class CommonUcxShuffleManager(val conf: SparkConf, isDriver: Boolean) e
 
   private val setupThread = ThreadUtils.newDaemonSingleThreadExecutor("UcxTransportSetupThread")
 
-  setupThread.submit(new Runnable {
+  private[this] val latch = setupThread.submit(new Runnable {
     override def run(): Unit = {
       while (SparkEnv.get == null) {
         Thread.sleep(10)
@@ -64,10 +64,11 @@ abstract class CommonUcxShuffleManager(val conf: SparkConf, isDriver: Boolean) e
 
   def awaitUcxTransport(): UcxShuffleTransport = {
     if (ucxTransport == null) {
-      latch.await(10, TimeUnit.SECONDS)
+      latch.get(10, TimeUnit.SECONDS)
       if (ucxTransport == null) {
         throw new UcxException("UcxShuffleTransport init timeout")
       }
+      logInfo(s"@D awaitUcxTransport")
     }
     ucxTransport
   }
@@ -80,19 +81,28 @@ abstract class CommonUcxShuffleManager(val conf: SparkConf, isDriver: Boolean) e
     val transport = new UcxShuffleTransport(ucxShuffleConf, blockManager.executorId.toLong)
     val address = transport.init()
     ucxTransport = transport
-    latch.countDown()
-    val rpcEnv = RpcEnv.create("ucx-rpc-env", blockManager.host, blockManager.port,
-      conf, new SecurityManager(conf), clientMode = false)
+    val rpcEnv = SparkEnv.get.rpcEnv
     executorEndpoint = new UcxExecutorRpcEndpoint(rpcEnv, ucxTransport, setupThread)
     val endpoint = rpcEnv.setupEndpoint(
       s"ucx-shuffle-executor-${blockManager.executorId}",
       executorEndpoint)
-    val driverEndpoint = RpcUtils.makeDriverRef(driverRpcName, conf, rpcEnv)
+    var driverCost = 0
+    var driverEndpoint: RpcEndpointRef = null
+    while (driverEndpoint == null) {
+      try {
+        driverEndpoint = RpcUtils.makeDriverRef(driverRpcName, conf, rpcEnv)
+      } catch {
+        case e: SparkException => {
+          Thread.sleep(5)
+          driverCost += 5
+        }
+      }
+    }
     driverEndpoint.ask[IntroduceAllExecutors](ExecutorAdded(blockManager.executorId.toLong, endpoint,
       new SerializableDirectBuffer(address)))
       .andThen {
         case Success(msg) =>
-          logInfo(s"Receive reply $msg")
+          logInfo(s"Driver take $driverCost ms. Receive reply ${msg.asInstanceOf[IntroduceAllExecutors].executorIdToAddress.keys}")
           executorEndpoint.receive(msg)
       }
   }
