@@ -4,7 +4,7 @@
 */
 package org.apache.spark.shuffle.ucx
 
-import java.util.concurrent.{CountDownLatch, TimeUnit}
+import java.util.concurrent.TimeUnit
 
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.util.Success
@@ -34,7 +34,6 @@ abstract class CommonUcxShuffleManager(val conf: SparkConf, isDriver: Boolean) e
 
   val ucxShuffleConf = new UcxShuffleConf(conf)
 
-  private[this] val latch = new CountDownLatch(1)
   @volatile var ucxTransport: UcxShuffleTransport = _
 
   private var executorEndpoint: UcxExecutorRpcEndpoint = _
@@ -44,7 +43,7 @@ abstract class CommonUcxShuffleManager(val conf: SparkConf, isDriver: Boolean) e
 
   private val setupThread = ThreadUtils.newDaemonSingleThreadExecutor("UcxTransportSetupThread")
 
-  setupThread.submit(new Runnable {
+  private[this] val latch = setupThread.submit(new Runnable {
     override def run(): Unit = {
       while (SparkEnv.get == null) {
         Thread.sleep(10)
@@ -65,7 +64,7 @@ abstract class CommonUcxShuffleManager(val conf: SparkConf, isDriver: Boolean) e
 
   def awaitUcxTransport(): UcxShuffleTransport = {
     if (ucxTransport == null) {
-      latch.await(10, TimeUnit.SECONDS)
+      latch.get(10, TimeUnit.SECONDS)
       if (ucxTransport == null) {
         throw new UcxException("UcxShuffleTransport init timeout")
       }
@@ -82,7 +81,6 @@ abstract class CommonUcxShuffleManager(val conf: SparkConf, isDriver: Boolean) e
     val transport = new UcxShuffleTransport(ucxShuffleConf, blockManager.executorId.toLong)
     val address = transport.init()
     ucxTransport = transport
-    latch.countDown()
     val rpcEnv = RpcEnv.create("ucx-rpc-env", blockManager.host, blockManager.port,
       conf, new SecurityManager(conf), clientMode = false)
     executorEndpoint = new UcxExecutorRpcEndpoint(rpcEnv, ucxTransport, setupThread)
