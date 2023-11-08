@@ -63,4 +63,8 @@ class ExternalUcxShuffleBlockResolver(conf: TransportConf, registeredExecutorFil
       case e: Exception => logError("Error saving registered executors", e)
     }
   }
+
+  // override def applicationRemoved(appId: String, cleanupLocalDirs: boolean): Unit = {
+  //   super().applicationRemoved(appId, cleanupLocalDirs)
+  // }
 }

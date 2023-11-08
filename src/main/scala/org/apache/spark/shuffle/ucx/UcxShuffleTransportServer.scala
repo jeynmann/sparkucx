@@ -4,21 +4,20 @@ package org.apache.spark.shuffle.ucx
 import org.apache.spark.shuffle.utils.{UcxLogging, UnsafeUtils}
 import org.apache.spark.shuffle.ucx.utils.SerializationUtils
 import org.apache.spark.network.shuffle.ExternalUcxShuffleBlockResolver
+import org.apache.spark.util.ThreadUtils
 import org.openucx.jucx.ucp._
 import org.openucx.jucx.ucs.UcsConstants
 
 import java.net.InetSocketAddress
 import java.nio.ByteBuffer
 import java.nio.channels.Channels
-import java.util.concurrent.atomic.AtomicInteger
+import scala.collection.concurrent.TrieMap
 import scala.collection.mutable
 
 class UcxShuffleTransportServer(
   serverConf: ExternalUcxServerConf, blockManager: ExternalUcxShuffleBlockResolver)
   extends ExternalShuffleTransport(serverConf)
   with UcxLogging {
-  private val ucpWorkerParams = new UcpWorkerParams().requestThreadSafety()
-
   private val errorHandler = new UcpEndpointErrorHandler {
     override def onError(ucpEndpoint: UcpEndpoint, errorCode: Int, errorString: String): Unit = {
       if (errorCode == UcsConstants.STATUS.UCS_ERR_CONNECTION_RESET) {
@@ -30,26 +29,26 @@ class UcxShuffleTransportServer(
       ucpEndpoint.close()
     }
   }
+  private val replyExecutors = ThreadUtils.newForkJoinPool(
+    "UCX-listener", serverConf.numListenerThreads)
+  private val workerLocal = new ThreadLocal[ExternalUcxWorkerWrapper]
 
-  private var globalThread: ExternalUcxWorkerThread = _
+  private val endpoints = mutable.Set.empty[UcpEndpoint]
+  private var globalWorker: UcpWorker = _
   private var listener: UcpListener = _
-  val endpoints = mutable.Set.empty[UcpEndpoint]
-
-  private var allocatedServerThreads: Array[ExternalUcxWorkerThread] = _
-  private val serverThreadId = new AtomicInteger()
 
   override def estimateNumEps(): Int = serverConf.ucxEpsNum
 
   override def init(): ByteBuffer = {
-    super.initContext()
-    super.initMemoryPool()
+    initContext()
+    initMemoryPool()
 
     if (serverConf.useWakeup) {
       ucpWorkerParams.requestWakeupRX().requestWakeupTX().requestWakeupEdge()
     }
 
     logInfo(s"Allocating global workers")
-    val globalWorker = ucxContext.newWorker(ucpWorkerParams)
+    globalWorker = ucxContext.newWorker(ucpWorkerParams)
     listener = globalWorker.newListener(new UcpListenerParams().setSockAddr(
       new InetSocketAddress("0.0.0.0", serverConf.ucxServerPort))
       .setConnectionHandler((ucpConnectionRequest: UcpConnectionRequest) => {
@@ -76,18 +75,18 @@ class UcxShuffleTransportServer(
       connectBack(workerId, workerAddress)
       UcsConstants.STATUS.UCS_OK
     }, UcpConstants.UCP_AM_FLAG_WHOLE_MSG)
-    globalThread = new ExternalUcxWorkerThread(globalWorker, this, false)
 
-    allocatedServerThreads = new Array[ExternalUcxWorkerThread](serverConf.numListenerThreads)
+    initProgressPool(serverConf.numListenerThreads + 1)
+
     logInfo(s"Allocating ${serverConf.numListenerThreads} server workers")
-    for (i <- 0 until serverConf.numListenerThreads) {
+    initWorker(serverConf.numListenerThreads, (id: Int) => {
       val worker = ucxContext.newWorker(ucpWorkerParams)
-      allocatedServerThreads(i) = new ExternalUcxWorkerThread(worker, this, false, new UcxWorkerId("Server", 0, i))
-    }
+      val workerId = new UcxWorkerId("Server", 0, id)
+      new ExternalUcxWorkerWrapper(worker, this, false, workerId)
+    })
 
-    logInfo(s"Launch ${serverConf.numListenerThreads} server workers")
-    allocatedServerThreads.foreach(_.start)
-    globalThread.start
+    logInfo(s"Launching global workers")
+    progressExecutors.execute(new ProgressTask(globalWorker))
 
     initialized = true
     logInfo(s"Started listener on ${listener.getAddress}")
@@ -107,32 +106,31 @@ class UcxShuffleTransportServer(
         listener = null
       }
 
-      if (globalThread != null) {
-        globalThread.close()
-        globalThread = null
+      if (globalWorker != null) {
+        globalWorker.close()
+        globalWorker = null
       }
 
-      allocatedServerThreads.foreach(_.close) 
+      replyExecutors.shutdown()
 
       super.close()
     }
   }
 
   def connectBack(clientWorker: UcxWorkerId, workerAddress: ByteBuffer): Unit = {
-    val copiedAddress = ByteBuffer.allocateDirect(workerAddress.remaining)
-    copiedAddress.put(workerAddress)
-    copiedAddress.rewind()
-    allocatedServerThreads.foreach(t => t.submit(new Runnable {
-      override def run(): Unit = {
-        logInfo(s"ConnectBack ${t.workerId.workerId} to $clientWorker")
-        t.workerWrapper.connectBack(clientWorker, copiedAddress)
-      }
-    }))
+    // TODO: need support application remove
+    // val copiedAddress = ByteBuffer.allocateDirect(workerAddress.remaining)
+    // copiedAddress.put(workerAddress)
+    // replyExecutors.execute(new Runnable {
+    //   override def run(): Unit = {
+    //     allocatedWorker.foreach(_.connectBack(clientWorker, copiedAddress))
+    //   }
+    // })
+    allocatedWorker.foreach(_.connectBack(clientWorker, workerAddress))
   }
 
   def handleFetchBlockRequest(clientWorker: UcxWorkerId, exeId: Int, replyTag: Int, amData: UcpAmData): Unit = {
-    val server = selectServerThread
-    server.submit(new Runnable {
+    replyExecutors.execute(new Runnable {
       override def run(): Unit = {
         val buffer = UnsafeUtils.getByteBufferView(amData.getDataAddress, amData.getLength.toInt)
         val blockIds = mutable.ArrayBuffer.empty[UcxShuffleBockId]
@@ -159,12 +157,21 @@ class UcxShuffleTransportServer(
             override def getSize: Long = blockBuffer.size()
           }
         }}
-        server.workerWrapper.handleFetchBlockRequest(clientWorker, replyTag, blocks)
+        selectWorker.handleFetchBlockRequest(clientWorker, replyTag, blocks)
       }
     })
   }
 
   @inline
-  def selectServerThread(): ExternalUcxWorkerThread = allocatedServerThreads(
-    (serverThreadId.incrementAndGet() % allocatedServerThreads.length).abs)
+  override def selectWorker(): ExternalUcxWorkerWrapper = {
+    Option(workerLocal.get) match {
+      case Some(worker) => worker
+      case None => {
+        val worker = allocatedWorker(
+          (currentWorkerId.incrementAndGet() % allocatedWorker.length).abs)
+        workerLocal.set(worker)
+        worker
+      }
+    }
+  }
 }

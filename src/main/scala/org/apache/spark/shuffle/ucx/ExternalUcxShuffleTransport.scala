@@ -6,22 +6,13 @@ package org.apache.spark.shuffle.ucx
 
 // import org.apache.spark.SparkEnv
 import org.apache.spark.shuffle.ucx.memory.UcxHostBounceBuffersPool
-import org.apache.spark.shuffle.ucx.rpc.GlobalWorkerRpcThread
-import org.apache.spark.shuffle.ucx.utils.{SerializableDirectBuffer, SerializationUtils}
-import org.apache.spark.shuffle.utils.UnsafeUtils
 import org.apache.spark.shuffle.utils.UcxLogging
-import org.apache.spark.network.shuffle.ExternalUcxShuffleBlockResolver
-import org.apache.spark.storage.BlockManagerId
-import org.openucx.jucx.UcxException
+import org.apache.spark.util.ThreadUtils
 import org.openucx.jucx.ucp._
-import org.openucx.jucx.ucs.UcsConstants
 
-import java.net.InetSocketAddress
 import java.nio.ByteBuffer
-import java.nio.channels.Channels
+import java.util.concurrent.ExecutorService
 import java.util.concurrent.atomic.AtomicInteger
-import scala.collection.concurrent.TrieMap
-import scala.collection.mutable
 
 case class UcxWorkerId(appId: String, exeId: Int, workerId: Int) extends BlockId {
   override def serializedSize: Int = 12 + appId.size
@@ -49,8 +40,28 @@ object UcxWorkerId {
 
 class ExternalShuffleTransport(var ucxShuffleConf: ExternalUcxConf) extends UcxLogging {
   @volatile protected var initialized: Boolean = false
-  var ucxContext: UcpContext = _
-  var hostBounceBufferMemoryPool: UcxHostBounceBuffersPool = _
+  @volatile protected var running: Boolean = true
+  private[ucx] var ucxContext: UcpContext = _
+  private[ucx] var hostBounceBufferMemoryPool: UcxHostBounceBuffersPool = _
+  private[ucx] val ucpWorkerParams = new UcpWorkerParams().requestThreadSafety()
+  private[ucx] var allocatedWorker: Array[ExternalUcxWorkerWrapper] = _
+  private[ucx] val currentWorkerId = new AtomicInteger()
+  private[ucx] var progressExecutors: ExecutorService = _
+
+  class ProgressTask(worker: UcpWorker) extends Runnable {
+    override def run(): Unit = {
+      val useWakeup = ucxShuffleConf.useWakeup
+      while (running) {
+        worker.synchronized {
+          while (worker.progress != 0) {}
+        }
+        if (useWakeup) {
+          worker.waitForEvents()
+        }
+      }
+    }
+  }
+
   def estimateNumEps(): Int = 1
 
   def initContext(): Unit = {
@@ -72,12 +83,39 @@ class ExternalShuffleTransport(var ucxShuffleConf: ExternalUcxConf) extends UcxL
     hostBounceBufferMemoryPool = new UcxHostBounceBuffersPool(ucxContext)
   }
 
+  def initProgressPool(threadNum: Int): Unit = {
+    progressExecutors = ThreadUtils.newDaemonFixedThreadPool(threadNum, "UCX-progress")
+  }
+
+  def initWorker(workerNum: Int, creator: (Int) => ExternalUcxWorkerWrapper): Unit = {
+    allocatedWorker = new Array[ExternalUcxWorkerWrapper](workerNum)
+    for (i <- 0 until workerNum) {
+      allocatedWorker(i) = creator(i)
+      progressExecutors.execute(new ProgressTask(allocatedWorker(i).worker))
+    }
+  }
+
   def init(): ByteBuffer = ???
+
+  @inline
+  def selectWorker(): ExternalUcxWorkerWrapper = allocatedWorker(
+    (currentWorkerId.incrementAndGet() % allocatedWorker.length).abs)
 
   def close(): Unit = {
     if (initialized) {
-      hostBounceBufferMemoryPool.close()
-      ucxContext.close()
+      running = false
+      if (hostBounceBufferMemoryPool != null) {
+        hostBounceBufferMemoryPool.close()
+      }
+      if (ucxContext != null) {
+        ucxContext.close()
+      }
+      if (allocatedWorker != null) {
+        allocatedWorker.foreach(_.close)
+      }
+      if (progressExecutors != null) {
+        progressExecutors.shutdown()
+      }
       initialized = false
     }
   }

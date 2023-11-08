@@ -6,7 +6,6 @@ import org.apache.spark.network.shuffle.{BlockFetchingListener, DownloadFileMana
 import org.apache.spark.shuffle.ucx.{OperationCallback, OperationResult, UcxShuffleBockId, UcxShuffleTransportClient}
 import org.apache.spark.shuffle.utils.UnsafeUtils
 import org.apache.spark.storage.{BlockId => SparkBlockId, ShuffleBlockId => SparkShuffleBlockId}
-import java.net.InetSocketAddress
 
 class ExternalUcxShuffleClient(val transport: UcxShuffleTransportClient) extends ShuffleClient{
 
@@ -29,8 +28,7 @@ class ExternalUcxShuffleClient(val transport: UcxShuffleTransportClient) extends
         })
       }
     }
-    val resultBufferAllocator = (size: Long) => transport.hostBounceBufferMemoryPool.get(size)
-    transport.fetchBlocksByBlockIds(new InetSocketAddress(host, transport.serverPort), execId.toInt, ucxBlockIds, callbacks)
+    transport.fetchBlocksByBlockIds(host, execId.toInt, ucxBlockIds, callbacks)
   }
 
   override def close(): Unit = {

@@ -9,43 +9,35 @@ import org.openucx.jucx.ucp._
 
 import java.net.InetSocketAddress
 import java.nio.ByteBuffer
-import java.util.concurrent.atomic.AtomicInteger
 
 class UcxShuffleTransportClient(clientConf: ExternalUcxClientConf, blockManagerId: BlockManagerId)
-  extends ExternalShuffleTransport(clientConf) with UcxLogging {
-  private val ucpWorkerParams = new UcpWorkerParams().requestThreadSafety()
-
-  private var allocatedClientThreads: Array[ExternalUcxWorkerThread] = _
-  private var clientThreadId = new AtomicInteger()
-
-  val serverPort = clientConf.ucxServerPort
+extends ExternalShuffleTransport(clientConf) with UcxLogging {
+  private[spark] val serverPort = clientConf.ucxServerPort
 
   override def estimateNumEps(): Int = clientConf.numWorkers *
       clientConf.sparkConf.getInt("spark.executor.instances", 1)
 
   override def init(): ByteBuffer = {
-    super.initContext()
-    super.initMemoryPool()
+    initContext()
+    initMemoryPool()
   
     if (clientConf.useWakeup) {
       ucpWorkerParams.requestWakeupRX().requestWakeupTX().requestWakeupEdge()
     }
 
-    allocatedClientThreads = new Array[ExternalUcxWorkerThread](clientConf.numWorkers)
+    initProgressPool(clientConf.numWorkers)
+
     logInfo(s"Allocating ${clientConf.numWorkers} client workers")
     val appId = clientConf.sparkConf.getAppId
-    val exeId = blockManagerId.executorId.toLong.toInt
-    for (i <- 0 until clientConf.numWorkers) {
-      val workerId = new UcxWorkerId(appId, exeId, i)
-      ucpWorkerParams.setClientId((workerId.exeId.toLong << 32) | workerId.workerId.toLong)
+    val exeId = blockManagerId.executorId.toLong
+    initWorker(clientConf.numWorkers, (id: Int) => {
+      ucpWorkerParams.setClientId((exeId << 32) | id.toLong)
       val worker = ucxContext.newWorker(ucpWorkerParams)
-      allocatedClientThreads(i) = new ExternalUcxWorkerThread(worker, this, isClientWorker = true, workerId)
-    }
+      val workerId = new UcxWorkerId(appId, exeId.toInt, id)
+      new ExternalUcxWorkerWrapper(worker, this, true, workerId)
+    })
 
-    logInfo(s"Launch ${clientConf.numWorkers} client workers")
-    allocatedClientThreads.foreach(_.start)
     initialized = true
-
     val shuffleServer = new InetSocketAddress(blockManagerId.host, serverPort)
     logInfo(s"Shuffle server ${shuffleServer}")
     SerializationUtils.serializeInetAddress(shuffleServer)
@@ -61,55 +53,22 @@ class UcxShuffleTransportClient(clientConf: ExternalUcxClientConf, blockManagerI
   def connect(shuffleServer: SerializableDirectBuffer): Unit = {
     val addressBuffer = shuffleServer.value
     val address = SerializationUtils.deserializeInetAddress(addressBuffer)
-    allocatedClientThreads.foreach { t => t.submit(new Runnable {
-      override def run(): Unit = {
-        logInfo(s"Connect ${t.workerId.workerId} to $address")
-        t.workerWrapper.connect(address, addressBuffer)
-        t.workerWrapper.progressConnect()
-      }})
-    }
+    allocatedWorker.foreach(_.getConnection(address))
   }
 
   def connectAll(shuffleServerSet: Set[SerializableDirectBuffer]): Unit = {
-    val addressSet = shuffleServerSet.map {
-      x => (SerializationUtils.deserializeInetAddress(x.value), x.value)
-    }
-    allocatedClientThreads.foreach { t => t.submit(new Runnable {
-      override def run(): Unit = {
-        addressSet.foreach { case (address, addressBuffer) => {
-          logInfo(s"ConnectAll ${t.workerId.workerId} to $address")
-          t.workerWrapper.connect(address, addressBuffer)
-        }}
-        t.workerWrapper.progressConnect()
-      }
-    })}
-  }
-
-  /**
-   * Close all transport resources
-   */
-  override def close(): Unit = {
-    if (initialized) {
-      allocatedClientThreads.foreach(_.close)
-      super.close()
-    }
+    val addressSet = shuffleServerSet.map(addressBuffer =>
+      SerializationUtils.deserializeInetAddress(addressBuffer.value))
+    allocatedWorker.foreach(w => addressSet.foreach(w.getConnection(_)))
   }
 
   /**
    * Batch version of [[ fetchBlocksByBlockIds ]].
    */
-  def fetchBlocksByBlockIds(shuffleServer: InetSocketAddress, exeId: Int,
+  def fetchBlocksByBlockIds(host: String, exeId: Int,
                             blockIds: Seq[BlockId],
                             callbacks: Seq[OperationCallback]): Unit = {
-    val client = selectClientThread
-    client.submit(new Runnable {
-      override def run(): Unit = {
-        client.workerWrapper.fetchBlocksByBlockIds(shuffleServer, exeId, blockIds, callbacks)
-      }
-    })
+    selectWorker.fetchBlocksByBlockIds(
+      new InetSocketAddress(host, serverPort), exeId, blockIds, callbacks)
   }
-
-  @inline
-  def selectClientThread(): ExternalUcxWorkerThread = allocatedClientThreads(
-    (clientThreadId.incrementAndGet() % allocatedClientThreads.length).abs)
 }
