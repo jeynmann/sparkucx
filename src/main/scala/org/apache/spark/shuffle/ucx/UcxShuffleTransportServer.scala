@@ -19,7 +19,7 @@ class UcxShuffleTransportServer(
   serverConf: ExternalUcxServerConf, blockManager: ExternalUcxShuffleBlockResolver)
   extends ExternalShuffleTransport(serverConf)
   with UcxLogging {
-  private[ucx] val workerMap = new TrieMap[String, TrieMap[(Int, Int), ByteBuffer]]
+  private[ucx] val workerMap = new TrieMap[String, TrieMap[Long, ByteBuffer]]
   private val errorHandler = new UcpEndpointErrorHandler {
     override def onError(ucpEndpoint: UcpEndpoint, errorCode: Int, errorString: String): Unit = {
       if (errorCode == UcsConstants.STATUS.UCS_ERR_CONNECTION_RESET) {
@@ -94,7 +94,8 @@ class UcxShuffleTransportServer(
     })
 
     logInfo(s"Launching global workers")
-    progressExecutors.execute(new ProgressTask(globalWorker))
+    // Submit throws no exception except Future.get
+    progressExecutors.submit(new ProgressTask(globalWorker))
 
     initialized = true
     logInfo(s"Started listener on ${listener.getAddress}")
@@ -140,9 +141,10 @@ class UcxShuffleTransportServer(
     // TODO: need support application remove
     val copiedAddress = ByteBuffer.allocateDirect(workerAddress.remaining)
     copiedAddress.put(workerAddress)
-    workerMap.getOrElseUpdate(clientWorker.appId, new TrieMap[(Int,Int), ByteBuffer])
-      .getOrElseUpdate((clientWorker.exeId,clientWorker.workerId), copiedAddress)
-    replyExecutors.execute(new Runnable {
+    workerMap.getOrElseUpdate(clientWorker.appId, new TrieMap[Long, ByteBuffer])
+      .getOrElseUpdate(
+        UcxWorkerId.makeExeWorkerId(clientWorker), copiedAddress)
+    replyExecutors.submit(new Runnable {
       override def run(): Unit = {
         allocatedWorker.foreach(_.getConnectionBack(clientWorker))
       }
@@ -151,7 +153,7 @@ class UcxShuffleTransportServer(
   }
 
   def handleFetchBlockRequest(clientWorker: UcxWorkerId, exeId: Int, replyTag: Int, amData: UcpAmData): Unit = {
-    replyExecutors.execute(new Runnable {
+    replyExecutors.submit(new Runnable {
       override def run(): Unit = {
         val buffer = UnsafeUtils.getByteBufferView(amData.getDataAddress, amData.getLength.toInt)
         val blockIds = mutable.ArrayBuffer.empty[UcxShuffleBockId]

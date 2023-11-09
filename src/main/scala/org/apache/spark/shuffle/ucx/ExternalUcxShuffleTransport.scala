@@ -36,6 +36,18 @@ object UcxWorkerId {
     byteBuffer.get(appIdBytes)
     UcxWorkerId(new String(appIdBytes), exeId, workerId)
   }
+  @`inline`
+  def makeExeWorkerId(id: UcxWorkerId): Long = {
+    (id.workerId.toLong << 32) | id.exeId
+  }
+  @`inline`
+  def extractExeId(exeWorkerId: Long): Int = {
+    exeWorkerId.toInt
+  }
+  @`inline`
+  def extractWorkerId(exeWorkerId: Long): Int = {
+    (exeWorkerId >> 32).toInt
+  }
 }
 
 class ExternalShuffleTransport(var ucxShuffleConf: ExternalUcxConf) extends UcxLogging {

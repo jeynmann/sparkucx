@@ -134,6 +134,7 @@ case class ExternalUcxWorkerWrapper(val worker: UcpWorker,
 
   def getConnectionBack(shuffleClient: UcxWorkerId): UcpEndpoint = {
     shuffleClients.getOrElseUpdate(shuffleClient, {
+      val exeWorkerId = UcxWorkerId.makeExeWorkerId(shuffleClient)
       val workerMap = transport.asInstanceOf[UcxShuffleTransportServer].workerMap
       if (!workerMap.contains(shuffleClient.appId)) {
         val startTime = System.currentTimeMillis()
@@ -144,15 +145,14 @@ case class ExternalUcxWorkerWrapper(val worker: UcpWorker,
           Thread.`yield`
         }
         val appMap = workerMap(shuffleClient.appId)
-        while (!appMap.contains((shuffleClient.exeId, shuffleClient.workerId))) {
+        while (!appMap.contains(exeWorkerId)) {
           if  (System.currentTimeMillis() - startTime > 10000) {
             throw new UcxException(s"Don't get a worker address for $UcxWorkerId")
           }
           Thread.`yield`
         }
       }
-      val workerAddress = workerMap(shuffleClient.appId)((shuffleClient.exeId, shuffleClient.workerId))
-      connectBack(shuffleClient, workerAddress)
+      connectBack(shuffleClient, workerMap(shuffleClient.appId)(exeWorkerId))
     })
   }
 
@@ -195,6 +195,7 @@ case class ExternalUcxWorkerWrapper(val worker: UcpWorker,
             header.clear()
             workerAddress.clear()
           }
+          override def onError(ucsStatus: Int, errorMsg: String): Unit = {}
         }, MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
         ep
       }
@@ -232,7 +233,6 @@ case class ExternalUcxWorkerWrapper(val worker: UcpWorker,
           logDebug(s"Sent message to $shuffleServer to fetch ${blockIds.length} blocks on tag $t" +
           s"in ${System.nanoTime() - startTime} ns")
         }
-        override def onError(ucsStatus: Int, errorMsg: String): Unit = {}
       }, MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
     }
   }
