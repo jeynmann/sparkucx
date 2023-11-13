@@ -14,6 +14,20 @@ class UcxShuffleTransportClient(clientConf: ExternalUcxClientConf, blockManagerI
 extends ExternalShuffleTransport(clientConf) with UcxLogging {
   private[spark] val serverPort = clientConf.ucxServerPort
 
+  class ProgressTask(worker: UcpWorker) extends Runnable {
+    override def run(): Unit = {
+      val useWakeup = ucxShuffleConf.useWakeup
+      while (running) {
+        worker.synchronized {
+          while (worker.progress != 0) {}
+        }
+        if (useWakeup) {
+          worker.waitForEvents()
+        }
+      }
+    }
+  }
+
   override def estimateNumEps(): Int = clientConf.numWorkers *
       clientConf.sparkConf.getInt("spark.executor.instances", 1)
 

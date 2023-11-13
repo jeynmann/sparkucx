@@ -45,6 +45,24 @@ class UcxShuffleTransportServer(
   private var globalWorker: UcpWorker = _
   private var listener: UcpListener = _
 
+  class ProgressTask(worker: UcpWorker) extends Runnable {
+    override def run(): Unit = {
+      val useWakeup = ucxShuffleConf.useWakeup
+      while (running) {
+        try {
+          worker.synchronized {
+            while (worker.progress != 0) {}
+          }
+          if (useWakeup) {
+            worker.waitForEvents()
+          }
+        } catch {
+          case e: Throwable => logError(s"Exception in progress:${e}")
+        }
+      }
+    }
+  }
+
   override def estimateNumEps(): Int = serverConf.ucxEpsNum
 
   override def init(): ByteBuffer = {
@@ -93,12 +111,12 @@ class UcxShuffleTransportServer(
       val worker = ucxContext.newWorker(ucpWorkerParams)
       val workerId = new UcxWorkerId("Server", 0, i)
       allocatedWorker(i) = new ExternalUcxWorkerWrapper(worker, this, false, workerId)
-      progressExecutors.submit(new ProgressTask(allocatedWorker(i).worker))
+      progressExecutors.execute(new ProgressTask(allocatedWorker(i).worker))
     }
 
     logInfo(s"Launching global workers")
     // Submit throws no exception except Future.get
-    progressExecutors.submit(new ProgressTask(globalWorker))
+    progressExecutors.execute(new ProgressTask(globalWorker))
 
     initialized = true
     logInfo(s"Started listener on ${listener.getAddress}")

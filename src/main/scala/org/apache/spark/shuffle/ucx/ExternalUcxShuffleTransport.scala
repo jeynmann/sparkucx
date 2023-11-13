@@ -60,20 +60,6 @@ class ExternalShuffleTransport(var ucxShuffleConf: ExternalUcxConf) extends UcxL
   private[ucx] val currentWorkerId = new AtomicInteger()
   private[ucx] var progressExecutors: ExecutorService = _
 
-  class ProgressTask(worker: UcpWorker) extends Runnable {
-    override def run(): Unit = {
-      val useWakeup = ucxShuffleConf.useWakeup
-      while (running) {
-        worker.synchronized {
-          while (worker.progress != 0) {}
-        }
-        if (useWakeup) {
-          worker.waitForEvents()
-        }
-      }
-    }
-  }
-
   def estimateNumEps(): Int = 1
 
   def initContext(): Unit = {
