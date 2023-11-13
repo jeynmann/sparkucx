@@ -236,6 +236,9 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
               header.clear()
               workerAddress.clear()
             }
+            override def onError(ucsStatus: Int, errorMsg: String): Unit = {
+              logError(s"Failed to send $errorMsg")
+            }
           }, MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
         ep
       }
