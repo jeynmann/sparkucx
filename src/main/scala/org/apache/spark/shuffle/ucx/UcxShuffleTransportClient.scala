@@ -30,12 +30,15 @@ extends ExternalShuffleTransport(clientConf) with UcxLogging {
     logInfo(s"Allocating ${clientConf.numWorkers} client workers")
     val appId = clientConf.sparkConf.getAppId
     val exeId = blockManagerId.executorId.toLong
-    initWorker(clientConf.numWorkers, (id: Int) => {
-      ucpWorkerParams.setClientId((exeId << 32) | id.toLong)
+    allocatedWorker = new Array[ExternalUcxWorkerWrapper](clientConf.numWorkers)
+    for (i <- 0 until clientConf.numWorkers) {
+      ucpWorkerParams.setClientId((exeId << 32) | i.toLong)
       val worker = ucxContext.newWorker(ucpWorkerParams)
-      val workerId = new UcxWorkerId(appId, exeId.toInt, id)
-      new ExternalUcxWorkerWrapper(worker, this, true, workerId)
-    })
+      val workerId = new UcxWorkerId(appId, exeId.toInt, i)
+      allocatedWorker(i) = new ExternalUcxWorkerWrapper(worker, this, true, workerId)
+      progressExecutors.execute(new ProgressTask(allocatedWorker(i).worker))
+    }
+
 
     initialized = true
     val shuffleServer = new InetSocketAddress(blockManagerId.host, serverPort)
@@ -70,5 +73,11 @@ extends ExternalShuffleTransport(clientConf) with UcxLogging {
                             callbacks: Seq[OperationCallback]): Unit = {
     selectWorker.fetchBlocksByBlockIds(
       new InetSocketAddress(host, serverPort), exeId, blockIds, callbacks)
+  }
+
+  @inline
+  def selectWorker(): ExternalUcxWorkerWrapper = {
+    allocatedWorker(
+      (currentWorkerId.incrementAndGet() % allocatedWorker.length).abs)
   }
 }

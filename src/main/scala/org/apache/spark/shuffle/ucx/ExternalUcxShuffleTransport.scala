@@ -99,19 +99,7 @@ class ExternalShuffleTransport(var ucxShuffleConf: ExternalUcxConf) extends UcxL
     progressExecutors = Executors.newFixedThreadPool(threadNum)
   }
 
-  def initWorker(workerNum: Int, creator: (Int) => ExternalUcxWorkerWrapper): Unit = {
-    allocatedWorker = new Array[ExternalUcxWorkerWrapper](workerNum)
-    for (i <- 0 until workerNum) {
-      allocatedWorker(i) = creator(i)
-      progressExecutors.execute(new ProgressTask(allocatedWorker(i).worker))
-    }
-  }
-
   def init(): ByteBuffer = ???
-
-  @inline
-  def selectWorker(): ExternalUcxWorkerWrapper = allocatedWorker(
-    (currentWorkerId.incrementAndGet() % allocatedWorker.length).abs)
 
   def close(): Unit = {
     if (initialized) {

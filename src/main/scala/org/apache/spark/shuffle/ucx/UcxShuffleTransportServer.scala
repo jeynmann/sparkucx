@@ -87,11 +87,14 @@ class UcxShuffleTransportServer(
     initProgressPool(serverConf.numListenerThreads + 1)
 
     logInfo(s"Allocating ${serverConf.numListenerThreads} server workers")
-    initWorker(serverConf.numListenerThreads, (id: Int) => {
+
+    allocatedWorker = new Array[ExternalUcxWorkerWrapper](serverConf.numListenerThreads)
+    for (i <- 0 until serverConf.numListenerThreads) {
       val worker = ucxContext.newWorker(ucpWorkerParams)
-      val workerId = new UcxWorkerId("Server", 0, id)
-      new ExternalUcxWorkerWrapper(worker, this, false, workerId)
-    })
+      val workerId = new UcxWorkerId("Server", 0, i)
+      allocatedWorker(i) = new ExternalUcxWorkerWrapper(worker, this, false, workerId)
+      progressExecutors.submit(new ProgressTask(allocatedWorker(i).worker))
+    }
 
     logInfo(s"Launching global workers")
     // Submit throws no exception except Future.get
@@ -167,9 +170,8 @@ class UcxShuffleTransportServer(
 
         val blocks = blockIds.map{ bid => {
           new Block {
-            val blockBuffer = blockManager.getBlockData(
-              clientWorker.appId.toString, exeId.toString, bid.shuffleId,
-              bid.mapId, bid.reduceId)
+            val blockBuffer = blockManager.getBlockData(clientWorker.appId,
+              exeId.toString, bid.shuffleId, bid.mapId, bid.reduceId)
 
             val blockChannel = Channels.newChannel(blockBuffer.createInputStream)
 
@@ -186,7 +188,7 @@ class UcxShuffleTransportServer(
   }
 
   @inline
-  override def selectWorker(): ExternalUcxWorkerWrapper = {
+  def selectWorker(): ExternalUcxWorkerWrapper = {
     Option(workerLocal.get) match {
       case Some(worker) => worker
       case None => {
