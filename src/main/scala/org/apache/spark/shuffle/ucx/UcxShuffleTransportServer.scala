@@ -10,7 +10,7 @@ import org.openucx.jucx.ucs.UcsConstants
 
 import java.net.InetSocketAddress
 import java.nio.ByteBuffer
-import java.nio.channels.Channels
+import java.nio.channels.{Channels, ReadableByteChannel}
 import scala.concurrent.forkjoin.{ForkJoinPool => SForkJoinPool, ForkJoinWorkerThread => SForkJoinWorkerThread}
 import scala.collection.concurrent.TrieMap
 import scala.collection.mutable
@@ -163,8 +163,7 @@ class UcxShuffleTransportServer(
     val copiedAddress = ByteBuffer.allocateDirect(workerAddress.remaining)
     copiedAddress.put(workerAddress)
     workerMap.getOrElseUpdate(clientWorker.appId, new TrieMap[Long, ByteBuffer])
-      .getOrElseUpdate(
-        UcxWorkerId.makeExeWorkerId(clientWorker), copiedAddress)
+      .getOrElseUpdate(UcxWorkerId.makeExeWorkerId(clientWorker), copiedAddress)
     replyExecutors.submit(new Runnable {
       override def run(): Unit = {
         allocatedWorker.foreach(_.getConnectionBack(clientWorker))
@@ -177,30 +176,30 @@ class UcxShuffleTransportServer(
     replyExecutors.submit(new Runnable {
       override def run(): Unit = {
         val buffer = UnsafeUtils.getByteBufferView(amData.getDataAddress, amData.getLength.toInt)
-        val blockIds = mutable.ArrayBuffer.empty[UcxShuffleBockId]
+        // val blockIds = mutable.ArrayBuffer.empty[UcxShuffleBockId]
+        val blockInfos = mutable.ArrayBuffer.empty[(Long, ReadableByteChannel)]
 
         // 1. Deserialize blockIds from header
         while (buffer.remaining() > 0) {
-          blockIds += UcxShuffleBockId.deserialize(buffer)
+          val bid = UcxShuffleBockId.deserialize(buffer)
+          val buf = blockManager.getBlockData(clientWorker.appId,
+            exeId.toString, bid.shuffleId, bid.mapId, bid.reduceId)
+          val ch = Channels.newChannel(buf.createInputStream)
+          blockInfos += buf.size() -> ch
         }
 
         amData.close()
 
-        val blocks = blockIds.map{ bid => {
-          new Block {
-            val blockBuffer = blockManager.getBlockData(clientWorker.appId,
-              exeId.toString, bid.shuffleId, bid.mapId, bid.reduceId)
-
-            val blockChannel = Channels.newChannel(blockBuffer.createInputStream)
-
-            override def getBlock(byteBuffer: ByteBuffer): Unit = {
-              blockChannel.read(byteBuffer)
-            }
-
-            override def getSize: Long = blockBuffer.size()
-          }
-        }}
-        selectWorker.handleFetchBlockRequest(clientWorker, replyTag, blocks)
+        // val blocks = blockInfos.map{ case (length, ch) => {
+        //   new Block {
+        //     override def getBlock(byteBuffer: ByteBuffer): Unit = {
+        //       ch.read(byteBuffer)
+        //     }
+        //     override def getSize: Long = length
+        //   }
+        // }}
+        selectWorker.handleFetchBlockRequest(clientWorker, replyTag, blockInfos)
+        blockInfos.foreach(_._2.close())
       }
     })
   }

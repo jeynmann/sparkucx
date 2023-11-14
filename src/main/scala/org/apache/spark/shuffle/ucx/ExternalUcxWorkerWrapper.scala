@@ -5,6 +5,7 @@
 package org.apache.spark.shuffle.ucx
 
 import java.io.Closeable
+import java.nio.channels.ReadableByteChannel
 import java.util.concurrent.{ConcurrentLinkedQueue, Callable, Future, FutureTask}
 import java.util.concurrent.atomic.AtomicInteger
 import scala.collection.concurrent.TrieMap
@@ -142,7 +143,10 @@ case class ExternalUcxWorkerWrapper(val worker: UcpWorker,
           }
           Thread.`yield`
         }
-        val appMap = workerMap(shuffleClient.appId)
+      }
+      val appMap = workerMap(shuffleClient.appId)
+      if (!appMap.contains(exeWorkerId)) {
+        val startTime = System.currentTimeMillis()
         while (!appMap.contains(exeWorkerId)) {
           if  (System.currentTimeMillis() - startTime > 10000) {
             throw new UcxException(s"Don't get a worker address for $UcxWorkerId")
@@ -150,7 +154,7 @@ case class ExternalUcxWorkerWrapper(val worker: UcpWorker,
           Thread.`yield`
         }
       }
-      connectBack(shuffleClient, workerMap(shuffleClient.appId)(exeWorkerId))
+      connectBack(shuffleClient, appMap(exeWorkerId))
     })
   }
 
@@ -235,7 +239,7 @@ case class ExternalUcxWorkerWrapper(val worker: UcpWorker,
     }
   }
 
-  def handleFetchBlockRequest(clientWorker: UcxWorkerId, replyTag: Int, blocks: Seq[Block]): Unit = try {
+  def handleFetchBlockRequest(clientWorker: UcxWorkerId, replyTag: Int, blocks: Seq[(Long, ReadableByteChannel)]): Unit = try {
     // val tagAndSizes = UnsafeUtils.INT_SIZE + UnsafeUtils.INT_SIZE * blocks.size
     // val resultMemory = memPool.get(tagAndSizes + blocks.map(_.getSize).sum)
     //   .asInstanceOf[UcxBounceBufferMemoryBlock]
@@ -260,20 +264,19 @@ case class ExternalUcxWorkerWrapper(val worker: UcpWorker,
     //   blocks(i).getBlock(localBuffers(i))
     // }
     val tagAndSizes = UnsafeUtils.INT_SIZE + UnsafeUtils.INT_SIZE * blocks.size
-    val blockSizeSeq = blocks.map(_.getSize)
-    val resultMemory = memPool.get(tagAndSizes + blockSizeSeq.sum)
+    val resultMemory = memPool.get(tagAndSizes + blocks.map(x => x._1).sum)
       .asInstanceOf[UcxBounceBufferMemoryBlock]
     val resultBuffer = UcxUtils.getByteBufferView(resultMemory.address,
       resultMemory.size)
 
     resultBuffer.putInt(replyTag)
-    for (i <- 0 until blockSizeSeq.size) {
-      resultBuffer.putInt(blockSizeSeq(i).toInt)
+    for (i <- 0 until blocks.size) {
+      resultBuffer.putInt(blocks(i)._1.toInt)
     }
 
-    for (i <- 0 until blockSizeSeq.size) {
-      resultBuffer.limit(resultBuffer.position + blockSizeSeq(i).toInt)
-      blocks(i).getBlock(resultBuffer)
+    for (i <- 0 until blocks.size) {
+      resultBuffer.limit(resultBuffer.position + blocks(i)._1.toInt)
+      blocks(i)._2.read(resultBuffer)
     }
 
     val startTime = System.nanoTime()

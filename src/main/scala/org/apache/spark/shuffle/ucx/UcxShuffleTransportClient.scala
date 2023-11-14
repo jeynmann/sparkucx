@@ -53,7 +53,6 @@ extends ExternalShuffleTransport(clientConf) with UcxLogging {
       progressExecutors.execute(new ProgressTask(allocatedWorker(i).worker))
     }
 
-
     initialized = true
     val shuffleServer = new InetSocketAddress(blockManagerId.host, serverPort)
     logInfo(s"Shuffle server ${shuffleServer}")
