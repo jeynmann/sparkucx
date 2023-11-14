@@ -75,6 +75,40 @@ object UcxShuffleBockId {
   }
 }
 
+case class ShuffleMapId(shuffleId: Int, mapId: Int) extends BlockId {
+  override def serializedSize: Int = 12
+
+  override def serialize(byteBuffer: ByteBuffer): Unit = {
+    byteBuffer.putInt(shuffleId)
+    byteBuffer.putInt(mapId)
+  }
+}
+
+object ShuffleMapId {
+  def deserialize(byteBuffer: ByteBuffer): ShuffleMapId = {
+    val shuffleId = byteBuffer.getInt
+    val mapId = byteBuffer.getInt
+    ShuffleMapId(shuffleId, mapId)
+  }
+}
+
+case class ShuffleReduceId(shuffleId: Int, reduceId: Int) extends BlockId {
+  override def serializedSize: Int = 12
+
+  override def serialize(byteBuffer: ByteBuffer): Unit = {
+    byteBuffer.putInt(shuffleId)
+    byteBuffer.putInt(reduceId)
+  }
+}
+
+object ShuffleReduceId {
+  def deserialize(byteBuffer: ByteBuffer): ShuffleReduceId = {
+    val shuffleId = byteBuffer.getInt
+    val reduceId = byteBuffer.getInt
+    ShuffleReduceId(shuffleId, reduceId)
+  }
+}
+
 class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executorId: Long = 0) extends ShuffleTransport
   with Logging {
   @volatile private var initialized: Boolean = false
@@ -92,8 +126,8 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
   
   private var allocatedServerWorkers: Array[UcxWorkerWrapper] = _
   private val serverWorkerId = new AtomicInteger()
-  
-  private val registeredBlocks = new TrieMap[BlockId, Block]
+
+  private val registeredBlocks = new TrieMap[ShuffleReduceId, TrieMap[Int, Block]]
   private var progressExecutors: ExecutorService = _
   private var replyExecutors: ExecutorService = _
 
@@ -174,8 +208,10 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
       val header = UnsafeUtils.getByteBufferView(headerAddress, headerSize.toInt)
       val replyTag = header.getInt
       val replyExecutor = header.getLong
-      handleFetchBlockRequest(replyTag, amData, replyExecutor)
-      UcsConstants.STATUS.UCS_INPROGRESS
+      val shuffleId = header.getInt
+      val reduceId = header.getInt
+      handleFetchBlockRequest(replyTag, replyExecutor, shuffleId, reduceId)
+      UcsConstants.STATUS.UCS_OK
     }, UcpConstants.UCP_AM_FLAG_PERSISTENT_DATA | UcpConstants.UCP_AM_FLAG_WHOLE_MSG )
     // AM to get worker address for client worker and connect server workers to it
     globalWorker.setAmRecvHandler(1, (headerAddress: Long, headerSize: Long, amData: UcpAmData,
@@ -263,8 +299,12 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
   /**
    * Registers blocks using blockId on SERVER side.
    */
-  override def register(blockId: BlockId, block: Block): Unit = {
-    registeredBlocks.put(blockId, block)
+  override def register(bid: BlockId, block: Block): Unit = {
+    val blockId = bid.asInstanceOf[UcxShuffleBockId]
+    registeredBlocks.getOrElseUpdate(
+      ShuffleReduceId(blockId.shuffleId, blockId.reduceId), {
+        new TrieMap[Int, Block]
+      }) += blockId.mapId -> block
   }
 
   /**
@@ -289,55 +329,84 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
    * Indicate that this blockId is not needed any more by an application.
    * Note: this is a blocking call. On return it's safe to free blocks memory.
    */
-  override def unregister(blockId: BlockId): Unit = {
-    registeredBlocks.remove(blockId)
+  override def unregister(bid: BlockId): Unit = {
+    val blockId = bid.asInstanceOf[UcxShuffleBockId]
+    val shuffleReduceId = ShuffleReduceId(blockId.shuffleId, blockId.reduceId)
+    if (registeredBlocks.contains(shuffleReduceId)) {
+      registeredBlocks(shuffleReduceId) -= blockId.mapId
+    }
   }
 
   def unregisterShuffle(shuffleId: Int): Unit = {
-    registeredBlocks.keysIterator.foreach(bid =>
-      if (bid.asInstanceOf[UcxShuffleBockId].shuffleId == shuffleId) {
-        registeredBlocks.remove(bid)
-      }
-    )
+    registeredBlocks.filterKeys(_.shuffleId == shuffleId).foreach {
+      registeredBlocks -= _._1
+    }
   }
 
   def unregisterAllBlocks(): Unit = {
     registeredBlocks.clear()
   }
 
+  private[ucx] lazy val reqBLocks = new TrieMap[BlockId, OperationCallback]
+  private[ucx] lazy val resBlocks = new TrieMap[BlockId, MemoryBlock]
+  private[ucx] lazy val flyBlocks = new TrieMap[(Long, ShuffleReduceId), Int]
+
+  // lazy val replyExecs = new TrieMap[ShuffleReduceId, Long]
+
   /**
    * Batch version of [[ fetchBlocksByBlockIds ]].
    */
-  override def fetchBlocksByBlockIds(executorId: ExecutorId, blockIds: Seq[BlockId],
+  def fetchBlocksByBlockIds(executorId: ExecutorId, blockIds: Seq[UcxShuffleBockId],
                                      resultBufferAllocator: BufferAllocator,
                                      callbacks: Seq[OperationCallback]): Unit = {
-    selectClientWorker.fetchBlocksByBlockIds(
-        executorId, blockIds, resultBufferAllocator, callbacks)
+    val shuffleReduce = ShuffleReduceId(blockIds(0).shuffleId, blockIds(0).reduceId)
+    flyBlocks.getOrElseUpdate((executorId, shuffleReduce), {
+      selectClientWorker.fetchBlocksByBlockIds(executorId, shuffleReduce)
+      0
+    })
+    for (i <- blockIds.indices) {
+      reqBLocks += blockIds(i) -> callbacks(i)
+      val block = resBlocks.remove(blockIds(i))
+      if (block.nonEmpty) {
+        callbacks(i).onComplete(new OperationResult {
+          override def getStatus: OperationStatus.Value = OperationStatus.SUCCESS
+          override def getError: TransportError = null
+          override def getStats: Option[OperationStats] = None
+          override def getData: MemoryBlock = block.get
+        })
+        reqBLocks.remove(blockIds(i))
+      }
+    }
   }
 
   def connectServerWorkers(executorId: ExecutorId, workerAddress: ByteBuffer): Unit = {
     allocatedServerWorkers.foreach(_.connectByWorkerAddress(executorId, workerAddress))
   }
 
-  def handleFetchBlockRequest(replyTag: Int, amData: UcpAmData, replyExecutor: Long): Unit = {
+  private[ucx] lazy val reducerMaxSizeInFlight = 8000 * 1024
+  def handleFetchBlockRequest(replyTag: Int, replyExecutor: Long, shuffleId: Int, reduceId: Int): Unit = {
     replyExecutors.execute(new Runnable {
       override def run = {
-        val buffer = UnsafeUtils.getByteBufferView(amData.getDataAddress, amData.getLength.toInt)
-        val blockIds = mutable.ArrayBuffer.empty[BlockId]
-
-        // 1. Deserialize blockIds from header
-        while (buffer.remaining() > 0) {
-          val blockId = UcxShuffleBockId.deserialize(buffer)
-          if (!registeredBlocks.contains(blockId)) {
-            throw new UcxException(s"$blockId is not registered")
+        val shuffleReduceId = ShuffleReduceId(shuffleId, reduceId)
+        var sumSize = reducerMaxSizeInFlight
+        var replySeq = new mutable.ArrayBuffer[mutable.ArrayBuffer[(Int, Block)]]
+        var blockSeq: mutable.ArrayBuffer[(Int, Block)] = null
+        val mapBlocks = registeredBlocks(shuffleReduceId)
+        for (mapBlock <- mapBlocks) {
+          if (sumSize >= reducerMaxSizeInFlight) {
+            sumSize = 0
+            blockSeq = new mutable.ArrayBuffer[(Int, Block)]
+            replySeq += blockSeq
           }
-          blockIds += blockId
+          sumSize += mapBlock._2.getSize.toInt
+          blockSeq += mapBlock
         }
-        amData.close()
-
-        val blocks = blockIds.map(bid => registeredBlocks(bid))
-
-        selectServerWorker.handleFetchBlockRequest(blocks, replyTag, replyExecutor)
+        replySeq.foreach(blockSeq => replyExecutors.execute(new Runnable {
+          override def run(): Unit = {
+            selectServerWorker.handleFetchBlockRequest(
+              blockSeq, shuffleReduceId, replyTag, replyExecutor)
+          }
+        }))
       }
     })
   }

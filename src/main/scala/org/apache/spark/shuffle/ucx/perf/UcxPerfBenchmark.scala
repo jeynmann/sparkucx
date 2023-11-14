@@ -111,7 +111,7 @@ object UcxPerfBenchmark extends App with Logging {
     ucxTransport.addExecutor(1, address)
 
     val resultBufferAllocator = (size: Long) => ucxTransport.hostBounceBufferMemoryPool.get(size)
-    val blocks = Array.ofDim[BlockId](options.numOutstanding)
+    val blocks = Array.ofDim[UcxShuffleBockId](options.numOutstanding)
     val callbacks = Array.ofDim[OperationCallback](options.numOutstanding)
     val requestInFlight = new AtomicInteger(0)
     val rnd = new scala.util.Random

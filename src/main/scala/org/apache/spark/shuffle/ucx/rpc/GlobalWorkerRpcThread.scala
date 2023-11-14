@@ -22,7 +22,7 @@ class GlobalWorkerRpcThread(globalWorker: UcpWorker, transport: UcxShuffleTransp
     val header = UnsafeUtils.getByteBufferView(headerAddress, headerSize.toInt)
     val replyTag = header.getInt
     val replyExecutor = header.getLong
-    transport.handleFetchBlockRequest(replyTag, amData, replyExecutor)
+    // transport.handleFetchBlockRequest(replyTag, amData, replyExecutor)
     UcsConstants.STATUS.UCS_INPROGRESS
   }, UcpConstants.UCP_AM_FLAG_PERSISTENT_DATA | UcpConstants.UCP_AM_FLAG_WHOLE_MSG )
 

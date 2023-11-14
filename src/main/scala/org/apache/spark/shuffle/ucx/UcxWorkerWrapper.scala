@@ -21,6 +21,7 @@ import org.apache.spark.unsafe.Platform
 import org.apache.spark.util.ThreadUtils
 
 import java.nio.ByteBuffer
+import scala.collection.mutable
 import scala.collection.parallel.ForkJoinTaskSupport
 
 
@@ -72,76 +73,90 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
     transport.ucxShuffleConf.numIoThreads)
   private[ucx] lazy val ioTaskSupport = new ForkJoinTaskSupport(ioThreadPool)
 
+  private[ucx] lazy val reqBLocks = transport.reqBLocks
+  private[ucx] lazy val resBlocks = transport.resBlocks
+  private[ucx] lazy val memPool = transport.hostBounceBufferMemoryPool
+
   if (isClientWorker) {
     // Receive block data handler
     worker.setAmRecvHandler(1,
       (headerAddress: Long, headerSize: Long, ucpAmData: UcpAmData, _: UcpEndpoint) => {
         val headerBuffer = UnsafeUtils.getByteBufferView(headerAddress, headerSize.toInt)
         val i = headerBuffer.getInt
-        val data = requestData.remove(i)
+        val shuffleId = headerBuffer.getInt
+        val reduceId = headerBuffer.getInt
+        val numBlocks = headerBuffer.remaining / 2 / UnsafeUtils.INT_SIZE
+        val blockInfo = (0 until numBlocks).map(_ => {
+          val mapId = headerBuffer.getInt
+          val blockSize = headerBuffer.getInt
+          UcxShuffleBockId(shuffleId, mapId, reduceId) -> blockSize
+        })
+        // val data = requestData.remove(i)
 
-        if (data.isEmpty) {
-          throw new UcxException(s"No data for tag $i.")
-        }
+        // if (data.isEmpty) {
+        //   throw new UcxException(s"No data for tag $i.")
+        // }
 
-        val (callbacks, request, allocator) = data.get
-        val stats = request.getStats.get.asInstanceOf[UcxStats]
-        stats.receiveSize = ucpAmData.getLength
+        // val (callbacks, request, allocator) = data.get
+        // val stats = request.getStats.get.asInstanceOf[UcxStats]
+        // stats.receiveSize = ucpAmData.getLength
 
-        // Header contains tag followed by sizes of blocks
-        val numBlocks = (headerSize.toInt - UnsafeUtils.INT_SIZE) / UnsafeUtils.INT_SIZE
-
-        var offset = 0
         val refCounts = new AtomicInteger(numBlocks)
         if (ucpAmData.isDataValid) {
-          request.completed = true
-          stats.endTime = System.nanoTime()
-          logDebug(s"Received amData: $ucpAmData for tag $i " +
-            s"in ${stats.getElapsedTimeNs} ns")
+          // request.completed = true
+          // stats.endTime = System.nanoTime()
+          // logDebug(s"Received amData: $ucpAmData for tag $i " +
+          //   s"in ${stats.getElapsedTimeNs} ns")
 
-          for (b <- 0 until numBlocks) {
-            val blockSize = headerBuffer.getInt
-            if (callbacks(b) != null) {
-              callbacks(b).onComplete(new OperationResult {
+          var offset = 0
+          blockInfo.foreach(info => {
+            val blockSize = info._2
+            val memBlock = new UcxAmDataMemoryBlock(ucpAmData, offset, blockSize, refCounts)
+            resBlocks += info._1 -> memBlock
+            val cb = reqBLocks.remove(info._1)
+            if (cb.nonEmpty) {
+              cb.get.onComplete(new OperationResult {
                 override def getStatus: OperationStatus.Value = OperationStatus.SUCCESS
-
                 override def getError: TransportError = null
-
-                override def getStats: Option[OperationStats] = Some(stats)
-
-                override def getData: MemoryBlock = new UcxAmDataMemoryBlock(ucpAmData, offset, blockSize, refCounts)
+                override def getStats: Option[OperationStats] = None
+                override def getData: MemoryBlock = memBlock
               })
-              offset += blockSize
+              resBlocks.remove(info._1)
             }
-          }
-          if (callbacks.isEmpty) UcsConstants.STATUS.UCS_OK else UcsConstants.STATUS.UCS_INPROGRESS
+            offset += blockSize
+          })
+          UcsConstants.STATUS.UCS_INPROGRESS
         } else {
-          val mem = allocator(ucpAmData.getLength)
-          stats.amHandleTime = System.nanoTime()
-          request.setRequest(worker.recvAmDataNonBlocking(ucpAmData.getDataHandle, mem.address, ucpAmData.getLength,
+          val mem = memPool.get(ucpAmData.getLength)
+          // stats.amHandleTime = System.nanoTime()
+          worker.recvAmDataNonBlocking(ucpAmData.getDataHandle, mem.address, ucpAmData.getLength,
             new UcxCallback() {
               override def onSuccess(r: UcpRequest): Unit = {
-                request.completed = true
-                stats.endTime = System.nanoTime()
-                logDebug(s"Received rndv data of size: ${mem.size} for tag $i in " +
-                  s"${stats.getElapsedTimeNs} ns " +
-                  s"time from amHandle: ${System.nanoTime() - stats.amHandleTime} ns")
-                for (b <- 0 until numBlocks) {
-                  val blockSize = headerBuffer.getInt
-                  callbacks(b).onComplete(new OperationResult {
-                    override def getStatus: OperationStatus.Value = OperationStatus.SUCCESS
+                // request.completed = true
+                // stats.endTime = System.nanoTime()
+                // logDebug(s"Received rndv data of size: ${mem.size} for tag $i in " +
+                //   s"${stats.getElapsedTimeNs} ns " +
+                //   s"time from amHandle: ${System.nanoTime() - stats.amHandleTime} ns")
 
-                    override def getError: TransportError = null
-
-                    override def getStats: Option[OperationStats] = Some(stats)
-
-                    override def getData: MemoryBlock = new UcxRefCountMemoryBlock(mem, offset, blockSize, refCounts)
-                  })
+                var offset = 0
+                blockInfo.foreach(info => {
+                  val blockSize = info._2
+                  val memBlock = new UcxRefCountMemoryBlock(mem, offset, blockSize, refCounts)
+                  resBlocks += info._1 -> memBlock
+                  val cb = reqBLocks.remove(info._1)
+                  if (cb.nonEmpty) {
+                    cb.get.onComplete(new OperationResult {
+                      override def getStatus: OperationStatus.Value = OperationStatus.SUCCESS
+                      override def getError: TransportError = null
+                      override def getStats: Option[OperationStats] = None
+                      override def getData: MemoryBlock = memBlock
+                    })
+                    resBlocks.remove(info._1)
+                  }
                   offset += blockSize
-                }
-
+                })
               }
-            }, UcsConstants.MEMORY_TYPE.UCS_MEMORY_TYPE_HOST))
+            }, UcsConstants.MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
           UcsConstants.STATUS.UCS_OK
         }
       }, UcpConstants.UCP_AM_FLAG_PERSISTENT_DATA | UcpConstants.UCP_AM_FLAG_WHOLE_MSG)
@@ -245,76 +260,64 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
     })
   }
 
-  def fetchBlocksByBlockIds(executorId: transport.ExecutorId, blockIds: Seq[BlockId],
-                            resultBufferAllocator: transport.BufferAllocator,
-                            callbacks: Seq[OperationCallback]): Unit = {
+  def fetchBlocksByBlockIds(executorId: transport.ExecutorId, shuffleReduceId: ShuffleReduceId): Unit = {
     val startTime = System.nanoTime()
-    val headerSize = UnsafeUtils.INT_SIZE + UnsafeUtils.LONG_SIZE
+    val headerSize = UnsafeUtils.INT_SIZE + UnsafeUtils.LONG_SIZE + UnsafeUtils.INT_SIZE + UnsafeUtils.INT_SIZE
     
     val t = tag.incrementAndGet()
 
-    val buffer = Platform.allocateDirectBuffer(headerSize + blockIds.map(_.serializedSize).sum)
+    val buffer = Platform.allocateDirectBuffer(headerSize)
     buffer.putInt(t)
     buffer.putLong(id)
-    blockIds.foreach(b => b.serialize(buffer))
+    buffer.putInt(shuffleReduceId.shuffleId)
+    buffer.putInt(shuffleReduceId.reduceId)
 
-    val request = new UcxRequest(null, new UcxStats())
-    requestData.put(t, (callbacks, request, resultBufferAllocator))
+    // val request = new UcxRequest(null, new UcxStats())
+    // requestData.put(t, (callbacks, request, resultBufferAllocator))
 
     buffer.rewind()
     val address = UnsafeUtils.getAdress(buffer)
-    val dataAddress = address + headerSize
 
     val ep = getConnection(executorId)
     worker.synchronized {
-      ep.sendAmNonBlocking(0, address,
-        headerSize, dataAddress, buffer.capacity() - headerSize,
+      ep.sendAmNonBlocking(0, address, headerSize, address, 0,
         UcpConstants.UCP_AM_SEND_FLAG_EAGER, new UcxCallback() {
         override def onSuccess(request: UcpRequest): Unit = {
           buffer.clear()
-          logDebug(s"Sent message on $ep to $executorId to fetch ${blockIds.length} blocks on tag $t id $id" +
+          logDebug(s"Sent message on $ep to $executorId to fetch $shuffleReduceId on tag $t id $id" +
             s"in ${System.nanoTime() - startTime} ns")
         }
       }, MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
     }
   }
 
-  def handleFetchBlockRequest(blocks: Seq[Block], replyTag: Int, replyExecutor: Long): Unit = try {
-    val tagAndSizes = UnsafeUtils.INT_SIZE + UnsafeUtils.INT_SIZE * blocks.length
-    val resultMemory = transport.hostBounceBufferMemoryPool.get(tagAndSizes + blocks.map(_.getSize).sum)
+  def handleFetchBlockRequest(blocks: mutable.ArrayBuffer[(Int, Block)],
+    shuffleReduceId: ShuffleReduceId, replyTag: Int, replyExecutor: Long): Unit = try {
+    val tagAndSizes = UnsafeUtils.INT_SIZE * 3 + UnsafeUtils.INT_SIZE * blocks.length * 2
+    val bufSize = blocks.map(_._2.getSize).sum
+    val resultMemory = transport.hostBounceBufferMemoryPool.get(tagAndSizes + bufSize)
       .asInstanceOf[UcxBounceBufferMemoryBlock]
     val resultBuffer = UcxUtils.getByteBufferView(resultMemory.address,
       resultMemory.size)
     resultBuffer.putInt(replyTag)
+    resultBuffer.putInt(shuffleReduceId.shuffleId)
+    resultBuffer.putInt(shuffleReduceId.reduceId)
 
-    var offset = 0
-    val localBuffers = blocks.zipWithIndex.map {
-      case (block, i) =>
-        resultBuffer.putInt(UnsafeUtils.INT_SIZE + i * UnsafeUtils.INT_SIZE, block.getSize.toInt)
-        resultBuffer.position(tagAndSizes + offset)
-        val localBuffer = resultBuffer.slice()
-        offset += block.getSize.toInt
-        localBuffer.limit(block.getSize.toInt)
-        localBuffer
-    }
-    // Do parallel read of blocks
-    val blocksCollection = if (ioThreadOn) {
-      val parCollection = blocks.indices.par
-      parCollection.tasksupport = ioTaskSupport
-      parCollection
-    } else {
-      blocks.indices
-    }
+    blocks.foreach(x => {
+      resultBuffer.putInt(x._1)
+      resultBuffer.putInt(x._2.getSize.toInt)
+    })
 
-    for (i <- blocksCollection) {
-      blocks(i).getBlock(localBuffers(i))
-    }
+    blocks.foreach(x => {
+      resultBuffer.limit(resultBuffer.position + x._2.getSize.toInt)
+      x._2.getBlock(resultBuffer)
+    })
 
     val startTime = System.nanoTime()
     val ep = connections(replyExecutor)
     worker.synchronized {
       ep.sendAmNonBlocking(1, resultMemory.address, tagAndSizes,
-        resultMemory.address + tagAndSizes, resultMemory.size - tagAndSizes,
+        resultMemory.address + tagAndSizes, bufSize,
         0, new UcxCallback {
           override def onSuccess(request: UcpRequest): Unit = {
             logTrace(s"Sent ${blocks.length} blocks of size: ${resultMemory.size} " +
@@ -330,7 +333,6 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
   } catch {
     case ex: Throwable => logError(s"Failed to read and send data: $ex")
   }
-
 }
 
 // class UcxWorkerThread(val workerWrapper: UcxWorkerWrapper) extends Thread with Logging {
