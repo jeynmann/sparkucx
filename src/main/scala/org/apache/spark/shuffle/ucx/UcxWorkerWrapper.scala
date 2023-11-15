@@ -71,25 +71,20 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
   private[ucx] lazy val ioThreadPool = ThreadUtils.newForkJoinPool("IO threads",
     transport.ucxShuffleConf.numIoThreads)
   private[ucx] lazy val ioTaskSupport = new ForkJoinTaskSupport(ioThreadPool)
-  private[ucx] var progressThread: ProgressThread = _
+  private[ucx] var progressThread: Thread = _
 
   class ProgressThread extends Thread {
     setDaemon(true)
     setName(s"UCX-progress-$id")
 
     override def run(): Unit = {
-      if (transport.ucxShuffleConf.useWakeup) {
-        while (!isInterrupted) {
-          worker.synchronized {
-            while (worker.progress != 0) {}
-          }
-          worker.waitForEvents()
+      val useWakeup = transport.ucxShuffleConf.useWakeup
+      while (!isInterrupted) {
+        worker.synchronized {
+          while (worker.progress != 0) {}
         }
-      } else {
-        while (!isInterrupted) {
-          worker.synchronized {
-            while (worker.progress != 0) {}
-          }
+        if (useWakeup) {
+          worker.waitForEvents()
         }
       }
     }
