@@ -84,10 +84,10 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
 
   private var allocatedClientWorkers: Array[UcxWorkerWrapper] = _
   private var clientWorkerId = new AtomicInteger()
-  // private var clientLocal = new ThreadLocal[UcxWorkerWrapper] = _
 
   private var allocatedServerWorkers: Array[UcxWorkerWrapper] = _
   private val serverWorkerId = new AtomicInteger()
+  private var serverLocal = new ThreadLocal[UcxWorkerWrapper]
 
   private val registeredBlocks = new TrieMap[BlockId, Block]
   private var progressThread: Thread = _
@@ -293,30 +293,30 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
       }
       blockIds += blockId
     }
-    amData.close()
 
     val blocks = blockIds.map(bid => registeredBlocks(bid))
 
     selectServerWorker.handleFetchBlockRequest(blocks, replyTag, replyExecutor)
+    amData.close()
   }
-
-  // @inline
-  // def selectClientWorker(): UcxWorkerWrapper = Option(clientLocal.get) match {
-  //   case Some(client) => client
-  //   case None =>
-  //     val client = allocatedClientWorkers(
-  //       (clientWorkerId.incrementAndGet() % allocatedClientWorkers.length).abs)
-  //     clientLocal.set(client)
-  //     client
-  // }
 
   @inline
   def selectClientWorker(): UcxWorkerWrapper = allocatedClientWorkers(
     (clientWorkerId.incrementAndGet() % allocatedClientWorkers.length).abs)
 
+  // @inline
+  // def selectServerWorker(): UcxWorkerWrapper = allocatedServerWorkers(
+  //   (serverWorkerId.incrementAndGet() % allocatedServerWorkers.length).abs)
+
   @inline
-  def selectServerWorker(): UcxWorkerWrapper = allocatedServerWorkers(
-    (serverWorkerId.incrementAndGet() % allocatedServerWorkers.length).abs)
+  def selectServerWorker(): UcxWorkerWrapper = Option(serverLocal.get) match {
+    case Some(server) => server
+    case None =>
+      val server = allocatedServerWorkers(
+        (serverWorkerId.incrementAndGet() % allocatedServerWorkers.length).abs)
+      serverLocal.set(server)
+      server
+  }
 
   /**
    * Progress outstanding operations. This routine is blocking (though may poll for event).
