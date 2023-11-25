@@ -148,13 +148,13 @@ trait ShuffleTransport {
    */
   def unregister(blockId: BlockId): Unit
 
-  /**
-   * Batch version of [[ fetchBlocksByBlockIds ]].
-   */
-  def fetchBlocksByBlockIds(executorId: ExecutorId, blockIds: Seq[BlockId],
-                            resultBufferAllocator: BufferAllocator,
-                            callbacks: Seq[OperationCallback],
-                            amRecvStartCb: () => Unit): Seq[Request]
+  // /**
+  //  * Batch version of [[ fetchBlocksByBlockIds ]].
+  //  */
+  // def fetchBlocksByBlockIds(executorId: ExecutorId, blockIds: Seq[BlockId],
+  //                           resultBufferAllocator: BufferAllocator,
+  //                           callbacks: Seq[OperationCallback],
+  //                           amRecvStartCb: () => Unit): Seq[Request]
 
   /**
    * Progress outstanding operations. This routine is blocking (though may poll for event).

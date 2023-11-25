@@ -45,7 +45,7 @@ abstract class CommonUcxShuffleManager(val conf: SparkConf, isDriver: Boolean) e
   def getTransport(): UcxShuffleTransport = { ucxTransport }
   def setTransport(transport: UcxShuffleTransport): Unit = { ucxTransport = transport }
 
-  setupThread.submit(new Runnable {
+  setupThread.execute(new Runnable {
     override def run(): Unit = {
       CommonUtils.safePolling(() => {},
       () => {SparkEnv.get == null}, 10.seconds.fromNow,

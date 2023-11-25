@@ -87,6 +87,7 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
   private var progressThread: Thread = _
   var hostBounceBufferMemoryPool: UcxHostBounceBuffersPool = _
   private var localDpuEp: UcpEndpoint = null
+  // private[spark] lazy val batchFetch = ucxShuffleConf.getSparkConf.getBoolean("spark.shuffle.ucx.fetch.batch", false)
 
   private val errorHandler = new UcpEndpointErrorHandler {
     override def onError(ucpEndpoint: UcpEndpoint, errorCode: Int, errorString: String): Unit = {
@@ -248,12 +249,11 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
   /**
    * Batch version of [[ fetchBlocksByBlockIds ]].
    */
-  override def fetchBlocksByBlockIds(executorId: ExecutorId, blockIds: Seq[BlockId],
+  def fetchBlocksByBlockIds(executorId: ExecutorId, blockIds: Seq[BlockId],
                                      resultBufferAllocator: BufferAllocator,
-                                     callbacks: Seq[OperationCallback],
-                                     amRecvStartCb: () => Unit): Seq[Request] = {
+                                     callbacks: Seq[OperationCallback]): Seq[Request] = {
     globalWorker
-      .fetchBlocksByBlockIds(executorId, blockIds, resultBufferAllocator, callbacks, amRecvStartCb)
+      .fetchBlocksByBlockIds(executorId, blockIds, resultBufferAllocator, callbacks)
   }
 
   def commitBlock(executorId: ExecutorId, resultBufferAllocator: BufferAllocator, 

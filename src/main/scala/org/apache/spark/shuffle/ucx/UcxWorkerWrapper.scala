@@ -125,7 +125,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
 
         for (b <- block_begin until block_end) {
           val blockSize = headerBuffer.getInt
-          if (callbacks(b) != null) {
+          if (recvSet.add(b)) {
             callbacks(b).onComplete(new OperationResult {
               override def getStatus: OperationStatus.Value = OperationStatus.SUCCESS
 
@@ -137,7 +137,6 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
             })
           }
           offset += alignedLength(blockSize, 512)
-          recvSet += b
         }
         if (recvSet.size == callbacks.size) {
           requestData.remove(i)
@@ -158,7 +157,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
                   s"time from amHandle: ${System.nanoTime() - stats.amHandleTime} ns")
                 for (b <- block_begin until block_end) {
                   val blockSize = headerBuffer.getInt
-                  if (callbacks(b) != null) {
+                  if (recvSet.add(b)) {
                     callbacks(b).onComplete(new OperationResult {
                       override def getStatus: OperationStatus.Value = OperationStatus.SUCCESS
 
@@ -170,7 +169,6 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
                     })
                   }
                   offset += alignedLength(blockSize, 512)
-                  recvSet += b
                 }
                 if (recvSet.size == callbacks.size) {
                   requestData.remove(i)
@@ -261,8 +259,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
 
   def fetchBlocksByBlockIds(executorId: transport.ExecutorId, blockIds: Seq[BlockId],
                             resultBufferAllocator: transport.BufferAllocator,
-                            callbacks: Seq[OperationCallback],
-                            amRecvStartCb: () => Unit): Seq[Request] = {
+                            callbacks: Seq[OperationCallback]): Seq[Request] = {
     val startTime = System.nanoTime()
     val headerSize = UnsafeUtils.INT_SIZE * 2
     val ep = getConnection(executorId)
@@ -275,7 +272,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
     blockIds.foreach(b => b.serialize(buffer))
 
     val request = new UcxRequest(null, new UcxStats())
-    requestData.put(t, (callbacks, request, resultBufferAllocator, HashSet.empty[Int]))
+    requestData.put(t, (callbacks, request, resultBufferAllocator, new HashSet[Int]()))
 
     buffer.rewind()
     val address = UnsafeUtils.getAdress(buffer)

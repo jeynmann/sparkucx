@@ -159,14 +159,14 @@ final class ShuffleBlockFetcherIterator(
   @GuardedBy("this")
   private[this] var isZombie = false
 
-  private[this] var takeStart = 0L
-  private[this] var takeTime = 0L
-  private[this] var takeCount = 0L
-  private[this] var fetchStart = 0L
-  private[this] var fetchTime = 0L
-  private[this] var fetchCount = 0L
-  private[this] var computeStart = startTimeNs
-  private[this] var computeTime = 0L
+  // private[this] var takeStart = 0L
+  // private[this] var takeTime = 0L
+  // private[this] var takeCount = 0L
+  // private[this] var fetchStart = 0L
+  // private[this] var fetchTime = 0L
+  // private[this] var fetchCount = 0L
+  // private[this] var computeStart = startTimeNs
+  // private[this] var computeTime = 0L
   /**
    * A set to store the files used for shuffling remote huge blocks. Files in this set will be
    * deleted when cleanup. This is a layer of defensiveness against disk file leaks.
@@ -557,14 +557,15 @@ final class ShuffleBlockFetcherIterator(
     }
   }
 
-  override def hasNext: Boolean = {
-    if (numBlocksProcessed < numBlocksToFetch) {
-      true
-    } else {
-      logDebug(s"take+=$takeTime fetch+=$fetchTime compute+=$computeTime")
-      false
-    }
-  }
+  override def hasNext: Boolean = numBlocksProcessed < numBlocksToFetch
+  // override def hasNext: Boolean = {
+  //   if (numBlocksProcessed < numBlocksToFetch) {
+  //     true
+  //   } else {
+  //     logDebug(s"take+=$takeTime fetch+=$fetchTime compute+=$computeTime")
+  //     false
+  //   }
+  // }
 
   /**
    * Fetches the next (BlockId, InputStream). If a task fails, the ManagedBuffers
@@ -591,12 +592,13 @@ final class ShuffleBlockFetcherIterator(
     while (result == null) {
       val startFetchWait = System.nanoTime()
       result = results.take()
-      val elapsedFetch = System.nanoTime() - startFetchWait
-      val fetchWaitTime = TimeUnit.NANOSECONDS.toMillis(elapsedFetch)
+      // val elapsedFetch = System.nanoTime() - startFetchWait
+      // val fetchWaitTime = TimeUnit.NANOSECONDS.toMillis(elapsedFetch)
+      val fetchWaitTime = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startFetchWait)
       shuffleMetrics.incFetchWaitTime(fetchWaitTime)
-      computeTime += (startFetchWait - computeStart) / 1000
-      takeTime += elapsedFetch / 1000
-      takeCount += 1
+      // computeTime += (startFetchWait - computeStart) / 1000
+      // takeTime += elapsedFetch / 1000
+      // takeCount += 1
 
       result match {
         case r @ SuccessFetchResult(blockId, mapIndex, address, size, buf, isNetworkReqDone) =>
@@ -714,7 +716,7 @@ final class ShuffleBlockFetcherIterator(
   }
 
   private def fetchUpToMaxBytes(): Unit = {
-    fetchStart = System.nanoTime
+    // fetchStart = System.nanoTime
     // Send fetch requests up to maxBytesInFlight. If you cannot fetch from a remote host
     // immediately, defer the request until the next time it can be processed.
 
@@ -768,9 +770,9 @@ final class ShuffleBlockFetcherIterator(
         maxBlocksInFlightPerAddress
     }
 
-    computeStart = System.nanoTime
-    fetchTime += (computeStart - fetchStart)/1000
-    fetchCount += 1
+    // computeStart = System.nanoTime
+    // fetchTime += (computeStart - fetchStart)/1000
+    // fetchCount += 1
   }
 
   private[storage] def throwFetchFailedException(
