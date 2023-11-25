@@ -46,7 +46,8 @@ class UcxShuffleClient(val transport: UcxShuffleTransport, mapId2PartitionId: Ma
       }
     }
 
-    CommonUtils.safePolling(() => {transport.progress()}, () => {send != receive})
+    val resultBufferAllocator = (size: Long) => transport.hostBounceBufferMemoryPool.get(size)
+    transport.fetchBlocksByBlockIds(execId.toLong, ucxBlockIds, resultBufferAllocator, callbacks, () => {})
   }
 
   override def close(): Unit = {
