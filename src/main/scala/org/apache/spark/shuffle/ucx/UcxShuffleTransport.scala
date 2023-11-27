@@ -161,7 +161,8 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
     allocatedClientWorkers.foreach(_.progressStart())
     initialized = true
     logInfo(s"Started listener on ${listener.getAddress}")
-    SerializationUtils.serializeInetAddress(listener.getAddress)
+    // SerializationUtils.serializeInetAddress(listener.getAddress)
+    globalWorker.getAddress
   }
 
   /**

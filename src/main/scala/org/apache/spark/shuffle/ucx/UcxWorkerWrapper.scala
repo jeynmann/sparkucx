@@ -238,9 +238,10 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
 
     connections.getOrElseUpdate(executorId, {
       val address = transport.executorAddresses(executorId)
-      val inetAddress = SerializationUtils.deserializeInetAddress(address)
+      // val inetAddress = SerializationUtils.deserializeInetAddress(address)
       val endpointParams = new UcpEndpointParams().setPeerErrorHandlingMode()
-        .setSocketAddress(inetAddress).sendClientId()
+        // .setSocketAddress(inetAddress)
+        .setUcpAddress(address).sendClientId()
         .setErrorHandler(new UcpEndpointErrorHandler() {
           override def onError(ep: UcpEndpoint, status: Int, errorMsg: String): Unit = {
             logError(s"Endpoint to $executorId got an error: $errorMsg")
@@ -248,7 +249,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
           }
         }).setName(s"Endpoint to $executorId")
 
-      logDebug(s"@D Worker ${id.toInt}:${id>>32} connecting to Executor($executorId -> $inetAddress)")
+      logDebug(s"@D Worker ${id.toInt}:${id>>32} connecting to Executor($executorId -> $address)")
       val header = Platform.allocateDirectBuffer(UnsafeUtils.LONG_SIZE)
       header.putLong(id)
       header.rewind()
