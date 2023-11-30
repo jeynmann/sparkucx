@@ -92,6 +92,11 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
   private val registeredBlocks = new TrieMap[BlockId, Block]
   private var progressThread: Thread = _
 
+  private[ucx] lazy val maxReplySizeMiB = (ucxShuffleConf.maxReplySize >> 20).toInt
+  private[ucx] lazy val maxReplyLimit = new java.util.concurrent.Semaphore(maxReplySizeMiB, true)
+  private[ucx] lazy val replyLimitThreshMiB = (ucxShuffleConf.replyLimitThresh >> 20).toInt
+  private[ucx] lazy val replyLimitSizeMiB = (ucxShuffleConf.replyLimitSize >> 20).toInt
+  private[ucx] lazy val replyLimitMap = new TrieMap[Int, java.util.concurrent.Semaphore]
   var hostBounceBufferMemoryPool: UcxHostBounceBuffersPool = _
 
   private val errorHandler = new UcpEndpointErrorHandler {
@@ -103,6 +108,39 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
       }
       endpoints.remove(ucpEndpoint)
       ucpEndpoint.close()
+    }
+  }
+
+  def acquireReplyLimit(size: Long): Unit = {
+    val roundSizeMiB = (roundUpToTheNextPowerOf2(size) >> 20).toInt
+    if (roundSizeMiB >= replyLimitThreshMiB) {
+      replyLimitMap.getOrElseUpdate(roundSizeMiB, {
+        new java.util.concurrent.Semaphore(replyLimitSizeMiB.max(roundSizeMiB), true)
+      }).acquire(roundSizeMiB)
+    }
+  }
+
+  def releaseReplyLimit(size: Long): Unit = {
+    val roundSizeMiB = (roundUpToTheNextPowerOf2(size) >> 20).toInt
+    if (roundSizeMiB >= replyLimitThreshMiB) {
+      replyLimitMap(roundSizeMiB).release(roundSizeMiB)
+    }
+  }
+
+  protected def roundUpToTheNextPowerOf2(size: Long): Long = {
+    if (size < ucxShuffleConf.minBufferSize) {
+      ucxShuffleConf.minBufferSize
+    } else {
+      // Round up length to the nearest power of two
+      var length = size
+      length -= 1
+      length |= length >> 1
+      length |= length >> 2
+      length |= length >> 4
+      length |= length >> 8
+      length |= length >> 16
+      length += 1
+      length
     }
   }
 
@@ -159,7 +197,7 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
     allocatedServerWorkers.foreach(_.progressStart())
     allocatedClientWorkers.foreach(_.progressStart())
     initialized = true
-    logInfo(s"Started listener on ${listener.getAddress}")
+    logInfo(s"Started listener on ${listener.getAddress} limit ${maxReplyLimit.availablePermits} size ${ucxShuffleConf.maxReplySize}")
     SerializationUtils.serializeInetAddress(listener.getAddress)
   }
 

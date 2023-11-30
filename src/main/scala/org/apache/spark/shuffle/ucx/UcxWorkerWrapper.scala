@@ -66,6 +66,8 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
   private[ucx] final val connections = new TrieMap[transport.ExecutorId, UcpEndpoint]
   private[ucx] lazy val requestData = new TrieMap[Int, (Seq[OperationCallback], UcxRequest, transport.BufferAllocator)]
   private[ucx] lazy val tag = new AtomicInteger(Random.nextInt())
+  private[ucx] lazy val maxReplyLimit = transport.maxReplyLimit
+  private[ucx] lazy val maxReplySizeMiB = transport.maxReplySizeMiB
 
   private[ucx] lazy val ioThreadOn = transport.ucxShuffleConf.numIoThreads > 1
   private[ucx] lazy val ioThreadPool = ThreadUtils.newForkJoinPool("IO threads",
@@ -141,7 +143,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
               override def onSuccess(r: UcpRequest): Unit = {
                 request.completed = true
                 stats.endTime = System.nanoTime()
-                logDebug(s"Received rndv data of size: ${mem.size} for tag $i in " +
+                logDebug(s"Received rndv data of size: ${ucpAmData.getLength} for tag $i in " +
                   s"${stats.getElapsedTimeNs} ns " +
                   s"time from amHandle: ${System.nanoTime() - stats.amHandleTime} ns")
                 for (b <- 0 until numBlocks) {
@@ -306,12 +308,26 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
     }
   }
 
+  def getMemSizeMiB(size: Long): Int = {
+    var length = size
+    length -= 1
+    length |= length >> 1
+    length |= length >> 2
+    length |= length >> 4
+    length |= length >> 8
+    length |= length >> 16
+    length += 1
+    (length >> 20).toInt.min(maxReplySizeMiB)
+  }
+
   def handleFetchBlockRequest(blocks: Seq[Block], replyTag: Int, replyExecutor: Long): Unit = try {
     val tagAndSizes = UnsafeUtils.INT_SIZE + UnsafeUtils.INT_SIZE * blocks.length
-    val resultMemory = transport.hostBounceBufferMemoryPool.get(tagAndSizes + blocks.map(_.getSize).sum)
+    val buffSize = tagAndSizes + blocks.map(_.getSize).sum
+    val memSizeMiB = getMemSizeMiB(buffSize)
+    maxReplyLimit.acquire(memSizeMiB)
+    val resultMemory = transport.hostBounceBufferMemoryPool.get(buffSize)
       .asInstanceOf[UcxBounceBufferMemoryBlock]
-    val resultBuffer = UcxUtils.getByteBufferView(resultMemory.address,
-      resultMemory.size)
+    val resultBuffer = UcxUtils.getByteBufferView(resultMemory.address, buffSize)
     resultBuffer.putInt(replyTag)
 
     var offset = 0
@@ -341,12 +357,13 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
     val ep = connections(replyExecutor)
     worker.synchronized {
       ep.sendAmNonBlocking(1, resultMemory.address, tagAndSizes,
-        resultMemory.address + tagAndSizes, resultMemory.size - tagAndSizes,
+        resultMemory.address + tagAndSizes, buffSize - tagAndSizes,
         0, new UcxCallback {
           override def onSuccess(request: UcpRequest): Unit = {
-            logTrace(s"Sent ${blocks.length} blocks of size: ${resultMemory.size} " +
+            logTrace(s"Sent ${blocks.length} blocks of size: ${buffSize} " +
               s"to tag $replyTag in ${System.nanoTime() - startTime} ns.")
             transport.hostBounceBufferMemoryPool.put(resultMemory)
+            maxReplyLimit.release(memSizeMiB)
           }
           override def onError(ucsStatus: Int, errorMsg: String): Unit = {
             logError(s"Failed to send $errorMsg")

@@ -117,8 +117,9 @@ case class MemoryPool(ucxShuffleConf: UcxShuffleConf, ucxContext: UcpContext, me
   def get(size: Long): MemoryBlock = {
     val allocatorStack = allocatorMap.computeIfAbsent(roundUpToTheNextPowerOf2(size),
       s => AllocatorStack(s, memoryType))
-    val result = allocatorStack.get
-    new UcxBounceBufferMemoryBlock(result.memory, result.refCount, memPool, result.address, size)
+    allocatorStack.get
+    // result = allocatorStack.get
+    // new UcxBounceBufferMemoryBlock(result.memory, result.refCount, memPool, result.address, size)
   }
 
   def put(mem: MemoryBlock): Unit = {

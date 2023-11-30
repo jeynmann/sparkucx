@@ -91,4 +91,25 @@ class UcxShuffleConf(sparkConf: SparkConf) extends SparkConf {
     .createWithDefault(50)
 
   lazy val maxBlocksPerRequest: Int = sparkConf.getInt(MAX_BLOCKS_IN_FLIGHT.key, MAX_BLOCKS_IN_FLIGHT.defaultValue.get)
+
+  private lazy val REPLY_LIMIT_THRESH = ConfigBuilder(getUcxConf("replyLimitThresh"))
+    .doc("TODO")
+    .bytesConf(ByteUnit.MiB)
+    .createWithDefault(128)
+
+  lazy val replyLimitThresh: Long = sparkConf.getSizeAsBytes(REPLY_LIMIT_THRESH.key, REPLY_LIMIT_THRESH.defaultValueString)
+
+  private lazy val REPLY_LIMIT_SIZE = ConfigBuilder(getUcxConf("replyLimitSize"))
+    .doc("TODO")
+    .bytesConf(ByteUnit.MiB)
+    .createWithDefault(1024)
+
+  lazy val replyLimitSize: Long = sparkConf.getSizeAsBytes(REPLY_LIMIT_SIZE.key, REPLY_LIMIT_SIZE.defaultValueString)
+
+  private lazy val MAX_REPLY_SIZE = ConfigBuilder(getUcxConf("maxReplySize"))
+    .doc("TODO")
+    .bytesConf(ByteUnit.MiB)
+    .createWithDefault(1024)
+
+  lazy val maxReplySize: Long = sparkConf.getSizeAsBytes(MAX_REPLY_SIZE.key, MAX_REPLY_SIZE.defaultValueString)
 }
