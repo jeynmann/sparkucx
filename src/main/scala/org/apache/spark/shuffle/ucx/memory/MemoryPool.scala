@@ -117,17 +117,17 @@ case class MemoryPool(ucxShuffleConf: UcxShuffleConf, ucxContext: UcpContext, me
   def get(size: Long): MemoryBlock = {
     val allocatorStack = allocatorMap.computeIfAbsent(roundUpToTheNextPowerOf2(size),
       s => AllocatorStack(s, memoryType))
-    val result = allocatorStack.get
-    new UcxBounceBufferMemoryBlock(result.memory, result.refCount, memPool, result.address, size)
+    allocatorStack.get
   }
 
-  def put(mem: MemoryBlock): Unit = {
-    mem match {
-      case m: UcxBounceBufferMemoryBlock =>
-        val allocatorStack = allocatorMap.get(roundUpToTheNextPowerOf2(mem.size))
-        allocatorStack.put(m)
-      case _ => logWarning(s"Unknown memory block $mem")
-    }
+  private[memory] def put(mem: MemoryBlock): Unit = {
+    allocatorMap.get(mem.size).put(mem.asInstanceOf[UcxBounceBufferMemoryBlock])
+    // mem match {
+    //   case m: UcxBounceBufferMemoryBlock =>
+    //     val allocatorStack = allocatorMap.get(roundUpToTheNextPowerOf2(mem.size))
+    //     allocatorStack.put(m)
+    //   case _ => logWarning(s"Unknown memory block $mem")
+    // }
   }
 
   def preAllocate(size: Long, numBuffers: Int): Unit = {
