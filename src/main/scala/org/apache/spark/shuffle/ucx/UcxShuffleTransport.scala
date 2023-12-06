@@ -10,6 +10,7 @@ import org.apache.spark.shuffle.ucx.memory.UcxHostBounceBuffersPool
 import org.apache.spark.shuffle.ucx.rpc.GlobalWorkerRpcThread
 import org.apache.spark.shuffle.ucx.utils.{SerializableDirectBuffer, SerializationUtils}
 import org.apache.spark.shuffle.utils.UnsafeUtils
+import org.apache.spark.network.netty.SparkTransportConf
 import org.openucx.jucx.UcxException
 import org.openucx.jucx.ucp._
 import org.openucx.jucx.ucs.UcsConstants
@@ -93,6 +94,8 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
   private var progressThread: Thread = _
 
   var hostBounceBufferMemoryPool: UcxHostBounceBuffersPool = _
+  private[spark] lazy val sparkTransportConf = SparkTransportConf.fromSparkConf(
+    ucxShuffleConf, "shuffle", ucxShuffleConf.numWorkers)
 
   private val errorHandler = new UcpEndpointErrorHandler {
     override def onError(ucpEndpoint: UcpEndpoint, errorCode: Int, errorString: String): Unit = {

@@ -17,15 +17,19 @@ class UcxShuffleClient(val transport: UcxShuffleTransport) extends ShuffleClient
     for (i <- blockIds.indices) {
       val blockId = SparkBlockId.apply(blockIds(i)).asInstanceOf[SparkShuffleBlockId]
       ucxBlockIds(i) = UcxShuffleBockId(blockId.shuffleId, blockId.mapId, blockId.reduceId)
-      callbacks(i) = (result: OperationResult) => {
-        val memBlock = result.getData
-        val buffer = UnsafeUtils.getByteBufferView(memBlock.address, memBlock.size.toInt)
-        listener.onBlockFetchSuccess(blockIds(i), new NioManagedBuffer(buffer) {
-          override def release: ManagedBuffer = {
-            memBlock.close()
-            this
-          }
-        })
+      if (downloadFileManager == null) {
+        callbacks(i) = (result: OperationResult) => {
+          val memBlock = result.getData
+          val buffer = UnsafeUtils.getByteBufferView(memBlock.address, memBlock.size.toInt)
+          listener.onBlockFetchSuccess(blockIds(i), new NioManagedBuffer(buffer) {
+            override def release: ManagedBuffer = {
+              memBlock.close()
+              this
+            }
+          })
+        }
+      } else {
+        callbacks(i) = new DownloadCallBack(blockIds(i), listener, downloadFileManager)
       }
     }
     val resultBufferAllocator = (size: Long) => transport.hostBounceBufferMemoryPool.get(size)
@@ -34,5 +38,25 @@ class UcxShuffleClient(val transport: UcxShuffleTransport) extends ShuffleClient
 
   override def close(): Unit = {
 
+  }
+
+  private[this] class DownloadCallBack(
+    blockId: String, listener: BlockFetchingListener, downloadFileManager: DownloadFileManager)
+    extends OperationCallback {
+    private[this] val targetFile = downloadFileManager.createTempFile(
+      transport.sparkTransportConf)
+    private[this] val channel = targetFile.openForWriting();
+    override def onComplete(result: OperationResult): Unit = {
+      val memBlock = result.getData
+      val buffer = UnsafeUtils.getByteBufferView(memBlock.address, memBlock.size.toInt)
+      while (buffer.hasRemaining()) {
+        channel.write(buffer);
+      }
+      memBlock.close()
+      listener.onBlockFetchSuccess(blockId, channel.closeAndRead());
+      if (!downloadFileManager.registerTempFileToClean(targetFile)) {
+        targetFile.delete();
+      }
+    }
   }
 }
