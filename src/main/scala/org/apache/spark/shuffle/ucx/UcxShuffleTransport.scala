@@ -10,6 +10,7 @@ import org.apache.spark.shuffle.ucx.memory.UcxHostBounceBuffersPool
 import org.apache.spark.shuffle.ucx.rpc.GlobalWorkerRpcThread
 import org.apache.spark.shuffle.ucx.utils.{SerializableDirectBuffer, SerializationUtils}
 import org.apache.spark.shuffle.utils.UnsafeUtils
+import org.apache.spark.util.ThreadUtils
 import org.apache.spark.network.netty.SparkTransportConf
 import org.openucx.jucx.UcxException
 import org.openucx.jucx.ucp._
@@ -94,6 +95,9 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
   private var progressThread: Thread = _
 
   var hostBounceBufferMemoryPool: UcxHostBounceBuffersPool = _
+
+  private[spark] lazy val replyThreadPool = ThreadUtils.newForkJoinPool(
+    "UcxListenerThread", ucxShuffleConf.numListenerThreads)
   private[spark] lazy val sparkTransportConf = SparkTransportConf.fromSparkConf(
     ucxShuffleConf, "shuffle", ucxShuffleConf.numWorkers)
 
@@ -280,27 +284,47 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
         executorId, blockIds, resultBufferAllocator, callbacks)
   }
 
+  def fetchBlocksByStream(executorId: ExecutorId, blockId: BlockId,
+                                     resultBufferAllocator: BufferAllocator,
+                                     callback: OperationCallback): Unit = {
+    selectClientWorker.fetchBlocksByStream(
+        executorId, blockId, resultBufferAllocator, callback)
+  }
+
   def connectServerWorkers(executorId: ExecutorId, workerAddress: ByteBuffer): Unit = {
     allocatedServerWorkers.foreach(_.connectByWorkerAddress(executorId, workerAddress))
   }
 
   def handleFetchBlockRequest(replyTag: Int, amData: UcpAmData, replyExecutor: Long): Unit = {
-    val buffer = UnsafeUtils.getByteBufferView(amData.getDataAddress, amData.getLength.toInt)
-    val blockIds = mutable.ArrayBuffer.empty[BlockId]
+    replyThreadPool.submit(new Runnable {
+      override def run(): Unit = {
+        val buffer = UnsafeUtils.getByteBufferView(amData.getDataAddress, amData.getLength.toInt)
+        val blockIds = mutable.ArrayBuffer.empty[BlockId]
 
-    // 1. Deserialize blockIds from header
-    while (buffer.remaining() > 0) {
-      val blockId = UcxShuffleBockId.deserialize(buffer)
-      if (!registeredBlocks.contains(blockId)) {
-        throw new UcxException(s"$blockId is not registered")
+        // 1. Deserialize blockIds from header
+        while (buffer.remaining() > 0) {
+          val blockId = UcxShuffleBockId.deserialize(buffer)
+          if (!registeredBlocks.contains(blockId)) {
+            throw new UcxException(s"$blockId is not registered")
+          }
+          blockIds += blockId
+        }
+
+        val blocks = blockIds.map(bid => registeredBlocks(bid))
+
+        selectServerWorker.handleFetchBlockRequest(blocks, replyTag, replyExecutor)
+        amData.close()
       }
-      blockIds += blockId
-    }
+    })
+  }
 
-    val blocks = blockIds.map(bid => registeredBlocks(bid))
-
-    selectServerWorker.handleFetchBlockRequest(blocks, replyTag, replyExecutor)
-    amData.close()
+  def handleFetchBlockStream(replyTag: Int, blockId: BlockId, replyExecutor: Long): Unit = {
+    replyThreadPool.submit(new Runnable {
+      override def run(): Unit = {
+        val block = registeredBlocks(blockId)
+        selectServerWorker.handleFetchBlockStream(block, replyTag, replyExecutor)
+      }
+    })
   }
 
   @inline

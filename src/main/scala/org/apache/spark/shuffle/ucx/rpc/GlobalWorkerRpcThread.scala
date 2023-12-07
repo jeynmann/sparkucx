@@ -8,31 +8,31 @@ import java.nio.ByteBuffer
 import org.openucx.jucx.ucp.{UcpAmData, UcpConstants, UcpEndpoint, UcpWorker}
 import org.openucx.jucx.ucs.UcsConstants
 import org.apache.spark.internal.Logging
-import org.apache.spark.shuffle.ucx.UcxShuffleTransport
+import org.apache.spark.shuffle.ucx.{UcxShuffleTransport, UcxShuffleBockId}
 import org.apache.spark.shuffle.utils.UnsafeUtils
-import org.apache.spark.util.ThreadUtils
 
 class GlobalWorkerRpcThread(globalWorker: UcpWorker, transport: UcxShuffleTransport)
   extends Thread with Logging {
   setDaemon(true)
   setName("Global worker progress thread")
 
-  private lazy val replyWorkersThreadPool = ThreadUtils.newForkJoinPool(
-    "UcxListenerThread", transport.ucxShuffleConf.numListenerThreads)
-
   // Main RPC thread. Submit each RPC request to separate thread and send reply back from separate worker.
   globalWorker.setAmRecvHandler(0, (headerAddress: Long, headerSize: Long, amData: UcpAmData, _: UcpEndpoint) => {
     val header = UnsafeUtils.getByteBufferView(headerAddress, headerSize.toInt)
     val replyTag = header.getInt
     val replyExecutor = header.getLong
-    replyWorkersThreadPool.submit(new Runnable {
-      override def run(): Unit = {
-        transport.handleFetchBlockRequest(replyTag, amData, replyExecutor)
-      }
-    })
+    transport.handleFetchBlockRequest(replyTag, amData, replyExecutor)
     UcsConstants.STATUS.UCS_INPROGRESS
   }, UcpConstants.UCP_AM_FLAG_PERSISTENT_DATA | UcpConstants.UCP_AM_FLAG_WHOLE_MSG )
 
+  globalWorker.setAmRecvHandler(2, (headerAddress: Long, headerSize: Long, amData: UcpAmData, _: UcpEndpoint) => {
+    val header = UnsafeUtils.getByteBufferView(headerAddress, headerSize.toInt)
+    val replyTag = header.getInt
+    val replyExecutor = header.getLong
+    val blockId = UcxShuffleBockId.deserialize(header)
+    transport.handleFetchBlockStream(replyTag, blockId, replyExecutor)
+    UcsConstants.STATUS.UCS_OK
+  }, UcpConstants.UCP_AM_FLAG_WHOLE_MSG )
 
   // AM to get worker address for client worker and connect server workers to it
   globalWorker.setAmRecvHandler(1, (headerAddress: Long, headerSize: Long, amData: UcpAmData,
