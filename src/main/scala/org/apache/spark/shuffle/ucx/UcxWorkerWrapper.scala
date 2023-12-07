@@ -56,6 +56,27 @@ class UcxRefCountMemoryBlock(baseBlock: MemoryBlock, offset: Long, size: Long,
   }
 }
 
+private[ucx] class UcxStreamState(val callback: OperationCallback,
+                                  val request: UcxRequest,
+                                  var remaining: Int) {}
+
+private[ucx] class ProgressThread(
+  name: String, worker: UcpWorker, useWakeup: Boolean) extends Thread {
+  setDaemon(true)
+  setName(name)
+
+  override def run(): Unit = {
+    while (!isInterrupted) {
+      worker.synchronized {
+        while (worker.progress != 0) {}
+      }
+      if (useWakeup) {
+        worker.waitForEvents()
+      }
+    }
+  }
+}
+
 /**
  * Worker per thread wrapper, that maintains connection and progress logic.
  */
@@ -64,7 +85,8 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
   extends Closeable with Logging {
   private[ucx] final val timeout = transport.ucxShuffleConf.getSparkConf.getTimeAsMs("spark.network.timeout", "100")
   private[ucx] final val connections = new TrieMap[transport.ExecutorId, UcpEndpoint]
-  private[ucx] lazy val requestData = new TrieMap[Int, (Seq[OperationCallback], UcxRequest, Array[Int])]
+  private[ucx] lazy val requestData = new TrieMap[Int, (Seq[OperationCallback], UcxRequest, transport.BufferAllocator)]
+  private[ucx] lazy val streamData = new TrieMap[Int, UcxStreamState]
   private[ucx] lazy val tag = new AtomicInteger(Random.nextInt())
 
   private[ucx] lazy val ioThreadOn = transport.ucxShuffleConf.numIoThreads > 1
@@ -76,23 +98,6 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
   private[ucx] lazy val memPool = transport.hostBounceBufferMemoryPool
   private[ucx] lazy val maxReplySize = transport.ucxShuffleConf.maxReplySize
 
-  private[this] class ProgressThread extends Thread {
-    setDaemon(true)
-    setName(s"UCX-progress-$id")
-
-    override def run(): Unit = {
-      val useWakeup = transport.ucxShuffleConf.useWakeup
-      while (!isInterrupted) {
-        worker.synchronized {
-          while (worker.progress != 0) {}
-        }
-        if (useWakeup) {
-          worker.waitForEvents()
-        }
-      }
-    }
-  }
-
   private[this] case class UcxStreamReplyHandle() extends UcpAmRecvCallback() {
     override def onReceive(
       headerAddress: Long, headerSize: Long, ucpAmData: UcpAmData,
@@ -101,18 +106,19 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
         val i = headerBuffer.getInt
         val remaining = headerBuffer.getInt
 
-        val data = requestData.get(i)
+        val data = streamData.get(i)
         if (data.isEmpty) {
           throw new UcxException(s"Stream tag $i context not found.")
         }
 
-        val (callbacks, request, lastRemain) = data.get
-        if (remaining >= lastRemain(0)) {
-          throw new UcxException(s"Stream tag $i out of order $remaining <= ${lastRemain(0)}.")
+        val streamState = data.get
+        if (remaining >= streamState.remaining) {
+          throw new UcxException(
+            s"Stream tag $i out of order $remaining <= ${streamState.remaining}.")
         }
-        lastRemain(0) = remaining
+        streamState.remaining = remaining
 
-        val stats = request.getStats.get.asInstanceOf[UcxStats]
+        val stats = streamState.request.getStats.get.asInstanceOf[UcxStats]
         stats.receiveSize += ucpAmData.getLength
 
         val refCounts = new AtomicInteger(1)
@@ -122,15 +128,15 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
             + s"${stats.getElapsedTimeNs} ns")
           val buffer = UnsafeUtils.getByteBufferView(
             ucpAmData.getDataAddress, ucpAmData.getLength.toInt)
-          callbacks(0).onData(buffer)
+          streamState.callback.onData(buffer)
           if (remaining == 0) {
-            callbacks(0).onComplete(new OperationResult {
+            streamState.callback.onComplete(new OperationResult {
               override def getStatus: OperationStatus.Value = OperationStatus.SUCCESS
               override def getError: TransportError = null
               override def getStats: Option[OperationStats] = Some(stats)
               override def getData: MemoryBlock = null
             })
-            requestData.remove(i)
+            streamData.remove(i)
           }
         } else {
           val mem = memPool.get(ucpAmData.getLength)
@@ -139,23 +145,22 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
             ucpAmData.getDataHandle, mem.address, ucpAmData.getLength,
             new UcxCallback() {
               override def onSuccess(r: UcpRequest): Unit = {
-                request.completed = true
                 stats.endTime = System.nanoTime()
                 logDebug(s"Stream receive rndv data size ${mem.size} tag $i in " +
                   s"${stats.getElapsedTimeNs} ns " +
                   s" amHandle ${stats.endTime - stats.amHandleTime} ns")
                 val buffer = UnsafeUtils.getByteBufferView(
                   mem.address, ucpAmData.getLength.toInt)
-                callbacks(0).onData(buffer)
+                streamState.callback.onData(buffer)
                 mem.close()
                 if (remaining == 0) {
-                  callbacks(0).onComplete(new OperationResult {
+                  streamState.callback.onComplete(new OperationResult {
                     override def getStatus: OperationStatus.Value = OperationStatus.SUCCESS
                     override def getError: TransportError = null
                     override def getStats: Option[OperationStats] = Some(stats)
                     override def getData: MemoryBlock = null
                   })
-                  requestData.remove(i)
+                  streamData.remove(i)
                 }
               }
             }, UcsConstants.MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
@@ -177,7 +182,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
           throw new UcxException(s"No data for tag $i.")
         }
 
-        val (callbacks, request, _) = data.get
+        val (callbacks, request, allocator) = data.get
         val stats = request.getStats.get.asInstanceOf[UcxStats]
         stats.receiveSize = ucpAmData.getLength
 
@@ -209,7 +214,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
           }
           if (callbacks.isEmpty) UcsConstants.STATUS.UCS_OK else UcsConstants.STATUS.UCS_INPROGRESS
         } else {
-          val mem = memPool.get(ucpAmData.getLength)
+          val mem = allocator(ucpAmData.getLength)
           stats.amHandleTime = System.nanoTime()
           request.setRequest(worker.recvAmDataNonBlocking(ucpAmData.getDataHandle, mem.address, ucpAmData.getLength,
             new UcxCallback() {
@@ -261,7 +266,8 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
   }
 
   def progressStart(): Unit = {
-    progressThread = new ProgressThread()
+    progressThread = new ProgressThread(s"UCX-progress-$id", worker,
+                                        transport.ucxShuffleConf.useWakeup)
     progressThread.start()
   }
 
@@ -361,7 +367,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
     blockIds.foreach(b => b.serialize(buffer))
 
     val request = new UcxRequest(null, new UcxStats())
-    requestData.put(t, (callbacks, request, Array(Int.MaxValue)))
+    requestData.put(t, (callbacks, request, resultBufferAllocator))
 
     buffer.rewind()
     val address = UnsafeUtils.getAdress(buffer)
@@ -383,7 +389,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
 
   def handleFetchBlockRequest(blocks: Seq[Block], replyTag: Int, replyExecutor: Long): Unit = try {
     val tagAndSizes = UnsafeUtils.INT_SIZE + UnsafeUtils.INT_SIZE * blocks.length
-    val resultMemory = memPool.get(tagAndSizes + blocks.map(_.getSize).sum)
+    val resultMemory = transport.hostBounceBufferMemoryPool.get(tagAndSizes + blocks.map(_.getSize).sum)
       .asInstanceOf[UcxBounceBufferMemoryBlock]
     val resultBuffer = UcxUtils.getByteBufferView(resultMemory.address,
       resultMemory.size)
@@ -447,7 +453,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
     blockId.serialize(buffer)
 
     val request = new UcxRequest(null, new UcxStats())
-    requestData.put(t, (Array(callback), request, Array(Int.MaxValue)))
+    streamData.put(t, new UcxStreamState(callback, request, Int.MaxValue))
 
     val address = UnsafeUtils.getAdress(buffer)
 
