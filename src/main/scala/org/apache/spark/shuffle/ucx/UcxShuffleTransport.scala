@@ -280,25 +280,28 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
   override def fetchBlocksByBlockIds(executorId: ExecutorId, blockIds: Seq[BlockId],
                                      resultBufferAllocator: BufferAllocator,
                                      callbacks: Seq[OperationCallback]): Unit = {
-    selectClientWorker.fetchBlocksByBlockIds(
-        executorId, blockIds, resultBufferAllocator, callbacks)
+    selectClientWorker.fetchBlocksByBlockIds(executorId, blockIds,
+                                             resultBufferAllocator, callbacks)
   }
 
-  def fetchBlocksByStream(executorId: ExecutorId, blockId: BlockId,
-                                     resultBufferAllocator: BufferAllocator,
-                                     callback: OperationCallback): Unit = {
-    selectClientWorker.fetchBlocksByStream(
-        executorId, blockId, resultBufferAllocator, callback)
+  def fetchBlockByStream(executorId: ExecutorId, blockId: BlockId,
+                         resultBufferAllocator: BufferAllocator,
+                         callback: OperationCallback): Unit = {
+    selectClientWorker.fetchBlockByStream(executorId, blockId,
+                                          resultBufferAllocator, callback)
   }
 
   def connectServerWorkers(executorId: ExecutorId, workerAddress: ByteBuffer): Unit = {
-    allocatedServerWorkers.foreach(_.connectByWorkerAddress(executorId, workerAddress))
+    allocatedServerWorkers.foreach(
+      _.connectByWorkerAddress(executorId, workerAddress))
   }
 
-  def handleFetchBlockRequest(replyTag: Int, amData: UcpAmData, replyExecutor: Long): Unit = {
+  def handleFetchBlockRequest(replyTag: Int, amData: UcpAmData,
+                              replyExecutor: Long): Unit = {
     replyThreadPool.submit(new Runnable {
       override def run(): Unit = {
-        val buffer = UnsafeUtils.getByteBufferView(amData.getDataAddress, amData.getLength.toInt)
+        val buffer = UnsafeUtils.getByteBufferView(amData.getDataAddress,
+                                                   amData.getLength.toInt)
         val blockIds = mutable.ArrayBuffer.empty[BlockId]
 
         // 1. Deserialize blockIds from header
@@ -312,17 +315,20 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
 
         val blocks = blockIds.map(bid => registeredBlocks(bid))
 
-        selectServerWorker.handleFetchBlockRequest(blocks, replyTag, replyExecutor)
+        selectServerWorker.handleFetchBlockRequest(blocks, replyTag,
+                                                   replyExecutor)
         amData.close()
       }
     })
   }
 
-  def handleFetchBlockStream(replyTag: Int, blockId: BlockId, replyExecutor: Long): Unit = {
+  def handleFetchBlockStream(replyTag: Int, blockId: BlockId,
+                             replyExecutor: Long): Unit = {
     replyThreadPool.submit(new Runnable {
       override def run(): Unit = {
         val block = registeredBlocks(blockId)
-        selectServerWorker.handleFetchBlockStream(block, replyTag, replyExecutor)
+        selectServerWorker.handleFetchBlockStream(block, replyTag,
+                                                  replyExecutor)
       }
     })
   }
