@@ -15,20 +15,28 @@ class UcxShuffleClient(val transport: UcxShuffleTransport) extends ShuffleClient
                            downloadFileManager: DownloadFileManager): Unit = {                       
     val ucxBlockIds = Array.ofDim[UcxShuffleBockId](blockIds.length)
     val callbacks = Array.ofDim[OperationCallback](blockIds.length)
-    val resultBufferAllocator = (size: Long) => transport.hostBounceBufferMemoryPool.get(size)
+    val resultBufferAllocator =
+      (size: Long) => transport.hostBounceBufferMemoryPool.get(size)
     if (downloadFileManager == null) {
       for (i <- blockIds.indices) {
-        val blockId = SparkBlockId.apply(blockIds(i)).asInstanceOf[SparkShuffleBlockId]
-        ucxBlockIds(i) = UcxShuffleBockId(blockId.shuffleId, blockId.mapId, blockId.reduceId)
+        val blockId = SparkBlockId.apply(blockIds(i))
+        .asInstanceOf[SparkShuffleBlockId]
+        ucxBlockIds(i) = UcxShuffleBockId(blockId.shuffleId, blockId.mapId,
+                                          blockId.reduceId)
         callbacks(i) = new FetchCallBack(blockIds(i), listener)
       }
-      transport.fetchBlocksByBlockIds(execId.toLong, ucxBlockIds, resultBufferAllocator, callbacks)
+      transport.fetchBlocksByBlockIds(execId.toLong, ucxBlockIds,
+                                      resultBufferAllocator, callbacks)
     } else {
       for (i <- blockIds.indices) {
-        val blockId = SparkBlockId.apply(blockIds(i)).asInstanceOf[SparkShuffleBlockId]
-        val ucxBid = UcxShuffleBockId(blockId.shuffleId, blockId.mapId, blockId.reduceId)
-        val callback = new DownloadCallBack(blockIds(i), listener, downloadFileManager)
-        transport.fetchBlocksByStream(execId.toLong, ucxBid, resultBufferAllocator, callback)
+        val blockId = SparkBlockId.apply(blockIds(i))
+        .asInstanceOf[SparkShuffleBlockId]
+        val ucxBid = UcxShuffleBockId(blockId.shuffleId, blockId.mapId,
+                                      blockId.reduceId)
+        val callback = new DownloadCallBack(blockIds(i), listener,
+                                            downloadFileManager)
+        transport.fetchBlockByStream(execId.toLong, ucxBid,
+                                     resultBufferAllocator, callback)
       }
     }
   }
@@ -43,7 +51,8 @@ class UcxShuffleClient(val transport: UcxShuffleTransport) extends ShuffleClient
 
     override def onComplete(result: OperationResult): Unit = {
       val memBlock = result.getData
-      val buffer = UnsafeUtils.getByteBufferView(memBlock.address, memBlock.size.toInt)
+      val buffer = UnsafeUtils.getByteBufferView(memBlock.address,
+                                                 memBlock.size.toInt)
       listener.onBlockFetchSuccess(blockId, new NioManagedBuffer(buffer) {
         override def release: ManagedBuffer = {
           memBlock.close()
