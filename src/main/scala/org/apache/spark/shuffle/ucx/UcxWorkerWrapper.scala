@@ -128,7 +128,6 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
         val stats = streamState.request.getStats.get.asInstanceOf[UcxStats]
         stats.receiveSize += ucpAmData.getLength
 
-        val refCounts = new AtomicInteger(1)
         if (ucpAmData.isDataValid) {
           stats.endTime = System.nanoTime()
           logDebug(s"Stream receive amData ${ucpAmData.getLength} tag $i in "
@@ -200,7 +199,6 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
         stats.receiveSize += ucpAmData.getLength
 
         val memAddress = sliceState.memBlock.address + sliceState.offset
-        val refCounts = new AtomicInteger(1)
         if (ucpAmData.isDataValid) {
           stats.endTime = System.nanoTime()
           logDebug(s"Slice receive amData ${ucpAmData} tag $i in "
@@ -210,6 +208,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
           val buffer = UnsafeUtils.getByteBufferView(memAddress, body.remaining)
           buffer.put(body)
           if (remaining == 0) {
+            val refCounts = new AtomicInteger(1)
             sliceState.callback.onComplete(new OperationResult {
               override def getStatus: OperationStatus.Value = OperationStatus.SUCCESS
               override def getError: TransportError = null
@@ -231,6 +230,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
                   s" tag $i in ${stats.getElapsedTimeNs} ns " +
                   s" amHandle ${stats.endTime - stats.amHandleTime} ns")
                 if (remaining == 0) {
+                  val refCounts = new AtomicInteger(1)
                   sliceState.callback.onComplete(new OperationResult {
                     override def getStatus: OperationStatus.Value = OperationStatus.SUCCESS
                     override def getError: TransportError = null
