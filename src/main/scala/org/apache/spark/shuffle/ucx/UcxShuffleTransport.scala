@@ -322,7 +322,7 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
     replyThreadPool.submit(new Runnable {
       override def run(): Unit = {
         val block = registeredBlocks(blockId)
-        selectServerWorker.handleFetchBlockStream(block, replyTag, replyExecutor)
+        selectServerWorker.handleFetchBlockStream(block, replyTag, replyExecutor, 3)
       }
     })
   }

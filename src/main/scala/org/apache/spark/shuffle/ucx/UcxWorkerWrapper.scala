@@ -469,7 +469,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
 
   def handleFetchBlockRequest(blocks: Seq[Block], replyTag: Int, replyExecutor: Long): Unit = try {
     if (blocks.length == 1 && blocks(0).getSize > maxReplySize) {
-      return handleFetchBlockStream(blocks(0), replyTag, replyExecutor)
+      return handleFetchBlockStream(blocks(0), replyTag, replyExecutor, 2)
     }
     val tagAndSizes = UnsafeUtils.INT_SIZE + UnsafeUtils.INT_SIZE * blocks.length
     val resultMemory = transport.hostBounceBufferMemoryPool.get(tagAndSizes + blocks.map(_.getSize).sum)
@@ -553,7 +553,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
     }
   }
 
-  def handleFetchBlockStream(block: Block, replyTag: Int, replyExecutor: Long): Unit = {
+  def handleFetchBlockStream(block: Block, replyTag: Int, replyExecutor: Long, amId: Int): Unit = {
     val headerSize = UnsafeUtils.INT_SIZE + UnsafeUtils.INT_SIZE + UnsafeUtils.INT_SIZE
     val maxBodySize = maxReplySize - headerSize.toLong
     val blockSize = block.getSize
@@ -576,7 +576,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
       val startTime = System.nanoTime()
       val ep = workerWrapper.connections(replyExecutor)
       workerWrapper.worker.synchronized {
-        ep.sendAmNonBlocking(3, mem.address, headerSize,
+        ep.sendAmNonBlocking(amId, mem.address, headerSize,
           mem.address + headerSize, currentSize, 0, new UcxCallback {
             override def onSuccess(request: UcpRequest): Unit = {
               logTrace(s"Reply stream block $currentId size $currentSize tag $replyTag" +
