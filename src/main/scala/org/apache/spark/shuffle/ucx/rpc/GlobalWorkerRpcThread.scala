@@ -4,14 +4,11 @@
 */
 package org.apache.spark.shuffle.ucx.rpc
 
-import java.nio.ByteBuffer
-
 import org.openucx.jucx.ucp.{UcpAmData, UcpConstants, UcpEndpoint, UcpWorker}
 import org.openucx.jucx.ucs.UcsConstants
 import org.apache.spark.internal.Logging
-import org.apache.spark.shuffle.ucx.UcxShuffleTransport
+import org.apache.spark.shuffle.ucx.{UcxShuffleTransport, UcxShuffleBockId}
 import org.apache.spark.shuffle.utils.UnsafeUtils
-import org.apache.spark.util.ThreadUtils
 
 class GlobalWorkerRpcThread(globalWorker: UcpWorker, transport: UcxShuffleTransport)
   extends Thread with Logging {
@@ -27,6 +24,14 @@ class GlobalWorkerRpcThread(globalWorker: UcpWorker, transport: UcxShuffleTransp
     UcsConstants.STATUS.UCS_INPROGRESS
   }, UcpConstants.UCP_AM_FLAG_PERSISTENT_DATA | UcpConstants.UCP_AM_FLAG_WHOLE_MSG )
 
+  globalWorker.setAmRecvHandler(2, (headerAddress: Long, headerSize: Long, amData: UcpAmData, _: UcpEndpoint) => {
+    val header = UnsafeUtils.getByteBufferView(headerAddress, headerSize.toInt)
+    val replyTag = header.getInt
+    val replyExecutor = header.getLong
+    val blockId = UcxShuffleBockId.deserialize(header)
+    transport.handleFetchBlockStream(replyTag, blockId, replyExecutor)
+    UcsConstants.STATUS.UCS_OK
+  }, UcpConstants.UCP_AM_FLAG_WHOLE_MSG )
 
   // AM to get worker address for client worker and connect server workers to it
   globalWorker.setAmRecvHandler(1, (headerAddress: Long, headerSize: Long, amData: UcpAmData,
@@ -41,13 +46,12 @@ class GlobalWorkerRpcThread(globalWorker: UcpWorker, transport: UcxShuffleTransp
   override def run(): Unit = {
     if (transport.ucxShuffleConf.useWakeup) {
       while (!isInterrupted) {
-        if (globalWorker.progress() == 0) {
-          globalWorker.waitForEvents()
-        }
+        while (globalWorker.progress != 0) {}
+        globalWorker.waitForEvents()
       }
     } else {
       while (!isInterrupted) {
-        globalWorker.progress()
+        while (globalWorker.progress != 0) {}
       }
     }
   }

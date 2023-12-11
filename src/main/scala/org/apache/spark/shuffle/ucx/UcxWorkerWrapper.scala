@@ -56,6 +56,27 @@ class UcxRefCountMemoryBlock(baseBlock: MemoryBlock, offset: Long, size: Long,
   }
 }
 
+private[ucx] class UcxStreamState(val callback: OperationCallback,
+                                  val request: UcxRequest,
+                                  var remaining: Int) {}
+
+private[ucx] class ProgressThread(
+  name: String, worker: UcpWorker, useWakeup: Boolean) extends Thread {
+  setDaemon(true)
+  setName(name)
+
+  override def run(): Unit = {
+    while (!isInterrupted) {
+      worker.synchronized {
+        while (worker.progress != 0) {}
+      }
+      if (useWakeup) {
+        worker.waitForEvents()
+      }
+    }
+  }
+}
+
 /**
  * Worker per thread wrapper, that maintains connection and progress logic.
  */
@@ -63,16 +84,93 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
                             id: Long = 0L)
   extends Closeable with Logging {
   private[ucx] final val timeout = transport.ucxShuffleConf.getSparkConf.getTimeAsMs("spark.network.timeout", "100")
-  private[ucx] final val connections =  new TrieMap[transport.ExecutorId, UcpEndpoint]
+  private[ucx] final val connections = new TrieMap[transport.ExecutorId, UcpEndpoint]
   private[ucx] lazy val requestData = new TrieMap[Int, (Seq[OperationCallback], UcxRequest, transport.BufferAllocator)]
+  private[ucx] lazy val streamData = new TrieMap[Int, UcxStreamState]
   private[ucx] lazy val tag = new AtomicInteger(Random.nextInt())
 
   private[ucx] lazy val ioThreadOn = transport.ucxShuffleConf.numIoThreads > 1
   private[ucx] lazy val ioThreadPool = ThreadUtils.newForkJoinPool("IO threads",
     transport.ucxShuffleConf.numIoThreads)
   private[ucx] lazy val ioTaskSupport = new ForkJoinTaskSupport(ioThreadPool)
+  private[ucx] var progressThread: Thread = _
+
+  private[ucx] lazy val memPool = transport.hostBounceBufferMemoryPool
+  private[ucx] lazy val maxReplySize = transport.ucxShuffleConf.maxReplySize
+
+  private[this] case class UcxStreamReplyHandle() extends UcpAmRecvCallback() {
+    override def onReceive(
+      headerAddress: Long, headerSize: Long, ucpAmData: UcpAmData,
+      ep: UcpEndpoint): Int = {
+        val headerBuffer = UnsafeUtils.getByteBufferView(headerAddress, headerSize.toInt)
+        val i = headerBuffer.getInt
+        val remaining = headerBuffer.getInt
+
+        val data = streamData.get(i)
+        if (data.isEmpty) {
+          throw new UcxException(s"Stream tag $i context not found.")
+        }
+
+        val streamState = data.get
+        if (remaining >= streamState.remaining) {
+          throw new UcxException(
+            s"Stream tag $i out of order $remaining <= ${streamState.remaining}.")
+        }
+        streamState.remaining = remaining
+
+        val stats = streamState.request.getStats.get.asInstanceOf[UcxStats]
+        stats.receiveSize += ucpAmData.getLength
+
+        val refCounts = new AtomicInteger(1)
+        if (ucpAmData.isDataValid) {
+          stats.endTime = System.nanoTime()
+          logDebug(s"Stream receive amData ${ucpAmData} tag $i in "
+            + s"${stats.getElapsedTimeNs} ns")
+          val buffer = UnsafeUtils.getByteBufferView(
+            ucpAmData.getDataAddress, ucpAmData.getLength.toInt)
+          streamState.callback.onData(buffer)
+          if (remaining == 0) {
+            streamState.callback.onComplete(new OperationResult {
+              override def getStatus: OperationStatus.Value = OperationStatus.SUCCESS
+              override def getError: TransportError = null
+              override def getStats: Option[OperationStats] = Some(stats)
+              override def getData: MemoryBlock = null
+            })
+            streamData.remove(i)
+          }
+        } else {
+          val mem = memPool.get(ucpAmData.getLength)
+          stats.amHandleTime = System.nanoTime()
+          worker.recvAmDataNonBlocking(
+            ucpAmData.getDataHandle, mem.address, ucpAmData.getLength,
+            new UcxCallback() {
+              override def onSuccess(r: UcpRequest): Unit = {
+                stats.endTime = System.nanoTime()
+                logDebug(s"Stream receive rndv data size ${mem.size} tag $i in " +
+                  s"${stats.getElapsedTimeNs} ns " +
+                  s" amHandle ${stats.endTime - stats.amHandleTime} ns")
+                val buffer = UnsafeUtils.getByteBufferView(
+                  mem.address, ucpAmData.getLength.toInt)
+                streamState.callback.onData(buffer)
+                mem.close()
+                if (remaining == 0) {
+                  streamState.callback.onComplete(new OperationResult {
+                    override def getStatus: OperationStatus.Value = OperationStatus.SUCCESS
+                    override def getError: TransportError = null
+                    override def getStats: Option[OperationStats] = Some(stats)
+                    override def getData: MemoryBlock = null
+                  })
+                  streamData.remove(i)
+                }
+              }
+            }, UcsConstants.MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
+        }
+        UcsConstants.STATUS.UCS_OK
+      }
+  }
 
   if (isClientWorker) {
+    worker.setAmRecvHandler(2, UcxStreamReplyHandle(), UcpConstants.UCP_AM_FLAG_WHOLE_MSG)
     // Receive block data handler
     worker.setAmRecvHandler(1,
       (headerAddress: Long, headerSize: Long, ucpAmData: UcpAmData, _: UcpEndpoint) => {
@@ -157,10 +255,20 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
       }
     }
     connections.clear()
+    if (progressThread != null) {
+      progressThread.interrupt()
+      progressThread.join(1)
+    }
     if (ioThreadOn) {
       ioThreadPool.shutdown()
     }
     worker.close()
+  }
+
+  def progressStart(): Unit = {
+    progressThread = new ProgressThread(s"UCX-progress-$id", worker,
+                                        transport.ucxShuffleConf.useWakeup)
+    progressThread.start()
   }
 
   /**
@@ -236,6 +344,9 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
               header.clear()
               workerAddress.clear()
             }
+            override def onError(ucsStatus: Int, errorMsg: String): Unit = {
+              logError(s"Failed to send $errorMsg")
+            }
           }, MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
         ep
       }
@@ -304,7 +415,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
     }
 
     for (i <- blocksCollection) {
-      blocks(i).getBlock(localBuffers(i))
+      blocks(i).getBlock(localBuffers(i), 0)
     }
 
     val startTime = System.nanoTime()
@@ -326,6 +437,86 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
     }
   } catch {
     case ex: Throwable => logError(s"Failed to read and send data: $ex")
+  }
+
+  def fetchBlocksByStream(executorId: transport.ExecutorId, blockId: BlockId,
+                            resultBufferAllocator: transport.BufferAllocator,
+                            callback: OperationCallback): Unit = {
+    val startTime = System.nanoTime()
+    val headerSize = UnsafeUtils.INT_SIZE + UnsafeUtils.LONG_SIZE + blockId.serializedSize
+
+    val t = tag.incrementAndGet()
+
+    val buffer = Platform.allocateDirectBuffer(headerSize)
+    buffer.putInt(t)
+    buffer.putLong(id)
+    blockId.serialize(buffer)
+
+    val request = new UcxRequest(null, new UcxStats())
+    streamData.put(t, new UcxStreamState(callback, request, Int.MaxValue))
+
+    val address = UnsafeUtils.getAdress(buffer)
+
+    val ep = getConnection(executorId)
+    worker.synchronized {
+      ep.sendAmNonBlocking(2, address, headerSize, address, 0,
+        UcpConstants.UCP_AM_SEND_FLAG_EAGER, new UcxCallback() {
+        override def onSuccess(request: UcpRequest): Unit = {
+          buffer.clear()
+          logDebug(s"Worker $id sent stream to $executorId block ${blockId} tag $t" +
+            s"in ${System.nanoTime() - startTime} ns")
+        }
+      }, MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
+    }
+  }
+
+  def handleFetchBlockStream(block: Block, replyTag: Int, replyExecutor: Long): Unit = {
+    val headerSize = UnsafeUtils.INT_SIZE + UnsafeUtils.INT_SIZE
+    val maxBodySize = maxReplySize - headerSize.toLong
+    val blockSize = block.getSize
+    val blockSlice = (0L until blockSize by maxBodySize)
+
+    val mem = memPool.get(maxReplySize).asInstanceOf[UcxBounceBufferMemoryBlock]
+    val buffer = UcxUtils.getByteBufferView(mem.address, mem.size)
+
+    def send(workerWrapper: UcxWorkerWrapper, currentId: Int): Unit = try {
+      val remaining = blockSlice.length - currentId - 1
+      val currentOffset = blockSlice(currentId)
+      val currentSize = (blockSize - currentOffset).min(maxBodySize)
+      buffer.clear()
+      buffer.limit(headerSize + currentSize.toInt)
+      buffer.putInt(replyTag)
+      buffer.putInt(remaining)
+      block.getBlock(buffer, currentOffset)
+
+      val startTime = System.nanoTime()
+      val ep = workerWrapper.connections(replyExecutor)
+      workerWrapper.worker.synchronized {
+        ep.sendAmNonBlocking(2, mem.address, headerSize,
+          mem.address + headerSize, currentSize, 0, new UcxCallback {
+            override def onSuccess(request: UcpRequest): Unit = {
+              logTrace(s"Reply stream block $currentId size $currentSize tag $replyTag" +
+                s" in ${System.nanoTime() - startTime} ns.")
+              if (remaining > 0) {
+                transport.replyThreadPool.submit(new Runnable {
+                  override def run = send(
+                    transport.selectServerWorker, currentId + 1)
+                })
+              } else {
+                mem.close()
+              }
+            }
+            override def onError(ucsStatus: Int, errorMsg: String): Unit = {
+              logError(s"Failed to reply stream $errorMsg")
+            }
+          }, new UcpRequestParams()
+            .setMemoryType(UcsConstants.MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
+            .setMemoryHandle(mem.memory))
+      }
+    } catch {
+      case ex: Throwable => logError(s"Failed to reply stream $ex.")
+    }
+    send(this, 0)
   }
 
 }
