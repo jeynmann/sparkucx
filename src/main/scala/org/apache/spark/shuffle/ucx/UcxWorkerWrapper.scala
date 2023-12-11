@@ -509,8 +509,8 @@ private[ucx] class UcxStreamState(val callback: OperationCallback,
                                   val request: UcxRequest,
                                   var remaining: Int) {}
 
-private[ucx] class ProgressThread(
-  name: String, worker: UcpWorker, useWakeup: Boolean) extends Thread {
+private[ucx] class ProgressThread(name: String, worker: UcpWorker,
+                                  useWakeup: Boolean) extends Thread {
   setDaemon(true)
   setName(name)
 
@@ -523,5 +523,32 @@ private[ucx] class ProgressThread(
         worker.waitForEvents()
       }
     }
+  }
+}
+
+private[ucx] class WorkerThread(name: String, worker: UcpWorker,
+                                useWakeup: Boolean) extends Thread {
+  private[this] val taskQueue = new ConcurrentLinkedQueue[Runnable]
+  setDaemon(true)
+  setName(name)
+
+  override def run(): Unit = {
+    while (!isInterrupted) {
+      Option(taskQueue.poll()) match {
+        case Some(task) => task.run()
+        case None => {}
+      }
+      worker.synchronized {
+        while (worker.progress != 0) {}
+      }
+      if (taskQueue.isEmpty && useWakeup) {
+        worker.waitForEvents()
+      }
+    }
+  }
+
+  private[ucx] def execute(task: Runnable): Unit = {
+    taskQueue.add(task)
+    worker.signal()
   }
 }

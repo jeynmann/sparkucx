@@ -69,10 +69,10 @@ extends ExternalShuffleTransport(clientConf) with UcxLogging {
       clientConf.preallocateBuffersMap)
   }
 
-  override def selectWorker(): ExternalUcxWorkerWrapper = {
-    allocatedWorker(
-      (currentWorkerId.incrementAndGet() % allocatedWorker.length).abs)
-  }
+  // override def selectWorker(): ExternalUcxWorkerWrapper = {
+  //   allocatedWorker(
+  //     (currentWorkerId.incrementAndGet() % allocatedWorker.length).abs)
+  // }
 
   def connect(shuffleServer: SerializableDirectBuffer): Unit = {
     val addressBuffer = shuffleServer.value
