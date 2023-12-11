@@ -149,7 +149,6 @@ See file LICENSE for terms.
       <groupId>org.apache.spark</groupId>
       <artifactId>spark-network-yarn_${scala.compat.version}</artifactId>
       <version>${spark.version}</version>
-      <scope>provided</scope>
     </dependency>
     <dependency>
       <groupId>org.openucx</groupId>
