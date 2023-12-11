@@ -39,13 +39,12 @@ class UcxShuffleTransportServer(
   }
   private val replyExecutors = new SForkJoinPool(
     serverConf.numListenerThreads, factory, null, false)
-  private val workerLocal = new ThreadLocal[ExternalUcxWorkerWrapper]
 
   private val endpoints = mutable.Set.empty[UcpEndpoint]
   private var globalWorker: UcpWorker = _
   private var listener: UcpListener = _
 
-  class ProgressTask(worker: UcpWorker) extends Runnable {
+  private[this] class ProgressTask(worker: UcpWorker) extends Runnable {
     override def run(): Unit = {
       val useWakeup = ucxShuffleConf.useWakeup
       while (running) {
@@ -101,6 +100,16 @@ class UcxShuffleTransportServer(
       connectBack(workerId, workerAddress)
       UcsConstants.STATUS.UCS_OK
     }, UcpConstants.UCP_AM_FLAG_WHOLE_MSG)
+    globalWorker.setAmRecvHandler(2,
+      (headerAddress: Long, headerSize: Long, amData: UcpAmData, _: UcpEndpoint) => {
+      val header = UnsafeUtils.getByteBufferView(headerAddress, headerSize.toInt)
+      val workerId = UcxWorkerId.deserialize(header)
+      val replyTag = header.getInt
+      val exeId = header.getInt
+      val blockId = UcxShuffleBockId.deserialize(header)
+      handleFetchBlockStream(workerId, exeId, replyTag, blockId)
+      UcsConstants.STATUS.UCS_OK
+    }, UcpConstants.UCP_AM_FLAG_WHOLE_MSG )
 
     initProgressPool(serverConf.numListenerThreads + 1)
 
@@ -169,7 +178,7 @@ class UcxShuffleTransportServer(
         allocatedWorker.foreach(_.getConnectionBack(clientWorker))
       }
     })
-    // allocatedWorker.foreach(_.connectBack(clientWorker, workerAddress))
+    allocatedWorker.foreach(_.connectBack(clientWorker, workerAddress))
   }
 
   def handleFetchBlockRequest(clientWorker: UcxWorkerId, exeId: Int, replyTag: Int, amData: UcpAmData): Unit = {
@@ -204,16 +213,20 @@ class UcxShuffleTransportServer(
     })
   }
 
-  @inline
-  def selectWorker(): ExternalUcxWorkerWrapper = {
-    Option(workerLocal.get) match {
-      case Some(worker) => worker
-      case None => {
-        val worker = allocatedWorker(
-          (currentWorkerId.incrementAndGet() % allocatedWorker.length).abs)
-        workerLocal.set(worker)
-        worker
+  def handleFetchBlockStream(clientWorker: UcxWorkerId, exeId: Int,
+                             replyTag: Int, bid: UcxShuffleBockId): Unit = {
+    replyExecutors.submit(new Runnable {
+      override def run(): Unit = {
+        val buf = blockManager.getBlockData(clientWorker.appId,
+          exeId.toString, bid.shuffleId, bid.mapId, bid.reduceId)
+        val ch = Channels.newChannel(buf.createInputStream)
+        val blockInfo = buf.size() -> ch
+        selectWorker.handleFetchBlockStream(clientWorker, replyTag, blockInfo)
       }
-    }
+    })
+  }
+
+  def submit(task: Runnable): Unit = {
+    replyExecutors.submit(task)
   }
 }

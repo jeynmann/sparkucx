@@ -34,16 +34,16 @@ class ExternalUcxClientConf(val sparkConf: SparkConf) extends SparkConf with Ext
     .createWithDefault(ExternalUcxConf.MIN_BUFFER_SIZE_DEFAULT)
 
   override lazy val minBufferSize: Long = sparkConf.getSizeAsBytes(MIN_BUFFER_SIZE.key,
-    MIN_BUFFER_SIZE.defaultValueString)
+    MIN_BUFFER_SIZE.defaultValue.get)
 
   private lazy val MIN_REGISTRATION_SIZE =
     ConfigBuilder(ExternalUcxConf.MIN_REGISTRATION_SIZE_KEY)
     .doc("Minimal memory registration size in memory pool.")
-    .bytesConf(ByteUnit.MiB)
-    .createWithDefault(ExternalUcxConf.MIN_REGISTRATION_SIZE_DEFAULT / 1048576)
+    .bytesConf(ByteUnit.BYTE)
+    .createWithDefault(ExternalUcxConf.MIN_REGISTRATION_SIZE_DEFAULT)
 
   override lazy val minRegistrationSize: Int = sparkConf.getSizeAsBytes(MIN_REGISTRATION_SIZE.key,
-    MIN_REGISTRATION_SIZE.defaultValueString).toInt
+    MIN_REGISTRATION_SIZE.defaultValue.get).toInt
 
   private lazy val SOCKADDR =
     ConfigBuilder(ExternalUcxConf.SOCKADDR_KEY)
@@ -75,6 +75,13 @@ class ExternalUcxClientConf(val sparkConf: SparkConf) extends SparkConf with Ext
     .createWithDefault(ExternalUcxConf.MAX_BLOCKS_IN_FLIGHT_DEFAULT)
 
   override lazy val maxBlocksPerRequest: Int = sparkConf.getInt(MAX_BLOCKS_IN_FLIGHT.key, MAX_BLOCKS_IN_FLIGHT.defaultValue.get)
+
+  private lazy val MAX_REPLY_SIZE = ConfigBuilder(ExternalUcxConf.MAX_REPLY_SIZE_KEY)
+    .doc("Maximum size per reply")
+    .bytesConf(ByteUnit.BYTE)
+    .createWithDefault(ExternalUcxConf.MAX_REPLY_SIZE_DEFAULT)
+
+  override lazy val maxReplySize: Long = sparkConf.getSizeAsBytes(MAX_REPLY_SIZE.key, MAX_REPLY_SIZE.defaultValue.get)
 
   override lazy val ucxServerPort: Int = sparkConf.getInt(
     ExternalUcxConf.SPARK_UCX_SHUFFLE_SERVICE_PORT_KEY,

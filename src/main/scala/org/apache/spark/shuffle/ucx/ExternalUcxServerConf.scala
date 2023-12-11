@@ -43,6 +43,10 @@ class ExternalUcxServerConf(val yarnConf: Configuration) extends ExternalUcxConf
     ExternalUcxConf.SPARK_UCX_SHUFFLE_SERVICE_PORT_KEY,
     ExternalUcxConf.SPARK_UCX_SHUFFLE_SERVICE_PORT_DEFAULT)
 
+  override lazy val maxReplySize: Long = yarnConf.getLong(
+    ExternalUcxConf.MAX_REPLY_SIZE_KEY,
+    ExternalUcxConf.MAX_REPLY_SIZE_DEFAULT)
+
   lazy val ucxEpsNum: Int = yarnConf.getInt(
     ExternalUcxServerConf.SPARK_UCX_SHUFFLE_EPS_NUM_KEY,
     ExternalUcxServerConf.SPARK_UCX_SHUFFLE_EPS_NUM_DEFAULT)

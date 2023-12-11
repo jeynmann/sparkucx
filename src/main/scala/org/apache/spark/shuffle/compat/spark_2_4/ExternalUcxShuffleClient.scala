@@ -12,23 +12,29 @@ class ExternalUcxShuffleClient(val transport: UcxShuffleTransportClient) extends
   override def fetchBlocks(host: String, port: Int, execId: String, blockIds: Array[String],
                            listener: BlockFetchingListener,
                            downloadFileManager: DownloadFileManager): Unit = {
-    val ucxBlockIds = Array.ofDim[UcxShuffleBockId](blockIds.length)
-    val callbacks = Array.ofDim[OperationCallback](blockIds.length)
-    for (i <- blockIds.indices) {
-      val blockId = SparkBlockId.apply(blockIds(i)).asInstanceOf[SparkShuffleBlockId]
-      ucxBlockIds(i) = UcxShuffleBockId(blockId.shuffleId, blockId.mapId, blockId.reduceId)
-      callbacks(i) = (result: OperationResult) => {
-        val memBlock = result.getData
-        val buffer = UnsafeUtils.getByteBufferView(memBlock.address, memBlock.size.toInt)
-        listener.onBlockFetchSuccess(blockIds(i), new NioManagedBuffer(buffer) {
-          override def release: ManagedBuffer = {
-            memBlock.close()
-            this
-          }
-        })
+    if (downloadFileManager == null) {
+      val ucxBlockIds = Array.ofDim[UcxShuffleBockId](blockIds.length)
+      val callbacks = Array.ofDim[OperationCallback](blockIds.length)
+      for (i <- blockIds.indices) {
+        val blockId = SparkBlockId.apply(blockIds(i))
+                                  .asInstanceOf[SparkShuffleBlockId]
+        ucxBlockIds(i) = UcxShuffleBockId(blockId.shuffleId, blockId.mapId,
+                                          blockId.reduceId)
+        callbacks(i) = new UcxFetchCallBack(blockIds(i), listener)
+      }
+      transport.fetchBlocksByBlockIds(host, execId.toInt, ucxBlockIds, callbacks)
+    } else {
+      for (i <- blockIds.indices) {
+        val blockId = SparkBlockId.apply(blockIds(i))
+                                  .asInstanceOf[SparkShuffleBlockId]
+        val ucxBid = UcxShuffleBockId(blockId.shuffleId, blockId.mapId,
+                                      blockId.reduceId)
+        val callback = new UcxDownloadCallBack(blockIds(i), listener,
+                                               downloadFileManager,
+                                               transport.sparkTransportConf)
+        transport.fetchBlockByStream(host, execId.toInt, ucxBid, callback)
       }
     }
-    transport.fetchBlocksByBlockIds(host, execId.toInt, ucxBlockIds, callbacks)
   }
 
   override def close(): Unit = {

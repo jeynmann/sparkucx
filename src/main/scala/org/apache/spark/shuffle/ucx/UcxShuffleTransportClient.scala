@@ -1,6 +1,7 @@
 package org.apache.spark.shuffle.ucx
 
 // import org.apache.spark.SparkEnv
+import org.apache.spark.network.netty.SparkTransportConf
 import org.apache.spark.shuffle.utils.UcxLogging
 import org.apache.spark.shuffle.ucx.memory.UcxHostBounceBuffersPool
 import org.apache.spark.shuffle.ucx.utils.{SerializableDirectBuffer, SerializationUtils}
@@ -13,8 +14,10 @@ import java.nio.ByteBuffer
 class UcxShuffleTransportClient(clientConf: ExternalUcxClientConf, blockManagerId: BlockManagerId)
 extends ExternalShuffleTransport(clientConf) with UcxLogging {
   private[spark] val serverPort = clientConf.ucxServerPort
+  private[spark] lazy val sparkTransportConf = SparkTransportConf.fromSparkConf(
+    clientConf.getSparkConf, "shuffle", clientConf.numWorkers)
 
-  class ProgressTask(worker: UcpWorker) extends Runnable {
+  private[this] class ProgressTask(worker: UcpWorker) extends Runnable {
     override def run(): Unit = {
       val useWakeup = ucxShuffleConf.useWakeup
       while (running) {
@@ -66,6 +69,11 @@ extends ExternalShuffleTransport(clientConf) with UcxLogging {
       clientConf.preallocateBuffersMap)
   }
 
+  override def selectWorker(): ExternalUcxWorkerWrapper = {
+    allocatedWorker(
+      (currentWorkerId.incrementAndGet() % allocatedWorker.length).abs)
+  }
+
   def connect(shuffleServer: SerializableDirectBuffer): Unit = {
     val addressBuffer = shuffleServer.value
     val address = SerializationUtils.deserializeInetAddress(addressBuffer)
@@ -88,9 +96,9 @@ extends ExternalShuffleTransport(clientConf) with UcxLogging {
       new InetSocketAddress(host, serverPort), exeId, blockIds, callbacks)
   }
 
-  @inline
-  def selectWorker(): ExternalUcxWorkerWrapper = {
-    allocatedWorker(
-      (currentWorkerId.incrementAndGet() % allocatedWorker.length).abs)
+  def fetchBlockByStream(host: String, exeId: Int, blockId: BlockId,
+                         callback: OperationCallback): Unit = {
+    selectWorker.fetchBlockByStream(
+      new InetSocketAddress(host, serverPort), exeId, blockId, callback)
   }
 }

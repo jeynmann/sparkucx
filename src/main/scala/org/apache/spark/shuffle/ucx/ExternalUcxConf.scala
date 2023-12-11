@@ -18,6 +18,7 @@ trait ExternalUcxConf {
   lazy val numWorkers: Int = ExternalUcxConf.NUM_WORKERS_DEFAULT
   lazy val maxBlocksPerRequest: Int = ExternalUcxConf.MAX_BLOCKS_IN_FLIGHT_DEFAULT
   lazy val ucxServerPort: Int = ExternalUcxConf.SPARK_UCX_SHUFFLE_SERVICE_PORT_DEFAULT
+  lazy val maxReplySize: Long = ExternalUcxConf.MAX_REPLY_SIZE_DEFAULT
 }
 
 object ExternalUcxConf {
@@ -49,6 +50,9 @@ object ExternalUcxConf {
 
   lazy val MAX_BLOCKS_IN_FLIGHT_KEY = getUcxConf("maxBlocksPerRequest")
   lazy val MAX_BLOCKS_IN_FLIGHT_DEFAULT = 50
+
+  lazy val MAX_REPLY_SIZE_KEY = getUcxConf("maxReplySize")
+  lazy val MAX_REPLY_SIZE_DEFAULT = 256L * 1024 * 1024
 
   lazy val SPARK_UCX_SHUFFLE_SERVICE_PORT_KEY = getUcxConf("service.port")
   lazy val SPARK_UCX_SHUFFLE_SERVICE_PORT_DEFAULT = 3338
