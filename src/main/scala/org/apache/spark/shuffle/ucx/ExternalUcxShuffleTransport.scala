@@ -57,7 +57,8 @@ class ExternalShuffleTransport(var ucxShuffleConf: ExternalUcxConf) extends UcxL
   private[ucx] var hostBounceBufferMemoryPool: UcxHostBounceBuffersPool = _
   private[ucx] val ucpWorkerParams = new UcpWorkerParams().requestThreadSafety()
   private[ucx] var allocatedWorker: Array[ExternalUcxWorkerWrapper] = _
-  private[ucx] val currentWorkerId = new AtomicInteger()
+  private[ucx] lazy val currentWorkerId = new AtomicInteger()
+  private[ucx] lazy val workerLocal = new ThreadLocal[ExternalUcxWorkerWrapper]
   private[ucx] var progressExecutors: ExecutorService = _
 
   def estimateNumEps(): Int = 1
@@ -103,6 +104,19 @@ class ExternalShuffleTransport(var ucxShuffleConf: ExternalUcxConf) extends UcxL
         progressExecutors.shutdown()
       }
       initialized = false
+    }
+  }
+
+  @inline
+  def selectWorker(): ExternalUcxWorkerWrapper = {
+    Option(workerLocal.get) match {
+      case Some(worker) => worker
+      case None => {
+        val worker = allocatedWorker(
+          (currentWorkerId.incrementAndGet() % allocatedWorker.length).abs)
+        workerLocal.set(worker)
+        worker
+      }
     }
   }
 }
