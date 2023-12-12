@@ -30,6 +30,8 @@ See file LICENSE for terms.
   <properties>
     <maven.compiler.source>1.8</maven.compiler.source>
     <maven.compiler.target>1.8</maven.compiler.target>
+    <ucx.shade.packageName>org.openucx</ucx.shade.packageName>
+    <ucx.jarName>${project.artifactId}-${project.version}-for-${project.activeProfiles[0].id}</ucx.jarName>
     <encoding>UTF-8</encoding>
   </properties>
 
@@ -91,7 +93,6 @@ See file LICENSE for terms.
       <groupId>org.apache.spark</groupId>
       <artifactId>spark-core_${scala.compat.version}</artifactId>
       <version>${spark.version}</version>
-      <scope>provided</scope>
     </dependency>
     <dependency>
       <groupId>org.openucx</groupId>
@@ -101,8 +102,48 @@ See file LICENSE for terms.
   </dependencies>
 
   <build>
-    <finalName>${project.artifactId}-${project.version}-for-${project.activeProfiles[0].id}</finalName>
+    <finalName>${ucx.jarName}</finalName>
     <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-shade-plugin</artifactId>
+        <version>3.1.0</version>
+        <configuration>
+          <shadedArtifactAttached>false</shadedArtifactAttached>
+          <minimizeJar>true</minimizeJar>
+          <outputFile>${finalName}</outputFile>
+          <artifactSet>
+            <includes>
+              <include>org.apache.spark</include>
+              <include>org.openucx</include>
+            </includes>
+          </artifactSet>
+          <filters>
+            <filter>
+              <artifact>*:*</artifact>
+              <excludes>
+                <exclude>META-INF/*.SF</exclude>
+                <exclude>META-INF/*.DSA</exclude>
+                <exclude>META-INF/*.RSA</exclude>
+              </excludes>
+            </filter>
+          </filters>
+          <relocations combine.children="append">
+            <relocation>
+              <pattern>org.apache.spark</pattern>
+              <shadedPattern>${ucx.shade.packageName}.org.apache.spark</shadedPattern>
+            </relocation>
+          </relocations>
+        </configuration>
+        <executions>
+          <execution>
+            <phase>package</phase>
+            <goals>
+              <goal>shade</goal>
+            </goals>
+          </execution>
+        </executions>
+      </plugin>
       <plugin>
         <groupId>net.alchim31.maven</groupId>
         <artifactId>scala-maven-plugin</artifactId>
