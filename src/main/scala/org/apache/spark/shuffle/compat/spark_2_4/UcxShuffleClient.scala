@@ -13,12 +13,12 @@ class UcxShuffleClient(val transport: UcxShuffleTransport) extends ShuffleClient
 
   override def fetchBlocks(host: String, port: Int, execId: String, blockIds: Array[String],
                            listener: BlockFetchingListener,
-                           downloadFileManager: DownloadFileManager): Unit = {                       
-    val ucxBlockIds = Array.ofDim[UcxShuffleBockId](blockIds.length)
-    val callbacks = Array.ofDim[OperationCallback](blockIds.length)
+                           downloadFileManager: DownloadFileManager): Unit = {
     val resultBufferAllocator =
       (size: Long) => transport.hostBounceBufferMemoryPool.get(size)
     if (downloadFileManager == null) {
+      val ucxBlockIds = Array.ofDim[UcxShuffleBockId](blockIds.length)
+      val callbacks = Array.ofDim[OperationCallback](blockIds.length)
       for (i <- blockIds.indices) {
         val blockId = SparkBlockId.apply(blockIds(i))
                                   .asInstanceOf[SparkShuffleBlockId]
