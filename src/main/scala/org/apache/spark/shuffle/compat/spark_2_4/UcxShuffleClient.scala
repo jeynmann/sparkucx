@@ -1,6 +1,7 @@
 package org.apache.spark.shuffle.compat.spark_2_4
 
 import org.openucx.jucx.UcxUtils
+import org.apache.spark.network.util.TransportConf
 import org.apache.spark.network.buffer.{ManagedBuffer, NioManagedBuffer}
 import org.apache.spark.network.shuffle.{BlockFetchingListener, DownloadFileManager, ShuffleClient}
 import org.apache.spark.shuffle.ucx.{OperationCallback, OperationResult, UcxShuffleBockId, UcxShuffleTransport}
@@ -34,7 +35,8 @@ class UcxShuffleClient(val transport: UcxShuffleTransport) extends ShuffleClient
         val ucxBid = UcxShuffleBockId(blockId.shuffleId, blockId.mapId,
                                       blockId.reduceId)
         val callback = new DownloadCallBack(blockIds(i), listener,
-                                            downloadFileManager)
+                                            downloadFileManager,
+                                            transport.sparkTransportConf)
         transport.fetchBlockByStream(execId.toLong, ucxBid,
                                      resultBufferAllocator, callback)
       }
@@ -61,13 +63,14 @@ class UcxShuffleClient(val transport: UcxShuffleTransport) extends ShuffleClient
       })
     }
   }
+
   private[this] class DownloadCallBack(
     blockId: String, listener: BlockFetchingListener,
-    downloadFileManager: DownloadFileManager)
+    downloadFileManager: DownloadFileManager, transportConf: TransportConf)
     extends OperationCallback {
 
     private[this] val targetFile = downloadFileManager.createTempFile(
-      transport.sparkTransportConf)
+      transportConf)
     private[this] val channel = targetFile.openForWriting();
 
     override def onData(buffer: ByteBuffer): Unit = {
