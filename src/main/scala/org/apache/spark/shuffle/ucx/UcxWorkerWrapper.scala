@@ -396,6 +396,8 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
       blocks.indices
     }
 
+    val readTime = System.nanoTime()
+
     for (i <- blocksCollection) {
       blocks(i).getBlock(localBuffers(i), 0)
     }
@@ -408,7 +410,8 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
         0, new UcxCallback {
           override def onSuccess(request: UcpRequest): Unit = {
             logTrace(s"Sent ${blocks.length} blocks of size: ${resultMemory.size} " +
-              s"to tag $replyTag in ${System.nanoTime() - startTime} ns.")
+              s"to tag $replyTag in ${System.nanoTime() - startTime} ns read " +
+              s"${startTime - readTime} ns")
             transport.hostBounceBufferMemoryPool.put(resultMemory)
           }
           override def onError(ucsStatus: Int, errorMsg: String): Unit = {
