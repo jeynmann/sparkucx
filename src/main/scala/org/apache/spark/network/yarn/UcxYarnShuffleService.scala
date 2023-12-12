@@ -65,7 +65,10 @@ class UcxYarnShuffleService extends YarnShuffleService() with UcxLogging {
 
       // Ucx RPC handler
       val ucxHandler = new ExternalUcxShuffleBlockHandler(transportConf, registeredExecutorFile)
-      blockHandler = ucxHandler
+      // Ucx Reflect shuffleServer
+      val blockHandlerField = clazz.getDeclaredField("blockHandler")
+      blockHandlerField.setAccessible(true)
+      blockHandlerField.set(this, ucxHandler)
 
       // If authentication is enabled, set up the shuffle server to use a
       // special RPC handler that filters out unauthenticated fetch requests
