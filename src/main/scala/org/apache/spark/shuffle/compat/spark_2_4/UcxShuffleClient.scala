@@ -1,6 +1,7 @@
 package org.apache.spark.shuffle.compat.spark_2_4
 
 import org.openucx.jucx.UcxUtils
+import org.apache.spark.network.util.TransportConf
 import org.apache.spark.network.buffer.{ManagedBuffer, NioManagedBuffer}
 import org.apache.spark.network.shuffle.{BlockFetchingListener, DownloadFileManager, ShuffleClient}
 import org.apache.spark.shuffle.ucx.{OperationCallback, OperationResult, UcxShuffleBockId, UcxShuffleTransport, UcxFetchCallBack, UcxDownloadCallBack}

@@ -2,8 +2,8 @@ package org.apache.spark.shuffle.ucx
 
 // import org.apache.spark.SparkEnv
 import org.apache.spark.network.util.TransportConf
-import org.apache.spark.network.buffer.{ManagedBuffer, NioManagedBuffer}
 import org.apache.spark.network.netty.SparkTransportConf
+import org.apache.spark.network.buffer.{ManagedBuffer, NioManagedBuffer}
 import org.apache.spark.network.shuffle.{BlockFetchingListener, DownloadFileManager}
 import org.apache.spark.shuffle.utils.{UcxLogging, UnsafeUtils}
 import org.apache.spark.shuffle.ucx.memory.UcxHostBounceBuffersPool
@@ -72,10 +72,10 @@ extends ExternalShuffleTransport(clientConf) with UcxLogging {
       clientConf.preallocateBuffersMap)
   }
 
-  override def selectWorker(): ExternalUcxWorkerWrapper = {
-    allocatedWorker(
-      (currentWorkerId.incrementAndGet() % allocatedWorker.length).abs)
-  }
+  // override def selectWorker(): ExternalUcxWorkerWrapper = {
+  //   allocatedWorker(
+  //     (currentWorkerId.incrementAndGet() % allocatedWorker.length).abs)
+  // }
 
   def connect(shuffleServer: SerializableDirectBuffer): Unit = {
     val addressBuffer = shuffleServer.value
