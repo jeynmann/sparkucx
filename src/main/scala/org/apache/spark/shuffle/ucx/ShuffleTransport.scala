@@ -6,6 +6,7 @@ package org.apache.spark.shuffle.ucx
 
 import java.nio.ByteBuffer
 import java.util.concurrent.locks.StampedLock
+import org.openucx.jucx.ucp.UcpRequest
 
 /**
  * Class that represents some block in memory with it's address, size.
@@ -167,4 +168,37 @@ trait ShuffleTransport {
    */
   def progress(): Unit
 
+}
+
+class UcxRequest(private var request: UcpRequest, stats: OperationStats)
+  extends Request {
+
+  private[ucx] var completed = false
+
+  override def isCompleted: Boolean = completed || ((request != null) && request.isCompleted)
+
+  override def getStats: Option[OperationStats] = Some(stats)
+
+  private[ucx] def setRequest(request: UcpRequest): Unit = {
+    this.request = request
+  }
+}
+
+class UcxStats extends OperationStats {
+  private[ucx] val startTime = System.nanoTime()
+  private[ucx] var amHandleTime = 0L
+  private[ucx] var endTime: Long = 0L
+  private[ucx] var receiveSize: Long = 0L
+
+  /**
+   * Time it took from operation submit to callback call.
+   * This depends on [[ ShuffleTransport.progress() ]] calls,
+   * and does not indicate actual data transfer time.
+   */
+  override def getElapsedTimeNs: Long = endTime - startTime
+
+  /**
+   * Indicates number of valid bytes in receive memory
+   */
+  override def recvSize: Long = receiveSize
 }

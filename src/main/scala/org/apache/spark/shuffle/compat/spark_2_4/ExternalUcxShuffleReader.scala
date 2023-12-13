@@ -10,7 +10,6 @@ import java.util.concurrent.LinkedBlockingQueue
 import org.apache.spark.{InterruptibleIterator, MapOutputTracker, SparkEnv, TaskContext}
 import org.apache.spark.internal.{Logging, config}
 import org.apache.spark.serializer.SerializerManager
-import org.apache.spark.shuffle.ucx.UcxShuffleTransportClient
 import org.apache.spark.shuffle.{BaseShuffleHandle, ShuffleReader}
 import org.apache.spark.storage.{BlockId, BlockManager, ShuffleBlockFetcherIterator}
 import org.apache.spark.util.CompletionIterator

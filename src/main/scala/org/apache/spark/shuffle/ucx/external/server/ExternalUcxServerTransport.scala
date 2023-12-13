@@ -6,16 +6,18 @@ import org.apache.spark.shuffle.ucx.utils.SerializationUtils
 import org.apache.spark.network.shuffle.ExternalUcxShuffleBlockResolver
 import org.openucx.jucx.ucp._
 import org.openucx.jucx.ucs.UcsConstants
+import org.openucx.jucx.UcxException
 
 import java.net.InetSocketAddress
 import java.nio.ByteBuffer
 import java.nio.channels.{Channels, ReadableByteChannel}
+import java.util.concurrent.atomic.AtomicInteger
 import scala.collection.concurrent.TrieMap
 import scala.collection.mutable
 
-class UcxShuffleTransportServer(
+class ExternalUcxServerTransport(
   serverConf: ExternalUcxServerConf, blockManager: ExternalUcxShuffleBlockResolver)
-  extends ExternalShuffleTransport(serverConf)
+  extends ExternalUcxTransport(serverConf)
   with UcxLogging {
   private[ucx] val workerMap = new TrieMap[String, TrieMap[Long, ByteBuffer]]
   private val errorHandler = new UcpEndpointErrorHandler {
@@ -36,6 +38,10 @@ class UcxShuffleTransportServer(
   private val replyExecutors = UcxThreadUtils.newForkJoinPool(
     "UCX-server", serverConf.numListenerThreads)
 
+  private[ucx] lazy val currentWorkerId = new AtomicInteger()
+  private[ucx] lazy val workerLocal = new ThreadLocal[ExternalUcxServerWorker]
+  private[ucx] var allocatedWorker: Array[ExternalUcxServerWorker] = _
+
   private[this] class ProgressTask(worker: UcpWorker) extends Runnable {
     override def run(): Unit = {
       val useWakeup = ucxShuffleConf.useWakeup
@@ -48,7 +54,7 @@ class UcxShuffleTransportServer(
             worker.waitForEvents()
           }
         } catch {
-          case e: Throwable => logError(s"Exception in progress:${e}")
+          case e: UcxException => logError(s"Exception in progress:${e}")
         }
       }
     }
@@ -107,11 +113,11 @@ class UcxShuffleTransportServer(
 
     logInfo(s"Allocating ${serverConf.numListenerThreads} server workers")
 
-    allocatedWorker = new Array[ExternalUcxWorkerWrapper](serverConf.numListenerThreads)
+    allocatedWorker = new Array[ExternalUcxServerWorker](serverConf.numListenerThreads)
     for (i <- 0 until serverConf.numListenerThreads) {
       val worker = ucxContext.newWorker(ucpWorkerParams)
       val workerId = new UcxWorkerId("Server", 0, i)
-      allocatedWorker(i) = new ExternalUcxWorkerWrapper(worker, this, false, workerId)
+      allocatedWorker(i) = new ExternalUcxServerWorker(worker, this, workerId)
       progressExecutors.execute(new ProgressTask(allocatedWorker(i).worker))
     }
 
@@ -140,6 +146,10 @@ class UcxShuffleTransportServer(
       if (globalWorker != null) {
         globalWorker.close()
         globalWorker = null
+      }
+
+      if (allocatedWorker != null) {
+        allocatedWorker.foreach(_.close)
       }
 
       replyExecutors.shutdown()
@@ -218,7 +228,21 @@ class UcxShuffleTransportServer(
     })
   }
 
+  @inline
   def submit(task: Runnable): Unit = {
     replyExecutors.submit(task)
+  }
+
+  @inline
+  def selectWorker(): ExternalUcxServerWorker = {
+    Option(workerLocal.get) match {
+      case Some(worker) => worker
+      case None => {
+        val worker = allocatedWorker(
+          (currentWorkerId.incrementAndGet() % allocatedWorker.length).abs)
+        workerLocal.set(worker)
+        worker
+      }
+    }
   }
 }

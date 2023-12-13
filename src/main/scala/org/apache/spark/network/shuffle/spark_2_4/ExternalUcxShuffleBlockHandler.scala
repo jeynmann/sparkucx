@@ -6,7 +6,7 @@ import org.apache.spark.network.server.OneForOneStreamManager
 import org.apache.spark.network.util.TransportConf
 
 import org.apache.spark.shuffle.utils.UcxLogging
-import org.apache.spark.shuffle.ucx.UcxShuffleTransportServer
+import org.apache.spark.shuffle.ucx.ExternalUcxServerTransport
 
 class ExternalUcxShuffleBlockHandler(conf: TransportConf, registeredExecutorFile: File)
   extends ExternalShuffleBlockHandler(new OneForOneStreamManager(),
@@ -14,7 +14,7 @@ class ExternalUcxShuffleBlockHandler(conf: TransportConf, registeredExecutorFile
     def ucxBlockManager(): ExternalUcxShuffleBlockResolver = {
       blockManager.asInstanceOf[ExternalUcxShuffleBlockResolver]
     }
-    def setTransport(transport: UcxShuffleTransportServer): Unit = {
+    def setTransport(transport: ExternalUcxServerTransport): Unit = {
       ucxBlockManager.setTransport(transport)
     }
 }

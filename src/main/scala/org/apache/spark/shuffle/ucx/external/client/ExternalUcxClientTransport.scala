@@ -13,12 +13,17 @@ import org.openucx.jucx.ucp._
 
 import java.net.InetSocketAddress
 import java.nio.ByteBuffer
+import java.util.concurrent.atomic.AtomicInteger
 
-class UcxShuffleTransportClient(clientConf: ExternalUcxClientConf, blockManagerId: BlockManagerId)
-extends ExternalShuffleTransport(clientConf) with UcxLogging {
+class ExternalUcxClientTransport(clientConf: ExternalUcxClientConf, blockManagerId: BlockManagerId)
+extends ExternalUcxTransport(clientConf) with UcxLogging {
   private[spark] val serverPort = clientConf.ucxServerPort
   private[spark] lazy val sparkTransportConf = SparkTransportConf.fromSparkConf(
     clientConf.getSparkConf, "shuffle", clientConf.numWorkers)
+
+  private[ucx] lazy val currentWorkerId = new AtomicInteger()
+  private[ucx] lazy val workerLocal = new ThreadLocal[ExternalUcxClientWorker]
+  private[ucx] var allocatedWorker: Array[ExternalUcxClientWorker] = _
 
   private[this] class ProgressTask(worker: UcpWorker) extends Runnable {
     override def run(): Unit = {
@@ -50,12 +55,12 @@ extends ExternalShuffleTransport(clientConf) with UcxLogging {
     logInfo(s"Allocating ${clientConf.numWorkers} client workers")
     val appId = clientConf.sparkConf.getAppId
     val exeId = blockManagerId.executorId.toLong
-    allocatedWorker = new Array[ExternalUcxWorkerWrapper](clientConf.numWorkers)
+    allocatedWorker = new Array[ExternalUcxClientWorker](clientConf.numWorkers)
     for (i <- 0 until clientConf.numWorkers) {
       ucpWorkerParams.setClientId((exeId << 32) | i.toLong)
       val worker = ucxContext.newWorker(ucpWorkerParams)
       val workerId = new UcxWorkerId(appId, exeId.toInt, i)
-      allocatedWorker(i) = new ExternalUcxWorkerWrapper(worker, this, true, workerId)
+      allocatedWorker(i) = new ExternalUcxClientWorker(worker, this, workerId)
       progressExecutors.execute(new ProgressTask(allocatedWorker(i).worker))
     }
 
@@ -65,6 +70,13 @@ extends ExternalShuffleTransport(clientConf) with UcxLogging {
     SerializationUtils.serializeInetAddress(shuffleServer)
   }
 
+  override def close(): Unit = {
+    if (initialized) {
+      if (allocatedWorker != null) {
+        allocatedWorker.foreach(_.close)
+      }
+    }
+  }
   override def initMemoryPool(): Unit = {
     hostBounceBufferMemoryPool = new UcxHostBounceBuffersPool(ucxContext)
     hostBounceBufferMemoryPool.init(clientConf.minRegistrationSize,
@@ -72,10 +84,24 @@ extends ExternalShuffleTransport(clientConf) with UcxLogging {
       clientConf.preallocateBuffersMap)
   }
 
-  // override def selectWorker(): ExternalUcxWorkerWrapper = {
+  // @inline
+  // def selectWorker(): ExternalUcxClientWorker = {
   //   allocatedWorker(
   //     (currentWorkerId.incrementAndGet() % allocatedWorker.length).abs)
   // }
+
+  @inline
+  def selectWorker(): ExternalUcxClientWorker = {
+    Option(workerLocal.get) match {
+      case Some(worker) => worker
+      case None => {
+        val worker = allocatedWorker(
+          (currentWorkerId.incrementAndGet() % allocatedWorker.length).abs)
+        workerLocal.set(worker)
+        worker
+      }
+    }
+  }
 
   def connect(shuffleServer: SerializableDirectBuffer): Unit = {
     val addressBuffer = shuffleServer.value

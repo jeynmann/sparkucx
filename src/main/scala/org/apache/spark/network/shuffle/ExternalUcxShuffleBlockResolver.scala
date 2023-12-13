@@ -16,7 +16,7 @@ import org.apache.spark.network.util.TransportConf
 import org.apache.spark.network.shuffle.ExternalShuffleBlockResolver.AppExecId
 
 import org.apache.spark.shuffle.utils.UcxLogging
-import org.apache.spark.shuffle.ucx.UcxShuffleTransportServer
+import org.apache.spark.shuffle.ucx.ExternalUcxServerTransport
 
 class ExternalUcxShuffleBlockResolver(conf: TransportConf, registeredExecutorFile: File)
   extends ExternalShuffleBlockResolver(conf, registeredExecutorFile) with UcxLogging {
@@ -27,7 +27,7 @@ class ExternalUcxShuffleBlockResolver(conf: TransportConf, registeredExecutorFil
     "org.apache.spark.shuffle.sort.SortShuffleManager",
     "org.apache.spark.shuffle.unsafe.UnsafeShuffleManager",
     "org.apache.spark.shuffle.ExternalUcxShuffleManager")
-  private[spark] var ucxTransport: UcxShuffleTransportServer = _
+  private[spark] var ucxTransport: ExternalUcxServerTransport = _
 
   // init()
 
@@ -54,7 +54,7 @@ class ExternalUcxShuffleBlockResolver(conf: TransportConf, registeredExecutorFil
   //   dbAppExecKeyMethod.invoke(this, fullId).asInstanceOf[Array[Byte]]
   // }
 
-  def setTransport(transport: UcxShuffleTransportServer): Unit = {
+  def setTransport(transport: ExternalUcxServerTransport): Unit = {
     ucxTransport = transport
   }
   /** Registers a new Executor with all the configuration we need to find its shuffle files. */

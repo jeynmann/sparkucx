@@ -507,24 +507,3 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
   }
 
 }
-
-private[ucx] class UcxStreamState(val callback: OperationCallback,
-                                  val request: UcxRequest,
-                                  var remaining: Int) {}
-
-private[ucx] class ProgressThread(
-  name: String, worker: UcpWorker, useWakeup: Boolean) extends Thread {
-  setDaemon(true)
-  setName(name)
-
-  override def run(): Unit = {
-    while (!isInterrupted) {
-      worker.synchronized {
-        while (worker.progress != 0) {}
-      }
-      if (useWakeup) {
-        worker.waitForEvents()
-      }
-    }
-  }
-}

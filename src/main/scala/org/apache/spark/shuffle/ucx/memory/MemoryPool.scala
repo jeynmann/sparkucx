@@ -11,7 +11,7 @@ import java.util.concurrent.{ConcurrentHashMap, ConcurrentLinkedDeque}
 import org.openucx.jucx.ucp.{UcpContext, UcpMemMapParams, UcpMemory}
 import org.openucx.jucx.ucs.UcsConstants
 import org.apache.spark.shuffle.utils.UcxLogging
-import org.apache.spark.shuffle.ucx.{MemoryBlock, UcxShuffleConf}
+import org.apache.spark.shuffle.ucx.MemoryBlock
 import org.apache.spark.util.Utils
 
 class UcxBounceBufferMemoryBlock(private[ucx] val memory: UcpMemory, private[ucx] val refCount: AtomicInteger,

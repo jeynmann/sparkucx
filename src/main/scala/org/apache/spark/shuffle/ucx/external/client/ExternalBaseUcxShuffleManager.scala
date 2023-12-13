@@ -33,7 +33,7 @@ abstract class ExternalBaseUcxShuffleManager(val conf: SparkConf, isDriver: Bool
 
   val ucxShuffleConf = new ExternalUcxClientConf(conf)
 
-  @volatile var ucxTransport: UcxShuffleTransportClient = _
+  @volatile var ucxTransport: ExternalUcxClientTransport = _
 
   private var executorEndpoint: ExternalUcxExecutorRpcEndpoint = _
   private var driverEndpoint: ExternalUcxDriverRpcEndpoint = _
@@ -61,11 +61,11 @@ abstract class ExternalBaseUcxShuffleManager(val conf: SparkConf, isDriver: Bool
     }
   })
 
-  def awaitUcxTransport(): UcxShuffleTransportClient = {
+  def awaitUcxTransport(): ExternalUcxClientTransport = {
     if (ucxTransport == null) {
       latch.get(10, TimeUnit.SECONDS)
       if (ucxTransport == null) {
-        throw new UcxException("UcxShuffleTransportClient init timeout")
+        throw new UcxException("ExternalUcxClientTransport init timeout")
       }
     }
     ucxTransport
@@ -76,7 +76,7 @@ abstract class ExternalBaseUcxShuffleManager(val conf: SparkConf, isDriver: Bool
    */
   def startUcxTransport(): Unit = if (ucxTransport == null) {
     val blockManager = SparkEnv.get.blockManager.blockManagerId
-    val transport = new UcxShuffleTransportClient(ucxShuffleConf, blockManager)
+    val transport = new ExternalUcxClientTransport(ucxShuffleConf, blockManager)
     val address = transport.init()
     ucxTransport = transport
     val rpcEnv = SparkEnv.get.rpcEnv

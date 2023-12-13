@@ -32,10 +32,10 @@ import org.apache.spark.network.yarn.util.HadoopConfigProvider
 import org.apache.spark.shuffle.utils.UcxLogging
 import org.apache.spark.network.shuffle.ExternalUcxShuffleBlockHandler
 import org.apache.spark.shuffle.ucx.ExternalUcxServerConf
-import org.apache.spark.shuffle.ucx.UcxShuffleTransportServer
+import org.apache.spark.shuffle.ucx.ExternalUcxServerTransport
 
 class UcxYarnShuffleService extends YarnShuffleService() with UcxLogging {
-  var ucxTransport: UcxShuffleTransportServer = _
+  var ucxTransport: ExternalUcxServerTransport = _
 
   /**
    * Start the shuffle server with the given configuration.
@@ -100,9 +100,9 @@ class UcxYarnShuffleService extends YarnShuffleService() with UcxLogging {
         s"Authentication is ${authEnabledString}.  Registered executor file is ${registeredExecutorFile}")
 
       // Ucx Transport
-      logInfo("Start launching UcxShuffleTransportServer")
+      logInfo("Start launching ExternalUcxServerTransport")
       val ucxConf = new ExternalUcxServerConf(conf)
-      ucxTransport = new UcxShuffleTransportServer(ucxConf, ucxHandler.ucxBlockManager)
+      ucxTransport = new ExternalUcxServerTransport(ucxConf, ucxHandler.ucxBlockManager)
       ucxTransport.init()
       ucxHandler.setTransport(ucxTransport)
     } catch {

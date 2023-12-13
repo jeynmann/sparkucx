@@ -4,25 +4,19 @@
  */
 package org.apache.spark.shuffle.ucx
 
-// import org.apache.spark.SparkEnv
 import org.apache.spark.shuffle.ucx.memory.UcxHostBounceBuffersPool
 import org.apache.spark.shuffle.utils.UcxLogging
-// import org.apache.spark.util.ThreadUtils
 import org.openucx.jucx.ucp._
 
 import java.nio.ByteBuffer
 import java.util.concurrent.{Executors, ExecutorService}
-import java.util.concurrent.atomic.AtomicInteger
 
-class ExternalShuffleTransport(var ucxShuffleConf: ExternalUcxConf) extends UcxLogging {
+class ExternalUcxTransport(var ucxShuffleConf: ExternalUcxConf) extends UcxLogging {
   @volatile protected var initialized: Boolean = false
   @volatile protected var running: Boolean = true
   private[ucx] var ucxContext: UcpContext = _
   private[ucx] var hostBounceBufferMemoryPool: UcxHostBounceBuffersPool = _
   private[ucx] val ucpWorkerParams = new UcpWorkerParams().requestThreadSafety()
-  private[ucx] var allocatedWorker: Array[ExternalUcxWorkerWrapper] = _
-  private[ucx] lazy val currentWorkerId = new AtomicInteger()
-  private[ucx] lazy val workerLocal = new ThreadLocal[ExternalUcxWorkerWrapper]
   private[ucx] var progressExecutors: ExecutorService = _
 
   def estimateNumEps(): Int = 1
@@ -61,25 +55,30 @@ class ExternalShuffleTransport(var ucxShuffleConf: ExternalUcxConf) extends UcxL
       if (ucxContext != null) {
         ucxContext.close()
       }
-      if (allocatedWorker != null) {
-        allocatedWorker.foreach(_.close)
-      }
       if (progressExecutors != null) {
         progressExecutors.shutdown()
       }
       initialized = false
     }
   }
+}
 
-  @inline
-  def selectWorker(): ExternalUcxWorkerWrapper = {
-    Option(workerLocal.get) match {
-      case Some(worker) => worker
-      case None => {
-        val worker = allocatedWorker(
-          (currentWorkerId.incrementAndGet() % allocatedWorker.length).abs)
-        workerLocal.set(worker)
-        worker
+private[ucx] class UcxStreamState(val callback: OperationCallback,
+                                  val request: UcxRequest,
+                                  var remaining: Int) {}
+
+private[ucx] class ProgressThread(
+  name: String, worker: UcpWorker, useWakeup: Boolean) extends Thread {
+  setDaemon(true)
+  setName(name)
+
+  override def run(): Unit = {
+    while (!isInterrupted) {
+      worker.synchronized {
+        while (worker.progress != 0) {}
+      }
+      if (useWakeup) {
+        worker.waitForEvents()
       }
     }
   }
