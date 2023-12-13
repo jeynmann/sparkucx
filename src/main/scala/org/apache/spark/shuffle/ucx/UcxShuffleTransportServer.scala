@@ -5,13 +5,14 @@ import org.apache.spark.shuffle.utils.{UcxLogging, UnsafeUtils}
 import org.apache.spark.shuffle.ucx.utils.SerializationUtils
 import org.apache.spark.network.shuffle.ExternalUcxShuffleBlockResolver
 // import org.apache.spark.util.ThreadUtils
+// import scala.concurrent.forkjoin.{ForkJoinPool => SForkJoinPool, ForkJoinWorkerThread => SForkJoinWorkerThread}
+import java.util.concurrent.{ForkJoinPool, ForkJoinWorkerThread}
 import org.openucx.jucx.ucp._
 import org.openucx.jucx.ucs.UcsConstants
 
 import java.net.InetSocketAddress
 import java.nio.ByteBuffer
 import java.nio.channels.{Channels, ReadableByteChannel}
-import scala.concurrent.forkjoin.{ForkJoinPool => SForkJoinPool, ForkJoinWorkerThread => SForkJoinWorkerThread}
 import scala.collection.concurrent.TrieMap
 import scala.collection.mutable
 
@@ -31,13 +32,21 @@ class UcxShuffleTransportServer(
       ucpEndpoint.close()
     }
   }
-  private val factory = new SForkJoinPool.ForkJoinWorkerThreadFactory {
-    override def newThread(pool: SForkJoinPool) =
-      new SForkJoinWorkerThread(pool) {
+  // private val factory = new SForkJoinPool.ForkJoinWorkerThreadFactory {
+  //   override def newThread(pool: SForkJoinPool) =
+  //     new SForkJoinWorkerThread(pool) {
+  //       setName(s"UCX-listener-${super.getName}")
+  //     }
+  // }
+  // private val replyExecutors = new SForkJoinPool(
+  //   serverConf.numListenerThreads, factory, null, false)
+  private val factory = new ForkJoinPool.ForkJoinWorkerThreadFactory {
+    override def newThread(pool: ForkJoinPool) =
+      new ForkJoinWorkerThread(pool) {
         setName(s"UCX-listener-${super.getName}")
       }
   }
-  private val replyExecutors = new SForkJoinPool(
+  private val replyExecutors = new ForkJoinPool(
     serverConf.numListenerThreads, factory, null, false)
 
   private val endpoints = mutable.Set.empty[UcpEndpoint]
@@ -106,7 +115,7 @@ class UcxShuffleTransportServer(
       val workerId = UcxWorkerId.deserialize(header)
       val replyTag = header.getInt
       val exeId = header.getInt
-      val blockId = UcxShuffleBockId.deserialize(header)
+      val blockId = UcxShuffleBlockId.deserialize(header)
       handleFetchBlockStream(workerId, exeId, replyTag, blockId)
       UcsConstants.STATUS.UCS_OK
     }, UcpConstants.UCP_AM_FLAG_WHOLE_MSG )
@@ -185,12 +194,12 @@ class UcxShuffleTransportServer(
     replyExecutors.submit(new Runnable {
       override def run(): Unit = {
         val buffer = UnsafeUtils.getByteBufferView(amData.getDataAddress, amData.getLength.toInt)
-        // val blockIds = mutable.ArrayBuffer.empty[UcxShuffleBockId]
+        // val blockIds = mutable.ArrayBuffer.empty[UcxShuffleBlockId]
         val blockInfos = mutable.ArrayBuffer.empty[(Long, ReadableByteChannel)]
 
         // 1. Deserialize blockIds from header
         while (buffer.remaining() > 0) {
-          val bid = UcxShuffleBockId.deserialize(buffer)
+          val bid = UcxShuffleBlockId.deserialize(buffer)
           val buf = blockManager.getBlockData(clientWorker.appId,
             exeId.toString, bid.shuffleId, bid.mapId, bid.reduceId)
           val ch = Channels.newChannel(buf.createInputStream)
@@ -214,7 +223,7 @@ class UcxShuffleTransportServer(
   }
 
   def handleFetchBlockStream(clientWorker: UcxWorkerId, exeId: Int,
-                             replyTag: Int, bid: UcxShuffleBockId): Unit = {
+                             replyTag: Int, bid: UcxShuffleBlockId): Unit = {
     replyExecutors.submit(new Runnable {
       override def run(): Unit = {
         val buf = blockManager.getBlockData(clientWorker.appId,

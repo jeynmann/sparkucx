@@ -8,6 +8,9 @@ import scala.collection.mutable
 
 import com.fasterxml.jackson.databind.ObjectMapper
 
+import org.apache.hadoop.metrics2.lib.DefaultMetricsSystem;
+import org.apache.hadoop.metrics2.impl.MetricsSystemImpl;
+
 import org.apache.spark.network.shuffle.protocol.ExecutorShuffleInfo
 import org.apache.spark.network.util.TransportConf
 import org.apache.spark.network.shuffle.ExternalShuffleBlockResolver.AppExecId
@@ -17,31 +20,39 @@ import org.apache.spark.shuffle.ucx.UcxShuffleTransportServer
 
 class ExternalUcxShuffleBlockResolver(conf: TransportConf, registeredExecutorFile: File)
   extends ExternalShuffleBlockResolver(conf, registeredExecutorFile) with UcxLogging {
+  private[spark] final val APP_KEY_PREFIX = "AppExecShuffleInfo";
+  private[spark] final val ucxMapper = new ObjectMapper
   private[spark] var dbAppExecKeyMethod: Method = _
-  private[spark] lazy val ucxMapper = new ObjectMapper
   private[spark] val knownManagers = mutable.Set(
     "org.apache.spark.shuffle.sort.SortShuffleManager",
     "org.apache.spark.shuffle.unsafe.UnsafeShuffleManager",
     "org.apache.spark.shuffle.ExternalUcxShuffleManager")
   private[spark] var ucxTransport: UcxShuffleTransportServer = _
 
-  init()
+  // init()
 
-  def init(): Unit = {
-    val clazz = Class.forName("org.apache.spark.network.shuffle.ExternalShuffleBlockResolver")
-    try {
-      dbAppExecKeyMethod = clazz.getDeclaredMethod("dbAppExecKey", classOf[AppExecId])
-      dbAppExecKeyMethod.setAccessible(true)
-    } catch {
-      case e: Exception => {
-        logError(s"Get dbAppExecKey from ExternalUcxShuffleBlockResolver failed: $e")
-      }
-    }
+  private[spark] def dbAppExecKey(appExecId: AppExecId): Array[Byte] = {
+    // we stick a common prefix on all the keys so we can find them in the DB
+    val appExecJson = ucxMapper.writeValueAsString(appExecId);
+    val key = (APP_KEY_PREFIX + ";" + appExecJson);
+    key.getBytes(StandardCharsets.UTF_8);
   }
 
-  def dbAppExecKey(fullId: AppExecId): Array[Byte] = {
-    dbAppExecKeyMethod.invoke(this, fullId).asInstanceOf[Array[Byte]]
-  }
+  // def init(): Unit = {
+  //   val clazz = Class.forName("org.apache.spark.network.shuffle.ExternalShuffleBlockResolver")
+  //   try {
+  //     dbAppExecKeyMethod = clazz.getDeclaredMethod("dbAppExecKey", classOf[AppExecId])
+  //     dbAppExecKeyMethod.setAccessible(true)
+  //   } catch {
+  //     case e: Exception => {
+  //       logError(s"Get dbAppExecKey from ExternalUcxShuffleBlockResolver failed: $e")
+  //     }
+  //   }
+  // }
+
+  // def dbAppExecKey(fullId: AppExecId): Array[Byte] = {
+  //   dbAppExecKeyMethod.invoke(this, fullId).asInstanceOf[Array[Byte]]
+  // }
 
   def setTransport(transport: UcxShuffleTransportServer): Unit = {
     ucxTransport = transport

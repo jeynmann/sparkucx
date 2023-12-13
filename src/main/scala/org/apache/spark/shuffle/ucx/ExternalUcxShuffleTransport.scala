@@ -14,6 +14,25 @@ import java.nio.ByteBuffer
 import java.util.concurrent.{Executors, ExecutorService}
 import java.util.concurrent.atomic.AtomicInteger
 
+case class UcxShuffleBlockId(shuffleId: Int, mapId: Long, reduceId: Int) extends BlockId {
+  override def serializedSize: Int = 16
+
+  override def serialize(byteBuffer: ByteBuffer): Unit = {
+    byteBuffer.putInt(shuffleId)
+    byteBuffer.putInt(reduceId)
+    byteBuffer.putLong(mapId)
+  }
+}
+
+object UcxShuffleBlockId {
+  def deserialize(byteBuffer: ByteBuffer): UcxShuffleBlockId = {
+    val shuffleId = byteBuffer.getInt
+    val reduceId = byteBuffer.getInt
+    val mapId = byteBuffer.getLong
+    UcxShuffleBlockId(shuffleId, mapId, reduceId)
+  }
+}
+
 case class UcxWorkerId(appId: String, exeId: Int, workerId: Int) extends BlockId {
   override def serializedSize: Int = 12 + appId.size
 
