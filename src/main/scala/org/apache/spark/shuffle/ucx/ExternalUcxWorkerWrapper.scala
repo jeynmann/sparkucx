@@ -327,7 +327,7 @@ case class ExternalUcxWorkerWrapper(val worker: UcpWorker,
     }
 
     for (i <- 0 until blocks.size) {
-      resultBuffer.limit(resultBuffer.position + blocks(i)._1.toInt)
+      resultBuffer.limit(resultBuffer.position() + blocks(i)._1.toInt)
       blocks(i)._2.read(resultBuffer)
     }
 

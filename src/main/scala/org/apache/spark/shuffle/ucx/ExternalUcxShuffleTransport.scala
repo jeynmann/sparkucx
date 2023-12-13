@@ -14,61 +14,6 @@ import java.nio.ByteBuffer
 import java.util.concurrent.{Executors, ExecutorService}
 import java.util.concurrent.atomic.AtomicInteger
 
-case class UcxShuffleBlockId(shuffleId: Int, mapId: Long, reduceId: Int) extends BlockId {
-  override def serializedSize: Int = 16
-
-  override def serialize(byteBuffer: ByteBuffer): Unit = {
-    byteBuffer.putInt(shuffleId)
-    byteBuffer.putInt(reduceId)
-    byteBuffer.putLong(mapId)
-  }
-}
-
-object UcxShuffleBlockId {
-  def deserialize(byteBuffer: ByteBuffer): UcxShuffleBlockId = {
-    val shuffleId = byteBuffer.getInt
-    val reduceId = byteBuffer.getInt
-    val mapId = byteBuffer.getLong
-    UcxShuffleBlockId(shuffleId, mapId, reduceId)
-  }
-}
-
-case class UcxWorkerId(appId: String, exeId: Int, workerId: Int) extends BlockId {
-  override def serializedSize: Int = 12 + appId.size
-
-  override def serialize(byteBuffer: ByteBuffer): Unit = {
-    byteBuffer.putInt(exeId)
-    byteBuffer.putInt(workerId)
-    byteBuffer.putInt(appId.size)
-    byteBuffer.put(appId.getBytes)
-  }
-
-  override def toString(): String = s"UcxWorkerId($appId, $exeId, $workerId)"
-}
-
-object UcxWorkerId {
-  def deserialize(byteBuffer: ByteBuffer): UcxWorkerId = {
-    val exeId = byteBuffer.getInt
-    val workerId = byteBuffer.getInt
-    val appIdSize = byteBuffer.getInt
-    val appIdBytes = new Array[Byte](appIdSize)
-    byteBuffer.get(appIdBytes)
-    UcxWorkerId(new String(appIdBytes), exeId, workerId)
-  }
-  @`inline`
-  def makeExeWorkerId(id: UcxWorkerId): Long = {
-    (id.workerId.toLong << 32) | id.exeId
-  }
-  @`inline`
-  def extractExeId(exeWorkerId: Long): Int = {
-    exeWorkerId.toInt
-  }
-  @`inline`
-  def extractWorkerId(exeWorkerId: Long): Int = {
-    (exeWorkerId >> 32).toInt
-  }
-}
-
 class ExternalShuffleTransport(var ucxShuffleConf: ExternalUcxConf) extends UcxLogging {
   @volatile protected var initialized: Boolean = false
   @volatile protected var running: Boolean = true

@@ -4,9 +4,6 @@ package org.apache.spark.shuffle.ucx
 import org.apache.spark.shuffle.utils.{UcxLogging, UnsafeUtils}
 import org.apache.spark.shuffle.ucx.utils.SerializationUtils
 import org.apache.spark.network.shuffle.ExternalUcxShuffleBlockResolver
-// import org.apache.spark.util.ThreadUtils
-// import scala.concurrent.forkjoin.{ForkJoinPool => SForkJoinPool, ForkJoinWorkerThread => SForkJoinWorkerThread}
-import java.util.concurrent.{ForkJoinPool, ForkJoinWorkerThread}
 import org.openucx.jucx.ucp._
 import org.openucx.jucx.ucs.UcsConstants
 
@@ -32,26 +29,12 @@ class UcxShuffleTransportServer(
       ucpEndpoint.close()
     }
   }
-  // private val factory = new SForkJoinPool.ForkJoinWorkerThreadFactory {
-  //   override def newThread(pool: SForkJoinPool) =
-  //     new SForkJoinWorkerThread(pool) {
-  //       setName(s"UCX-listener-${super.getName}")
-  //     }
-  // }
-  // private val replyExecutors = new SForkJoinPool(
-  //   serverConf.numListenerThreads, factory, null, false)
-  private val factory = new ForkJoinPool.ForkJoinWorkerThreadFactory {
-    override def newThread(pool: ForkJoinPool) =
-      new ForkJoinWorkerThread(pool) {
-        setName(s"UCX-listener-${super.getName}")
-      }
-  }
-  private val replyExecutors = new ForkJoinPool(
-    serverConf.numListenerThreads, factory, null, false)
 
   private val endpoints = mutable.Set.empty[UcpEndpoint]
   private var globalWorker: UcpWorker = _
   private var listener: UcpListener = _
+  private val replyExecutors = UcxThreadUtils.newForkJoinPool(
+    "UCX-server", serverConf.numListenerThreads)
 
   private[this] class ProgressTask(worker: UcpWorker) extends Runnable {
     override def run(): Unit = {
