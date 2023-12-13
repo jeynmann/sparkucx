@@ -13,15 +13,15 @@ class UcxShuffleClient(val transport: UcxShuffleTransport) extends ShuffleClient
 
   override def fetchBlocks(host: String, port: Int, execId: String, blockIds: Array[String],
                            listener: BlockFetchingListener,
-                           downloadFileManager: DownloadFileManager): Unit = {                       
-    val ucxBlockIds = Array.ofDim[UcxShuffleBockId](blockIds.length)
-    val callbacks = Array.ofDim[OperationCallback](blockIds.length)
+                           downloadFileManager: DownloadFileManager): Unit = {
     val resultBufferAllocator =
       (size: Long) => transport.hostBounceBufferMemoryPool.get(size)
     if (downloadFileManager == null) {
+      val ucxBlockIds = Array.ofDim[UcxShuffleBockId](blockIds.length)
+      val callbacks = Array.ofDim[OperationCallback](blockIds.length)
       for (i <- blockIds.indices) {
         val blockId = SparkBlockId.apply(blockIds(i))
-        .asInstanceOf[SparkShuffleBlockId]
+                                  .asInstanceOf[SparkShuffleBlockId]
         ucxBlockIds(i) = UcxShuffleBockId(blockId.shuffleId, blockId.mapId,
                                           blockId.reduceId)
         callbacks(i) = new UcxFetchCallBack(blockIds(i), listener)
@@ -31,7 +31,7 @@ class UcxShuffleClient(val transport: UcxShuffleTransport) extends ShuffleClient
     } else {
       for (i <- blockIds.indices) {
         val blockId = SparkBlockId.apply(blockIds(i))
-        .asInstanceOf[SparkShuffleBlockId]
+                                  .asInstanceOf[SparkShuffleBlockId]
         val ucxBid = UcxShuffleBockId(blockId.shuffleId, blockId.mapId,
                                       blockId.reduceId)
         val callback = new UcxDownloadCallBack(blockIds(i), listener,
@@ -46,5 +46,4 @@ class UcxShuffleClient(val transport: UcxShuffleTransport) extends ShuffleClient
   override def close(): Unit = {
 
   }
-
 }

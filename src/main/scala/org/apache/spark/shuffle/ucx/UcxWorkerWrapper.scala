@@ -396,6 +396,8 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
       blocks.indices
     }
 
+    val readTime = System.nanoTime()
+
     for (i <- blocksCollection) {
       blocks(i).getBlock(localBuffers(i), 0)
     }
@@ -408,7 +410,8 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
         0, new UcxCallback {
           override def onSuccess(request: UcpRequest): Unit = {
             logTrace(s"Sent ${blocks.length} blocks of size: ${resultMemory.size} " +
-              s"to tag $replyTag in ${System.nanoTime() - startTime} ns.")
+              s"to tag $replyTag in ${System.nanoTime() - startTime} ns read " +
+              s"${startTime - readTime} ns")
             transport.hostBounceBufferMemoryPool.put(resultMemory)
           }
           override def onError(ucsStatus: Int, errorMsg: String): Unit = {
@@ -453,8 +456,8 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
     }
   }
 
-  def handleFetchBlockStream(
-    block: Block, replyTag: Int, replyExecutor: Long): Unit = {
+  def handleFetchBlockStream(block: Block, replyTag: Int,
+                             replyExecutor: Long): Unit = {
     val headerSize = UnsafeUtils.INT_SIZE + UnsafeUtils.INT_SIZE
     val maxBodySize = maxReplySize - headerSize.toLong
     val blockSize = block.getSize
@@ -509,8 +512,8 @@ private[ucx] class UcxStreamState(val callback: OperationCallback,
                                   val request: UcxRequest,
                                   var remaining: Int) {}
 
-private[ucx] class ProgressThread(name: String, worker: UcpWorker,
-                                  useWakeup: Boolean) extends Thread {
+private[ucx] class ProgressThread(
+  name: String, worker: UcpWorker, useWakeup: Boolean) extends Thread {
   setDaemon(true)
   setName(name)
 
@@ -523,32 +526,5 @@ private[ucx] class ProgressThread(name: String, worker: UcpWorker,
         worker.waitForEvents()
       }
     }
-  }
-}
-
-private[ucx] class WorkerThread(name: String, worker: UcpWorker,
-                                useWakeup: Boolean) extends Thread {
-  private[this] val taskQueue = new ConcurrentLinkedQueue[Runnable]
-  setDaemon(true)
-  setName(name)
-
-  override def run(): Unit = {
-    while (!isInterrupted) {
-      Option(taskQueue.poll()) match {
-        case Some(task) => task.run()
-        case None => {}
-      }
-      worker.synchronized {
-        while (worker.progress != 0) {}
-      }
-      if (taskQueue.isEmpty && useWakeup) {
-        worker.waitForEvents()
-      }
-    }
-  }
-
-  private[ucx] def execute(task: Runnable): Unit = {
-    taskQueue.add(task)
-    worker.signal()
   }
 }

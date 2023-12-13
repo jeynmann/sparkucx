@@ -20,7 +20,6 @@ import org.openucx.jucx.ucs.UcsConstants
 import java.net.InetSocketAddress
 import java.nio.ByteBuffer
 import java.util.concurrent.atomic.AtomicInteger
-import java.util.concurrent.ExecutorService
 import scala.collection.concurrent.TrieMap
 import scala.collection.mutable
 
@@ -193,6 +192,11 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
         listener = null
       }
 
+      if (progressThread != null) {
+        progressThread.interrupt()
+        progressThread.join(10)
+      }
+
       if (globalWorker != null) {
         globalWorker.close()
         globalWorker = null
@@ -218,10 +222,11 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
     executorIdsToAddress.foreach {
       case (executorId, address) => executorAddresses.put(executorId, address.value)
     }
+    allocatedClientWorkers.foreach(w => executorIdsToAddress.foreach(
+      x => w.getConnection(x._1)))
   }
 
   def preConnect(): Unit = {
-    allocatedClientWorkers.foreach(_.preconnect())
   }
 
   /**
@@ -277,7 +282,7 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
   /**
    * Batch version of [[ fetchBlocksByBlockIds ]].
    */
-  def fetchBlocksByBlockIds(executorId: ExecutorId, blockIds: Seq[BlockId],
+  override def fetchBlocksByBlockIds(executorId: ExecutorId, blockIds: Seq[BlockId],
                                      resultBufferAllocator: BufferAllocator,
                                      callbacks: Seq[OperationCallback]): Unit = {
     selectClientWorker.fetchBlocksByBlockIds(executorId, blockIds,
@@ -285,17 +290,19 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
   }
 
   def fetchBlockByStream(executorId: ExecutorId, blockId: BlockId,
-                                     resultBufferAllocator: BufferAllocator,
-                                     callback: OperationCallback): Unit = {
+                         resultBufferAllocator: BufferAllocator,
+                         callback: OperationCallback): Unit = {
     selectClientWorker.fetchBlockByStream(executorId, blockId,
                                           resultBufferAllocator, callback)
   }
 
   def connectServerWorkers(executorId: ExecutorId, workerAddress: ByteBuffer): Unit = {
-    allocatedServerWorkers.foreach(_.connectByWorkerAddress(executorId, workerAddress))
+    allocatedServerWorkers.foreach(
+      _.connectByWorkerAddress(executorId, workerAddress))
   }
 
-  def handleFetchBlockRequest(replyTag: Int, amData: UcpAmData, replyExecutor: Long): Unit = {
+  def handleFetchBlockRequest(replyTag: Int, amData: UcpAmData,
+                              replyExecutor: Long): Unit = {
     replyThreadPool.submit(new Runnable {
       override def run(): Unit = {
         val buffer = UnsafeUtils.getByteBufferView(amData.getDataAddress,
@@ -310,7 +317,6 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
           }
           blockIds += blockId
         }
-        amData.close()
 
         val blocks = blockIds.map(bid => registeredBlocks(bid))
 
@@ -326,7 +332,8 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
     replyThreadPool.submit(new Runnable {
       override def run(): Unit = {
         val block = registeredBlocks(blockId)
-        selectServerWorker.handleFetchBlockStream(block, replyTag, replyExecutor)
+        selectServerWorker.handleFetchBlockStream(block, replyTag,
+                                                  replyExecutor)
       }
     })
   }
