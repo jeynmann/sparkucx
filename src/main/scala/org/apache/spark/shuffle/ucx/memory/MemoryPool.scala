@@ -57,7 +57,7 @@ case class MemoryPool(ucxContext: UcpContext, memoryType: Int)
   protected case class AllocatorStack(length: Long, memType: Int) extends Closeable {
     logInfo(s"Allocator stack of memType: $memType and size $length")
     private val stack = new ConcurrentLinkedDeque[UcxBounceBufferMemoryBlock]
-    private val numAllocs = new AtomicInteger(0)
+    private[ucx] val numAllocs = new AtomicInteger(0)
     private val memMapParams = new UcpMemMapParams().allocate().setMemoryType(memType).setLength(length)
 
     private[memory] def get: UcxBounceBufferMemoryBlock = {
@@ -121,6 +121,24 @@ case class MemoryPool(ucxContext: UcpContext, memoryType: Int)
       s => AllocatorStack(s, memoryType))
     val result = allocatorStack.get
     new UcxBounceBufferMemoryBlock(result.memory, result.refCount, memPool, result.address, size)
+  }
+
+  def getS(size: Long): MemoryBlock = {
+    val roundSize = roundUpToTheNextPowerOf2(size)
+    val allocatorStack = allocatorMap.computeIfAbsent(roundSize,
+      s => AllocatorStack(s, memoryType))
+    val result = allocatorStack.get
+    logInfo(s"@MEM @S ${roundSize >> 20} MB ${allocatorStack.numAllocs}")
+    result
+  }
+
+  def getC(size: Long): MemoryBlock = {
+    val roundSize = roundUpToTheNextPowerOf2(size)
+    val allocatorStack = allocatorMap.computeIfAbsent(roundSize,
+      s => AllocatorStack(s, memoryType))
+    val result = allocatorStack.get
+    logInfo(s"@MEM @C ${roundSize >> 20} MB ${allocatorStack.numAllocs}")
+    result
   }
 
   def put(mem: MemoryBlock): Unit = {

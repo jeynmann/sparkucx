@@ -125,14 +125,14 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
           streamData.remove(i)
         }
       } else {
-        val mem = memPool.get(ucpAmData.getLength)
+        val mem = memPool.getC(ucpAmData.getLength)
         stats.amHandleTime = System.nanoTime()
         worker.recvAmDataNonBlocking(
           ucpAmData.getDataHandle, mem.address, ucpAmData.getLength,
           new UcxCallback() {
             override def onSuccess(r: UcpRequest): Unit = {
               stats.endTime = System.nanoTime()
-              logDebug(s"Stream receive rndv data size ${mem.size} tag $i in " +
+              logDebug(s"Stream receive rndv data size ${ucpAmData.getLength} tag $i in " +
                 s"${stats.getElapsedTimeNs} ns amHandle " +
                 s"${stats.endTime - stats.amHandleTime} ns")
               val buffer = UnsafeUtils.getByteBufferView(
@@ -196,14 +196,14 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
           }
           if (callbacks.isEmpty) UcsConstants.STATUS.UCS_OK else UcsConstants.STATUS.UCS_INPROGRESS
         } else {
-          val mem = allocator(ucpAmData.getLength)
+          val mem = memPool.getC(ucpAmData.getLength)
           stats.amHandleTime = System.nanoTime()
           request.setRequest(worker.recvAmDataNonBlocking(ucpAmData.getDataHandle, mem.address, ucpAmData.getLength,
             new UcxCallback() {
               override def onSuccess(r: UcpRequest): Unit = {
                 request.completed = true
                 stats.endTime = System.nanoTime()
-                logDebug(s"Received rndv data of size: ${mem.size} for tag $i in " +
+                logDebug(s"Received rndv data of size: ${ucpAmData.getLength} for tag $i in " +
                   s"${stats.getElapsedTimeNs} ns " +
                   s"time from amHandle: ${System.nanoTime() - stats.amHandleTime} ns")
                 for (b <- 0 until numBlocks) {
@@ -371,10 +371,10 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
 
   def handleFetchBlockRequest(blocks: Seq[Block], replyTag: Int, replyExecutor: Long): Unit = try {
     val tagAndSizes = UnsafeUtils.INT_SIZE + UnsafeUtils.INT_SIZE * blocks.length
-    val resultMemory = transport.hostBounceBufferMemoryPool.get(tagAndSizes + blocks.map(_.getSize).sum)
+    val msgSize = tagAndSizes + blocks.map(_.getSize).sum
+    val resultMemory = memPool.getS(msgSize)
       .asInstanceOf[UcxBounceBufferMemoryBlock]
-    val resultBuffer = UcxUtils.getByteBufferView(resultMemory.address,
-      resultMemory.size)
+    val resultBuffer = UcxUtils.getByteBufferView(resultMemory.address, resultMemory.size)
     resultBuffer.putInt(replyTag)
 
     var offset = 0
@@ -406,10 +406,10 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
     val ep = connections(replyExecutor)
     worker.synchronized {
       ep.sendAmNonBlocking(1, resultMemory.address, tagAndSizes,
-        resultMemory.address + tagAndSizes, resultMemory.size - tagAndSizes,
+        resultMemory.address + tagAndSizes, msgSize - tagAndSizes,
         0, new UcxCallback {
           override def onSuccess(request: UcpRequest): Unit = {
-            logTrace(s"Sent ${blocks.length} blocks of size: ${resultMemory.size} " +
+            logTrace(s"Sent ${blocks.length} blocks of size: ${msgSize} " +
               s"to tag $replyTag in ${System.nanoTime() - startTime} ns read " +
               s"${startTime - readTime} ns")
             transport.hostBounceBufferMemoryPool.put(resultMemory)
@@ -463,7 +463,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
     val blockSize = block.getSize
     val blockSlice = (0L until blockSize by maxBodySize)
 
-    val mem = memPool.get(maxReplySize).asInstanceOf[UcxBounceBufferMemoryBlock]
+    val mem = memPool.getS(maxReplySize).asInstanceOf[UcxBounceBufferMemoryBlock]
     val buffer = UcxUtils.getByteBufferView(mem.address, mem.size)
 
     def send(workerWrapper: UcxWorkerWrapper, currentId: Int): Unit = try {
