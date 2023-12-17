@@ -374,7 +374,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
     val msgSize = tagAndSizes + blocks.map(_.getSize).sum
     val resultMemory = memPool.getS(msgSize)
       .asInstanceOf[UcxBounceBufferMemoryBlock]
-    val resultBuffer = UcxUtils.getByteBufferView(resultMemory.address, resultMemory.size)
+    val resultBuffer = UcxUtils.getByteBufferView(resultMemory.address, msgSize)
     resultBuffer.putInt(replyTag)
 
     var offset = 0
