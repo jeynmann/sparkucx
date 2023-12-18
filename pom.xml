@@ -98,6 +98,19 @@ See file LICENSE for terms.
       <artifactId>jucx</artifactId>
       <version>1.13.1</version>
     </dependency>
+
+      <dependency>
+        <groupId>io.netty</groupId>
+        <artifactId>netty-all</artifactId>
+        <version>4.1.47.Final</version>
+        <scope>provided</scope>
+      </dependency>
+      <dependency>
+        <groupId>io.netty</groupId>
+        <artifactId>netty</artifactId>
+        <version>3.9.9.Final</version>
+        <scope>provided</scope>
+      </dependency>
   </dependencies>
 
   <build>
@@ -131,6 +144,48 @@ See file LICENSE for terms.
             <phase>process-resources</phase>
             <goals>
               <goal>compile</goal>
+            </goals>
+          </execution>
+        </executions>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-shade-plugin</artifactId>
+        <version>3.1.0</version>
+        <configuration>
+          <shadedArtifactAttached>false</shadedArtifactAttached>
+          <minimizeJar>true</minimizeJar>
+          <outputFile>${finalName}</outputFile>
+          <artifactSet>
+            <includes>
+              <include>*:*</include>
+            </includes>
+          </artifactSet>
+          <filters>
+            <filter>
+              <artifact>*:*</artifact>
+              <excludes>
+                <exclude>META-INF/*.SF</exclude>
+                <exclude>META-INF/*.DSA</exclude>
+                <exclude>META-INF/*.RSA</exclude>
+              </excludes>
+            </filter>
+          </filters>
+          <relocations combine.children="append">
+            <relocation>
+              <pattern>io.netty1</pattern>
+              <shadedPattern>org.spark_project.io.netty</shadedPattern>
+              <includes>
+                <include>io.netty.**</include>
+              </includes>
+            </relocation>
+          </relocations>
+        </configuration>
+        <executions>
+          <execution>
+            <phase>package</phase>
+            <goals>
+              <goal>shade</goal>
             </goals>
           </execution>
         </executions>
