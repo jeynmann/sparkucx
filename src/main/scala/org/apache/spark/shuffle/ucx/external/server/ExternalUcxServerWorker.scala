@@ -7,7 +7,7 @@ package org.apache.spark.shuffle.ucx
 import java.io.Closeable
 import java.nio.ByteBuffer
 import java.nio.channels.ReadableByteChannel
-import java.util.concurrent.{ConcurrentLinkedQueue, Callable, Future, FutureTask}
+import java.util.concurrent.{ConcurrentLinkedQueue, CountDownLatch, Callable, Future, FutureTask}
 import scala.collection.concurrent.TrieMap
 import org.openucx.jucx.ucp._
 import org.openucx.jucx.ucs.UcsConstants
@@ -68,6 +68,10 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
   }
 
   def handleFetchBlockRequest(clientWorker: UcxWorkerId, replyTag: Int, blocks: Seq[(Long, ReadableByteChannel)]): Unit = try {
+    if (blocks.size == 1 && blocks(0)._1 > maxReplySize) {
+      return handleFetchBlockStream(clientWorker, replyTag, blocks(0), 3)
+    }
+
     val tagAndSizes = UnsafeUtils.INT_SIZE + UnsafeUtils.INT_SIZE * blocks.size
     val resultMemory = memPool.get(tagAndSizes + blocks.map(x => x._1).sum)
       .asInstanceOf[UcxBounceBufferMemoryBlock]
@@ -106,53 +110,64 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
   }
 
   def handleFetchBlockStream(clientWorker: UcxWorkerId, replyTag: Int,
-                             blockInfo: (Long, ReadableByteChannel)): Unit = {
+                             blockInfo: (Long, ReadableByteChannel),
+                             amId: Int = 2): Unit = {
     val headerSize = UnsafeUtils.INT_SIZE + UnsafeUtils.INT_SIZE
     val maxBodySize = maxReplySize - headerSize.toLong
     val blockSlice = (0L until blockInfo._1 by maxBodySize)
+    val firstLatch = new CountDownLatch(1)
 
-    val mem = memPool.get(maxReplySize).asInstanceOf[UcxBounceBufferMemoryBlock]
-    val buffer = UcxUtils.getByteBufferView(mem.address, mem.size)
+    def send(workerWrapper: ExternalUcxServerWorker, currentId: Int,
+             sendLatch: CountDownLatch): Unit = try {
+      val mem = memPool.get(maxReplySize).asInstanceOf[UcxBounceBufferMemoryBlock]
+      val buffer = UcxUtils.getByteBufferView(mem.address, maxReplySize)
 
-    def send(workerWrapper: ExternalUcxServerWorker, currentId: Int): Unit = try {
       val remaining = blockSlice.length - currentId - 1
       val currentOffset = blockSlice(currentId)
       val currentSize = (blockInfo._1 - currentOffset).min(maxBodySize)
-      buffer.clear()
+
       buffer.limit(headerSize + currentSize.toInt)
       buffer.putInt(replyTag)
       buffer.putInt(remaining)
       blockInfo._2.read(buffer)
 
+      val nextLatch = new CountDownLatch(1)
+      sendLatch.await()
+
       val startTime = System.nanoTime()
       val ep = workerWrapper.getConnectionBack(clientWorker)
       workerWrapper.worker.synchronized {
-        ep.sendAmNonBlocking(2, mem.address, headerSize,
+        ep.sendAmNonBlocking(amId, mem.address, headerSize,
           mem.address + headerSize, currentSize, 0, new UcxCallback {
             override def onSuccess(request: UcpRequest): Unit = {
               logTrace(s"Reply stream block $currentId size $currentSize tag " +
                 s"$replyTag in ${System.nanoTime() - startTime} ns.")
-              if (remaining > 0) {
-                transport.submit(new Runnable {
-                  override def run = send(transport.selectWorker, currentId + 1)
-                })
-              } else {
                 mem.close()
-                blockInfo._2.close()
-              }
+                nextLatch.countDown()
             }
             override def onError(ucsStatus: Int, errorMsg: String): Unit = {
               logError(s"Failed to reply stream $errorMsg")
               mem.close()
-              blockInfo._2.close()
+              nextLatch.countDown()
             }
           }, new UcpRequestParams()
             .setMemoryType(UcsConstants.MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
             .setMemoryHandle(mem.memory))
       }
+      
+      if (remaining > 0) {
+        transport.submit(new Runnable {
+          override def run = send(transport.selectWorker, currentId + 1,
+                                  nextLatch)
+        })
+      } else {
+        blockInfo._2.close()
+      }
     } catch {
       case ex: Throwable => logError(s"Failed to reply stream $ex.")
     }
-    send(this, 0)
+
+    firstLatch.countDown()
+    send(this, 0, firstLatch)
   }
 }

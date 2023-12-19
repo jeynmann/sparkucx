@@ -52,7 +52,7 @@ object ExternalUcxConf {
   lazy val MAX_BLOCKS_IN_FLIGHT_DEFAULT = 50
 
   lazy val MAX_REPLY_SIZE_KEY = getUcxConf("maxReplySize")
-  lazy val MAX_REPLY_SIZE_DEFAULT = 256L * 1024 * 1024
+  lazy val MAX_REPLY_SIZE_DEFAULT = 32L * 1024 * 1024
 
   lazy val SPARK_UCX_SHUFFLE_SERVICE_PORT_KEY = getUcxConf("service.port")
   lazy val SPARK_UCX_SHUFFLE_SERVICE_PORT_DEFAULT = 3338

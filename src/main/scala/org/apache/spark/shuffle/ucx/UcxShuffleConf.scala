@@ -95,7 +95,7 @@ class UcxShuffleConf(sparkConf: SparkConf) extends SparkConf {
   private lazy val MAX_REPLY_SIZE = ConfigBuilder(getUcxConf("maxReplySize"))
     .doc("Maximum number blocks per request")
     .bytesConf(ByteUnit.MiB)
-    .createWithDefault(256)
+    .createWithDefault(32)
 
   lazy val maxReplySize: Long = sparkConf.getSizeAsBytes(MAX_REPLY_SIZE.key, MAX_REPLY_SIZE.defaultValueString)
 }
