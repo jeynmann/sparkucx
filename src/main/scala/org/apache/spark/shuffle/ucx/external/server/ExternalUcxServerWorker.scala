@@ -6,13 +6,14 @@ package org.apache.spark.shuffle.ucx
 
 import java.io.Closeable
 import java.nio.ByteBuffer
-import java.nio.channels.ReadableByteChannel
+import java.nio.channels.Channels
 import java.util.concurrent.{ConcurrentLinkedQueue, CountDownLatch, Callable, Future, FutureTask}
 import scala.collection.concurrent.TrieMap
 import org.openucx.jucx.ucp._
 import org.openucx.jucx.ucs.UcsConstants
 import org.openucx.jucx.ucs.UcsConstants.MEMORY_TYPE
 import org.openucx.jucx.{UcxCallback, UcxException, UcxUtils}
+import org.apache.spark.network.buffer.ManagedBuffer
 import org.apache.spark.shuffle.ucx.memory.UcxBounceBufferMemoryBlock
 import org.apache.spark.shuffle.utils.{UnsafeUtils, UcxLogging}
 
@@ -29,6 +30,22 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
 
   override def close(): Unit = {
     worker.close()
+  }
+
+  // def debugClients(): Unit = {
+  //   logDebug(s"$workerId clients ${shuffleClients.size}")
+  // }
+
+  def disconnect(workerIds: Seq[UcxWorkerId]): Unit = {
+    worker.synchronized {
+      workerIds.foreach(workerId => 
+        shuffleClients.remove(workerId).map(ep =>
+          try {
+            ep.closeNonBlockingForce()
+          } catch {
+            case e: Exception => logInfo(s"$workerId close $e")
+          }))
+    }
   }
 
   def getConnectionBack(shuffleClient: UcxWorkerId): UcpEndpoint = {
@@ -67,7 +84,8 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
       }
   }
 
-  def handleFetchBlockRequest(clientWorker: UcxWorkerId, replyTag: Int, blocks: Seq[(Long, ReadableByteChannel)]): Unit = try {
+  def handleFetchBlockRequest(clientWorker: UcxWorkerId, replyTag: Int,
+                              blocks: Seq[(Long, ManagedBuffer)]): Unit = try {
     if (blocks.size == 1 && blocks(0)._1 > maxReplySize) {
       return handleFetchBlockStream(clientWorker, replyTag, blocks(0), 3)
     }
@@ -77,6 +95,7 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
       .asInstanceOf[UcxBounceBufferMemoryBlock]
     val resultBuffer = UcxUtils.getByteBufferView(resultMemory.address,
       resultMemory.size)
+    val blockCh = blocks.map(x => Channels.newChannel(x._2.createInputStream()))
 
     resultBuffer.putInt(replyTag)
     for (i <- 0 until blocks.size) {
@@ -85,7 +104,7 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
 
     for (i <- 0 until blocks.size) {
       resultBuffer.limit(resultBuffer.position() + blocks(i)._1.toInt)
-      blocks(i)._2.read(resultBuffer)
+      blockCh(i).read(resultBuffer)
     }
 
     val startTime = System.nanoTime()
@@ -105,16 +124,19 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
       }, new UcpRequestParams().setMemoryType(UcsConstants.MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
       .setMemoryHandle(resultMemory.memory))
     }
+
+    blockCh.foreach(_.close())
   } catch {
     case ex: Throwable => logError(s"Failed to read and send data: $ex")
   }
 
   def handleFetchBlockStream(clientWorker: UcxWorkerId, replyTag: Int,
-                             blockInfo: (Long, ReadableByteChannel),
-                             amId: Int = 2): Unit = {
+                             blockInfo: (Long, ManagedBuffer), amId: Int = 2)
+                             : Unit = {
     val headerSize = UnsafeUtils.INT_SIZE + UnsafeUtils.INT_SIZE
     val maxBodySize = maxReplySize - headerSize.toLong
     val blockSlice = (0L until blockInfo._1 by maxBodySize)
+    val blockCh = Channels.newChannel(blockInfo._2.createInputStream())
     val firstLatch = new CountDownLatch(1)
 
     def send(workerWrapper: ExternalUcxServerWorker, currentId: Int,
@@ -129,7 +151,7 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
       buffer.limit(headerSize + currentSize.toInt)
       buffer.putInt(replyTag)
       buffer.putInt(remaining)
-      blockInfo._2.read(buffer)
+      blockCh.read(buffer)
 
       val nextLatch = new CountDownLatch(1)
       sendLatch.await()
@@ -140,13 +162,13 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
         ep.sendAmNonBlocking(amId, mem.address, headerSize,
           mem.address + headerSize, currentSize, 0, new UcxCallback {
             override def onSuccess(request: UcpRequest): Unit = {
-              logTrace(s"Reply stream block $currentId size $currentSize tag " +
-                s"$replyTag in ${System.nanoTime() - startTime} ns.")
-                mem.close()
-                nextLatch.countDown()
+              logTrace(s"Reply stream size $currentSize tag $replyTag seg " +
+                s"$currentId in ${System.nanoTime() - startTime} ns.")
+              mem.close()
+              nextLatch.countDown()
             }
             override def onError(ucsStatus: Int, errorMsg: String): Unit = {
-              logError(s"Failed to reply stream $errorMsg")
+              logError(s"Failed to reply tag $replyTag seg $currentId $errorMsg")
               mem.close()
               nextLatch.countDown()
             }
@@ -161,10 +183,11 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
                                   nextLatch)
         })
       } else {
-        blockInfo._2.close()
+        blockCh.close()
       }
     } catch {
-      case ex: Throwable => logError(s"Failed to reply stream $ex.")
+      case ex: Throwable =>
+        logError(s"Failed to reply stream $currentId tag $replyTag $ex.")
     }
 
     firstLatch.countDown()

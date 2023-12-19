@@ -3,6 +3,7 @@ package org.apache.spark.shuffle.ucx
 // import org.apache.spark.SparkEnv
 import org.apache.spark.shuffle.utils.{UcxLogging, UnsafeUtils}
 import org.apache.spark.shuffle.ucx.utils.SerializationUtils
+import org.apache.spark.network.buffer.ManagedBuffer
 import org.apache.spark.network.shuffle.ExternalUcxShuffleBlockResolver
 import org.openucx.jucx.ucp._
 import org.openucx.jucx.ucs.UcsConstants
@@ -10,7 +11,6 @@ import org.openucx.jucx.UcxException
 
 import java.net.InetSocketAddress
 import java.nio.ByteBuffer
-import java.nio.channels.{Channels, ReadableByteChannel}
 import java.util.concurrent.atomic.AtomicInteger
 import scala.collection.concurrent.TrieMap
 import scala.collection.mutable
@@ -159,7 +159,11 @@ class ExternalUcxServerTransport(
   }
 
   def applicationRemoved(appId: String): Unit = {
-    workerMap.remove(appId)
+    workerMap.remove(appId).map(clientAddress => {
+      val shuffleClients = clientAddress.map(x => UcxWorkerId(appId, x._1))
+      allocatedWorker.foreach(_.disconnect(shuffleClients.toSeq))
+    })
+    // allocatedWorker.foreach(_.debugClients())
   }
 
   def executorRemoved(executorId: String, appId: String): Unit = {
@@ -183,20 +187,22 @@ class ExternalUcxServerTransport(
     allocatedWorker.foreach(_.connectBack(clientWorker, workerAddress))
   }
 
-  def handleFetchBlockRequest(clientWorker: UcxWorkerId, exeId: Int, replyTag: Int, amData: UcpAmData): Unit = {
+  def handleFetchBlockRequest(clientWorker: UcxWorkerId, exeId: Int,
+                              replyTag: Int, amData: UcpAmData): Unit = {
     replyExecutors.submit(new Runnable {
       override def run(): Unit = {
-        val buffer = UnsafeUtils.getByteBufferView(amData.getDataAddress, amData.getLength.toInt)
+        val buffer = UnsafeUtils.getByteBufferView(amData.getDataAddress,
+                                                   amData.getLength.toInt)
         // val blockIds = mutable.ArrayBuffer.empty[UcxShuffleBlockId]
-        val blockInfos = mutable.ArrayBuffer.empty[(Long, ReadableByteChannel)]
+        val blockInfos = mutable.ArrayBuffer.empty[(Long, ManagedBuffer)]
 
         // 1. Deserialize blockIds from header
         while (buffer.remaining() > 0) {
           val bid = UcxShuffleBlockId.deserialize(buffer)
-          val buf = blockManager.getBlockData(clientWorker.appId,
-            exeId.toString, bid.shuffleId, bid.mapId, bid.reduceId)
-          val ch = Channels.newChannel(buf.createInputStream)
-          blockInfos += buf.size() -> ch
+          val buf = blockManager.getBlockData(clientWorker.appId, exeId.toString,
+                                              bid.shuffleId, bid.mapId,
+                                              bid.reduceId)
+          blockInfos += buf.size() -> buf
         }
 
         amData.close()
@@ -210,7 +216,6 @@ class ExternalUcxServerTransport(
         //   }
         // }}
         selectWorker.handleFetchBlockRequest(clientWorker, replyTag, blockInfos)
-        blockInfos.foreach(_._2.close())
       }
     })
   }
@@ -219,10 +224,10 @@ class ExternalUcxServerTransport(
                              replyTag: Int, bid: UcxShuffleBlockId): Unit = {
     replyExecutors.submit(new Runnable {
       override def run(): Unit = {
-        val buf = blockManager.getBlockData(clientWorker.appId,
-          exeId.toString, bid.shuffleId, bid.mapId, bid.reduceId)
-        val ch = Channels.newChannel(buf.createInputStream)
-        val blockInfo = buf.size() -> ch
+        val buf = blockManager.getBlockData(clientWorker.appId, exeId.toString,
+                                            bid.shuffleId, bid.mapId,
+                                            bid.reduceId)
+        val blockInfo = buf.size() -> buf
         selectWorker.handleFetchBlockStream(clientWorker, replyTag, blockInfo)
       }
     })
