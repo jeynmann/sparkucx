@@ -17,8 +17,12 @@ import org.apache.spark.network.util.JavaUtils
 import org.apache.spark.shuffle.ucx._
 import org.apache.spark.shuffle.utils.UnsafeUtils
 import org.apache.spark.util.{ShutdownHookManager, ThreadUtils}
+import java.util.concurrent.CountDownLatch
 
 import scala.collection.parallel.ForkJoinTaskSupport
+import org.apache.spark.shuffle.ucx.memory.UcxHostBounceBuffersPool
+import org.openucx.jucx.ucp._
+import java.util.Scanner
 
 object UcxPerfBenchmark extends App with Logging {
 
@@ -128,6 +132,7 @@ object UcxPerfBenchmark extends App with Logging {
 
     for (_ <- 0 until options.numIterations) {
       for  (b <- blockCollection) {
+        val latch = new CountDownLatch(options.numOutstanding)
         requestInFlight.set(options.numOutstanding)
         for (o <- 0 until options.numOutstanding) {
           val fileIdx = if (options.randOrder) rnd.nextInt(options.files.length) else (b+o) % options.files.length
@@ -135,6 +140,7 @@ object UcxPerfBenchmark extends App with Logging {
           blocks(o) = UcxShuffleBockId(0, fileIdx, blockIdx)
           callbacks(o) = (result: OperationResult) => {
             result.getData.close()
+            latch.countDown()
             val stats = result.getStats.get
             if (requestInFlight.decrementAndGet() == 0) {
               printf(s"Received ${options.numOutstanding} block of size: ${stats.recvSize}  " +
@@ -144,10 +150,8 @@ object UcxPerfBenchmark extends App with Logging {
             }
           }
         }
-        val requests = ucxTransport.fetchBlocksByBlockIds(1, blocks, resultBufferAllocator, callbacks)
-        // while (!requests.forall(_.isCompleted)) {
-        //   ucxTransport.progress()
-        // }
+        ucxTransport.fetchBlocksByBlockIds(1, blocks, resultBufferAllocator, callbacks)
+        latch.await()
       }
     }
     ucxTransport.close()
@@ -195,8 +199,8 @@ object UcxPerfBenchmark extends App with Logging {
 
           override def getSize: Long = options.blockSize
 
-          override def getBlock(byteBuffer: ByteBuffer): Unit = {
-            channel.read(byteBuffer, fileOffset)
+          override def getBlock(byteBuffer: ByteBuffer, offset: Long): Unit = {
+            channel.read(byteBuffer, fileOffset + offset)
           }
         }
         ucxTransport.register(blockId, block)
@@ -218,4 +222,65 @@ object UcxPerfBenchmark extends App with Logging {
   }
 
   start()
+}
+
+// scala -cp target/ucx-spark-1.1-for-spark-2.4-jar-with-dependencies.jar:/labhome/$USER/.m2/repository/org/slf4j/slf4j-api/1.7.7/slf4j-api-1.7.7.jar org.apache.spark.shuffle.ucx.perf.UcxMemoryPoolPerftest 30 31 4
+class UcxMemoryPoolPerftest(left: Int, right: Int, count: Int) {
+
+  lazy val scanner = new Scanner(System.in)
+
+  def start(): Unit = {
+    pressToContinue()
+
+    val params = new UcpParams().requestAmFeature().setMtWorkersShared(true)
+                                .requestAmFeature().setConfig("USE_MT_MUTEX", "yes")
+    val ctx = new UcpContext(params)
+    val hostBounceBufferMemoryPool = new UcxHostBounceBuffersPool(ctx)
+    val allocMap = (left until right).map(x => (1L << x, count)).toMap
+    // 1M, 4k, ...
+    println(s"allocs $allocMap")
+    hostBounceBufferMemoryPool.init(1L << 20, 4096L, allocMap)
+
+    pressToContinue()
+    println(s"get $allocMap")
+    allocMap.foreach {
+      case (len, num) => for (i <- 0 until num) {
+        hostBounceBufferMemoryPool.get(len)
+      }
+    }
+
+    pressToContinue()
+  }
+
+  def pressToContinue(): Unit = {
+    if (scanner.hasNextLine()) {
+        val _ = scanner.nextLine()
+    }
+  }
+}
+
+object UcxMemoryPoolPerftest {
+  def main(args: Array[String]): Unit = {
+      val test = UcxMemoryPoolPerftest(args)
+      test.start()
+  }
+
+  def apply(args: Array[String]): UcxMemoryPoolPerftest = {
+    if (args.length > 2) {
+      val left = args(0).toInt
+      val right = args(1).toInt
+      val count = args(2).toInt
+      new UcxMemoryPoolPerftest(left, right, count)
+    } else if (args.length > 1) {
+      val left = args(0).toInt
+      val right = args(1).toInt
+      val count = 1
+      new UcxMemoryPoolPerftest(left, right, count)
+    } else {
+      val left = args(0).toInt
+      val right = left
+      val count = 1
+      new UcxMemoryPoolPerftest(left, right, count)
+    }
+  }
 }
