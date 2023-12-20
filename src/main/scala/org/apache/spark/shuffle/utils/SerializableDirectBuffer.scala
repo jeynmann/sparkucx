@@ -4,29 +4,13 @@
 */
 package org.apache.spark.shuffle.ucx.utils
 
-import java.io.{IOException, EOFException, ObjectInputStream, ObjectOutputStream}
+import java.io.{EOFException, ObjectInputStream, ObjectOutputStream}
 import java.net.InetSocketAddress
 import java.nio.ByteBuffer
 import java.nio.channels.Channels
 import java.nio.charset.StandardCharsets
-import scala.util.control.{ControlThrowable, NonFatal}
 
-import org.apache.spark.shuffle.utils.UcxLogging
-
-object UcxUtils extends UcxLogging {
-  def tryOrIOException[T](block: => T): T = {
-    try {
-      block
-    } catch {
-      case e: IOException =>
-        logError("Exception encountered", e)
-        throw e
-      case NonFatal(e) =>
-        logError("Exception encountered", e)
-        throw new IOException(e)
-    }
-  }
-}
+import org.apache.spark.shuffle.utils.{UcxUtils, UcxLogging}
 
 /**
  * A wrapper around a java.nio.ByteBuffer that is serializable through Java serialization, to make
