@@ -36,15 +36,20 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
   //   logDebug(s"$workerId clients ${shuffleClients.size}")
   // }
 
+  def disconnect(workerId: UcxWorkerId): Unit = {
+    worker.synchronized {
+      shuffleClients.remove(workerId).map(ep =>
+        try {
+          ep.closeNonBlockingForce()
+        } catch {
+          case e: Exception => logInfo(s"$workerId close $e")
+        })
+    }
+  }
+
   def disconnect(workerIds: Seq[UcxWorkerId]): Unit = {
     worker.synchronized {
-      workerIds.foreach(workerId => 
-        shuffleClients.remove(workerId).map(ep =>
-          try {
-            ep.closeNonBlockingForce()
-          } catch {
-            case e: Exception => logInfo(s"$workerId close $e")
-          }))
+      workerIds.foreach(disconnect(_))
     }
   }
 

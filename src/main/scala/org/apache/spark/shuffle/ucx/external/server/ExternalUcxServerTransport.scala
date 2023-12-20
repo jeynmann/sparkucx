@@ -167,10 +167,13 @@ class ExternalUcxServerTransport(
   }
 
   def executorRemoved(executorId: String, appId: String): Unit = {
-    // val m = workerMap.get(appId)
-    // if (m != null) {
-    //   m.remove(executorId.toInt)
-    // }
+    val exeId = executorId.toInt
+    workerMap.get(appId).map(clientAddress => {
+      val filteredAddress = clientAddress.filterKeys(
+        id => UcxWorkerId.extractExeId(id) == exeId)
+      val shuffleClients = filteredAddress.map(x => UcxWorkerId(appId, x._1))
+      allocatedWorker.foreach(_.disconnect(shuffleClients.toSeq))
+    })
   }
 
   def connectBack(clientWorker: UcxWorkerId, workerAddress: ByteBuffer): Unit = {
