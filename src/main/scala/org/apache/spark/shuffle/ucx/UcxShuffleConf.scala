@@ -38,6 +38,14 @@ class UcxShuffleConf(sparkConf: SparkConf) extends SparkConf {
   lazy val minBufferSize: Long = sparkConf.getSizeAsBytes(MIN_BUFFER_SIZE.key,
     MIN_BUFFER_SIZE.defaultValueString)
 
+  private lazy val MAX_BUFFER_SIZE = ConfigBuilder(getUcxConf("memory.maxBufferSize"))
+    .doc("Maximal buffer size in memory pool.")
+    .bytesConf(ByteUnit.BYTE)
+    .createWithDefault(Int.MaxValue)
+
+  lazy val maxBufferSize: Long = sparkConf.getSizeAsBytes(MAX_BUFFER_SIZE.key,
+    MAX_BUFFER_SIZE.defaultValueString)
+
   private lazy val MIN_REGISTRATION_SIZE =
     ConfigBuilder(getUcxConf("memory.minAllocationSize"))
     .doc("Minimal memory registration size in memory pool.")
@@ -46,6 +54,15 @@ class UcxShuffleConf(sparkConf: SparkConf) extends SparkConf {
 
   lazy val minRegistrationSize: Int = sparkConf.getSizeAsBytes(MIN_REGISTRATION_SIZE.key,
     MIN_REGISTRATION_SIZE.defaultValueString).toInt
+
+  private lazy val MAX_REGISTRATION_SIZE =
+    ConfigBuilder(getUcxConf("memory.maxAllocationSize"))
+    .doc("Maximal memory registration size in memory pool.")
+    .bytesConf(ByteUnit.MiB)
+    .createWithDefault(16384)
+
+  lazy val maxRegistrationSize: Long = sparkConf.getSizeAsBytes(MAX_REGISTRATION_SIZE.key,
+    MAX_REGISTRATION_SIZE.defaultValueString).toLong
 
   private lazy val SOCKADDR =
     ConfigBuilder(getUcxConf("listener.sockaddr"))

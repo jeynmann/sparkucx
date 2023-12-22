@@ -12,6 +12,7 @@ import org.openucx.jucx.ucp.{UcpContext, UcpMemMapParams, UcpMemory}
 import org.openucx.jucx.ucs.UcsConstants
 import org.apache.spark.shuffle.utils.{UcxUtils, UcxLogging, UnsafeUtils}
 import org.apache.spark.shuffle.ucx.MemoryBlock
+import java.util.concurrent.Semaphore
 
 class UcxBounceBufferMemoryBlock(private[ucx] val memory: UcpMemory, private[ucx] val refCount: AtomicInteger,
                                  private[ucx] val memPool: MemoryPool,
@@ -196,9 +197,11 @@ class UcxBaseMemAllocator extends UcxMemoryAllocator with UcxLogging {
       }
       numBuffers += 1
     })
-    logInfo(s"Closing $numBuffers buffers size $length allocations " +
-      s"${numAllocs.get()}. Total ${UcxUtils.bytesToString(length * numBuffers)}")
-    stack.clear()
+    if (numBuffers != 0) {
+      logInfo(s"Closing $numBuffers buffers size $length allocations " +
+        s"${numAllocs.get()}. Total ${UcxUtils.bytesToString(length * numBuffers)}")
+      stack.clear()
+    }
   }
 }
 
@@ -207,12 +210,14 @@ case class UcxLinkedMemAllocator(length: Long, minRegistrationSize: Long,
                                  ucxContext: UcpContext)
   extends UcxBaseMemAllocator() with Closeable {
   private[this] lazy val registrationSize = length.max(minRegistrationSize)
+  private[this] var limit: Semaphore = _
   logInfo(s"Allocator stack size $length")
   if (next == null) {
     memMapParams.setLength(registrationSize)
   }
 
   override def allocate(): UcxMemBlock = {
+    acquireLimit()
     var result = stack.pollFirst()
     if (result != null) {
       result
@@ -221,7 +226,7 @@ case class UcxLinkedMemAllocator(length: Long, minRegistrationSize: Long,
       while (result == null) {
         numAllocs.incrementAndGet()
         val memory = ucxContext.memoryMap(memMapParams)
-        val numBuffers = registrationSize / length
+        val numBuffers = memory.getLength / length
         var address = memory.getAddress
         for (i <- 0L until numBuffers) {
           stack.add(new UcxLinkedMemBlock(null, null, memory, this, address, length))
@@ -232,7 +237,7 @@ case class UcxLinkedMemAllocator(length: Long, minRegistrationSize: Long,
       result
     } else {
       val superMem = next.allocate().asInstanceOf[UcxLinkedMemBlock]
-      val address1 = superMem.memory.getAddress
+      val address1 = superMem.address
       val address2 = address1 + length
       val block1 = new UcxLinkedMemBlock(superMem, null, superMem.memory, this,
                                          address1, length)
@@ -252,33 +257,52 @@ case class UcxLinkedMemAllocator(length: Long, minRegistrationSize: Long,
     } else {
       next.deallocate(block.superMem)
     }
+    releaseLimit()
+  }
+
+  def setLimit(num: Int): Unit = {
+    limit = new Semaphore(num)
+  }
+
+  def acquireLimit() = if (limit != null) {
+    limit.acquire(1)
+  }
+
+  def releaseLimit() = if (limit != null) {
+    limit.release(1)
   }
 }
 
 case class UcxMemPool(ucxContext: UcpContext)
   extends Closeable with UcxLogging {
-  protected val allocatorGroup = (1 until 29 by 3).map(
-    x => (1L<< (x + 3), 1L<< (x + 2), 1L<< (x + 1)))
-  protected var minBufferSize: Long = 4096L
-  protected var minRegistrationSize: Long = 1024L * 1024
+  private[memory] val memRange = (1 until 29).map(1 << _).reverse
+  private[memory] val memGroupSize = 3
+  private[memory] var minBufferSize: Long = 4096L
+  private[memory] var maxBufferSize: Long = 2L * 1024 * 1024 * 1024
+  private[memory] var minRegistrationSize: Long = 1024L * 1024
+  private[memory] var maxRegistrationSize: Long = 16L * 1024 * 1024 * 1024
 
-  def init(minRegSize: Long, minBufSize: Long, preAllocMap: Map[Long, Int]):
+  def init(minBufSize: Long, maxBufSize: Long, minRegSize: Long, maxRegSize: Long, preAllocMap: Map[Long, Int]):
     Unit = {
-    minRegistrationSize = roundUpToTheNextPowerOf2(minRegSize)
     minBufferSize = roundUpToTheNextPowerOf2(minBufSize)
-    for (sizes <- allocatorGroup) {
-      if (sizes._1 >= minBufferSize) {
-        val a1 = new UcxLinkedMemAllocator(sizes._1, minRegistrationSize, null,
-                                           ucxContext)
-        allocatorMap.put(a1.length, a1)
-        if (sizes._2 >= minBufferSize) {
-          val a2 = new UcxLinkedMemAllocator(sizes._2, minRegistrationSize, a1,
-                                             ucxContext)
-          allocatorMap.put(a2.length, a2)
-          if (sizes._3 >= minBufferSize) {
-            val a3 = new UcxLinkedMemAllocator(sizes._3, minRegistrationSize, a2,
-                                               ucxContext)
-            allocatorMap.put(a3.length, a3)
+    maxBufferSize = roundUpToTheNextPowerOf2(maxBufSize)
+    minRegistrationSize = roundUpToTheNextPowerOf2(minRegSize)
+    maxRegistrationSize = roundUpToTheNextPowerOf2(maxRegSize / 2)
+    val minLimit = (maxRegistrationSize / maxBufferSize).max(1L)
+                                                        .min(Int.MaxValue)
+                                                        .toInt
+    for (i <- 0 until memRange.length by memGroupSize) {
+      var superAllocator: UcxLinkedMemAllocator = null
+      for (j <- 0 until memGroupSize.min(memRange.length - i)) {
+        val memSize = memRange(i + j)
+        if ((memSize >= minBufSize) && (memSize <= maxBufferSize)) {
+          val current = new UcxLinkedMemAllocator(memSize, minRegistrationSize,
+                                                  superAllocator, ucxContext)
+          superAllocator = current
+          allocatorMap.put(memSize, current)
+          // set limit to top allocator
+          if (superAllocator == null) {
+            current.setLimit(minLimit << i)
           }
         }
       }
