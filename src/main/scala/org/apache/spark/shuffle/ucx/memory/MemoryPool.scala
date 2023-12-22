@@ -291,6 +291,8 @@ case class UcxMemPool(ucxContext: UcpContext)
     val minLimit = (maxRegistrationSize / maxBufferSize).max(1L)
                                                         .min(Int.MaxValue)
                                                         .toInt
+    logInfo(s"UcxMemPool limit $minLimit buf ($minBufferSize, $maxBufferSize)" +
+            s"reg ($minRegistrationSize, $maxRegistrationSize)")
     for (i <- 0 until memRange.length by memGroupSize) {
       var superAllocator: UcxLinkedMemAllocator = null
       for (j <- 0 until memGroupSize.min(memRange.length - i)) {
