@@ -13,11 +13,10 @@ import org.apache.spark.SparkConf
  * Plugin configuration properties.
  */
 class ExternalUcxServerConf(val yarnConf: Configuration) extends ExternalUcxConf {
-  override lazy val preallocateBuffersMap: Map[Long, Int] = yarnConf.get(
-    ExternalUcxConf.PREALLOCATE_BUFFERS_KEY).split(",").withFilter(s => s.nonEmpty)
-      .map(entry => entry.split(":") match {
-        case Array(bufferSize, bufferCount) => (bufferSize.toLong, bufferCount.toInt)
-      }).toMap
+  override lazy val preallocateBuffersMap: Map[Long, Int] =
+    ExternalUcxConf.preAllocateConfToMap(
+      yarnConf.get(ExternalUcxConf.PREALLOCATE_BUFFERS_KEY,
+                   ExternalUcxConf.PREALLOCATE_BUFFERS_DEFAULT))
 
   override lazy val minBufferSize: Long = yarnConf.getLong(
     ExternalUcxConf.MIN_BUFFER_SIZE_KEY,
@@ -62,7 +61,7 @@ class ExternalUcxServerConf(val yarnConf: Configuration) extends ExternalUcxConf
 
 object ExternalUcxServerConf extends ExternalUcxConf {
   lazy val SPARK_UCX_SHUFFLE_EPS_NUM_KEY = "spark.shuffle.ucx.eps.num"
-  lazy val SPARK_UCX_SHUFFLE_EPS_NUM_DEFAULT = 1024
+  lazy val SPARK_UCX_SHUFFLE_EPS_NUM_DEFAULT = 16777216
 
   // Copied from spark ExternalShuffleService.java
 

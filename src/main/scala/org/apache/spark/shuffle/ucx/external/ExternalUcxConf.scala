@@ -8,7 +8,8 @@ package org.apache.spark.shuffle.ucx
  * Plugin configuration properties.
  */
 trait ExternalUcxConf {
-  lazy val preallocateBuffersMap: Map[Long, Int] = ExternalUcxConf.PREALLOCATE_BUFFERS_DEFAULT
+  lazy val preallocateBuffersMap: Map[Long, Int] =
+    ExternalUcxConf.preAllocateConfToMap(ExternalUcxConf.PREALLOCATE_BUFFERS_DEFAULT)
   lazy val minBufferSize: Long = ExternalUcxConf.MIN_BUFFER_SIZE_DEFAULT
   lazy val maxBufferSize: Long = ExternalUcxConf.MAX_BUFFER_SIZE_DEFAULT
   lazy val minRegistrationSize: Long = ExternalUcxConf.MIN_REGISTRATION_SIZE_DEFAULT
@@ -27,7 +28,7 @@ object ExternalUcxConf {
   protected def getUcxConf(name: String) = s"spark.shuffle.ucx.$name"
 
   lazy val PREALLOCATE_BUFFERS_KEY = getUcxConf("memory.preAllocateBuffers")
-  lazy val PREALLOCATE_BUFFERS_DEFAULT = Map.empty[Long, Int]
+  lazy val PREALLOCATE_BUFFERS_DEFAULT = ""
 
   lazy val MIN_BUFFER_SIZE_KEY = getUcxConf("memory.minBufferSize")
   lazy val MIN_BUFFER_SIZE_DEFAULT = 4096L
@@ -64,4 +65,10 @@ object ExternalUcxConf {
 
   lazy val SPARK_UCX_SHUFFLE_SERVICE_PORT_KEY = getUcxConf("service.port")
   lazy val SPARK_UCX_SHUFFLE_SERVICE_PORT_DEFAULT = 3338
+
+  def preAllocateConfToMap(conf: String): Map[Long, Int] =
+    conf.split(",").withFilter(s => s.nonEmpty).map(entry =>
+      entry.split(":") match {
+        case Array(bufferSize, bufferCount) => (bufferSize.toLong, bufferCount.toInt)
+      }).toMap
 }

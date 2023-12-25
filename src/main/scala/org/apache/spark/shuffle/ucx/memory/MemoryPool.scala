@@ -279,7 +279,6 @@ case class UcxLinkedMemAllocator(length: Long, minRegistrationSize: Long,
 
 case class UcxLimitedMemPool(ucxContext: UcpContext)
   extends Closeable with UcxLogging {
-  private[memory] val memRange = (1 until 29).map(1 << _).reverse
   private[memory] val memGroupSize = 3
   private[memory] val maxMemFactor = 1L - 1L / (1L << (memGroupSize - 1L))
   private[memory] var minBufferSize: Long = 4096L
@@ -293,6 +292,7 @@ case class UcxLimitedMemPool(ucxContext: UcpContext)
     maxBufferSize = roundUpToTheNextPowerOf2(maxBufSize)
     minRegistrationSize = roundUpToTheNextPowerOf2(minRegSize)
     maxRegistrationSize = roundUpToTheNextPowerOf2(maxRegSize * maxMemFactor)
+    val memRange = (1 until 29).map(1 << _).reverse
     val minLimit = (maxRegistrationSize / maxBufferSize).max(1L)
                                                         .min(Int.MaxValue)
                                                         .toInt

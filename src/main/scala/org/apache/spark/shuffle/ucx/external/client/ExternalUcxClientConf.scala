@@ -21,12 +21,10 @@ class ExternalUcxClientConf(val sparkConf: SparkConf) extends SparkConf with Ext
     .doc("Comma separated list of buffer size : buffer count pairs to preallocate in memory pool. E.g. 4k:1000,16k:500")
     .stringConf.createWithDefault("")
 
-  override lazy val preallocateBuffersMap: Map[Long, Int] = {
-    sparkConf.get(PREALLOCATE_BUFFERS).split(",").withFilter(s => s.nonEmpty)
-      .map(entry => entry.split(":") match {
-        case Array(bufferSize, bufferCount) => (bufferSize.toLong, bufferCount.toInt)
-      }).toMap
-  }
+  override lazy val preallocateBuffersMap: Map[Long, Int] = 
+    ExternalUcxConf.preAllocateConfToMap(
+      sparkConf.get(ExternalUcxConf.PREALLOCATE_BUFFERS_KEY,
+                    ExternalUcxConf.PREALLOCATE_BUFFERS_DEFAULT))
 
   private lazy val MIN_BUFFER_SIZE = ConfigBuilder(ExternalUcxConf.MIN_BUFFER_SIZE_KEY)
     .doc("Minimal buffer size in memory pool.")
