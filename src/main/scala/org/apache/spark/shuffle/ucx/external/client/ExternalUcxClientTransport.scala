@@ -133,7 +133,7 @@ private[shuffle] class UcxFetchCallBack(
   override def onComplete(result: OperationResult): Unit = {
     val memBlock = result.getData
     val buffer = UnsafeUtils.getByteBufferView(memBlock.address,
-                                                memBlock.size.toInt)
+                                               memBlock.size.toInt)
     listener.onBlockFetchSuccess(blockId, new NioManagedBuffer(buffer) {
       override def release: ManagedBuffer = {
         memBlock.close()

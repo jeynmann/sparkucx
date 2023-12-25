@@ -35,7 +35,7 @@ class ExternalUcxServerTransport(
   private val endpoints = mutable.Set.empty[UcpEndpoint]
   private var globalWorker: UcpWorker = _
   private var listener: UcpListener = _
-  private val replyExecutors = UcxThreadUtils.newForkJoinPool(
+  private val replyExecutors = UcxThreadUtils.newFixedDaemonPool(
     "UCX-server", serverConf.numListenerThreads)
 
   private[ucx] lazy val currentWorkerId = new AtomicInteger()

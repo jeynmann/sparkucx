@@ -76,4 +76,9 @@ object UcxThreadUtils {
     }
     new ForkJoinPool(maxThreadNumber, factory, null, false)
   }
+
+  def newFixedDaemonPool(prefix: String, maxThreadNumber: Int): ExecutorService = {
+    val factory = new UcxThreadFactory().setDaemon(true).setPrefix(prefix)
+    Executors.newFixedThreadPool(maxThreadNumber, factory)
+  }
 }

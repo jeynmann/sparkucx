@@ -7,6 +7,7 @@ package org.apache.spark.shuffle.utils
 import java.io.IOException
 import java.math.{MathContext, RoundingMode}
 import java.util.Locale
+import java.util.concurrent.ThreadFactory
 import scala.util.control.NonFatal
 
 object UcxUtils extends UcxLogging {
@@ -56,5 +57,29 @@ object UcxUtils extends UcxLogging {
       }
       "%.1f %s".formatLocal(Locale.US, value, unit)
     }
+  }
+}
+
+class UcxThreadFactory extends ThreadFactory {
+  private var daemon: Boolean = true
+  private var prefix: String = "UCX"
+
+  private class NamedThread(r: Runnable) extends Thread(r) {
+    setDaemon(daemon)
+    setName(s"${prefix}-${super.getName}")
+  }
+
+  def setDaemon(isDaemon: Boolean): this.type = {
+    daemon = isDaemon
+    this
+  }
+
+  def setPrefix(name: String): this.type = {
+    prefix = name
+    this
+  }
+
+  def newThread(r: Runnable): Thread = {
+    new NamedThread(r)
   }
 }

@@ -9,7 +9,7 @@ import org.apache.spark.shuffle.utils.UcxLogging
 import org.openucx.jucx.ucp._
 
 import java.nio.ByteBuffer
-import java.util.concurrent.{Executors, ExecutorService}
+import java.util.concurrent.ExecutorService
 
 class ExternalUcxTransport(val ucxShuffleConf: ExternalUcxConf) extends UcxLogging {
   @volatile protected var initialized: Boolean = false
@@ -46,7 +46,7 @@ class ExternalUcxTransport(val ucxShuffleConf: ExternalUcxConf) extends UcxLoggi
   }
 
   def initProgressPool(threadNum: Int): Unit = {
-    progressExecutors = Executors.newFixedThreadPool(threadNum)
+    progressExecutors = UcxThreadUtils.newFixedDaemonPool("UCX", threadNum)
   }
 
   def init(): ByteBuffer = ???

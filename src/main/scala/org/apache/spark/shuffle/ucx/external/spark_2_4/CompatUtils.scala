@@ -1,6 +1,8 @@
 package org.apache.spark.shuffle.ucx
 
+import org.apache.spark.shuffle.utils.UcxThreadFactory
 import java.nio.ByteBuffer
+import java.util.concurrent.{Executors, ExecutorService}
 import scala.concurrent.forkjoin.{ForkJoinPool => SForkJoinPool, ForkJoinWorkerThread => SForkJoinWorkerThread}
 
 case class UcxShuffleBlockId(shuffleId: Int, mapId: Int, reduceId: Int) extends BlockId {
@@ -75,5 +77,10 @@ object UcxThreadUtils {
         }
     }
     new SForkJoinPool(maxThreadNumber, factory, null, false)
+  }
+
+  def newFixedDaemonPool(prefix: String, maxThreadNumber: Int): ExecutorService = {
+    val factory = new UcxThreadFactory().setDaemon(true).setPrefix(prefix)
+    Executors.newFixedThreadPool(maxThreadNumber, factory)
   }
 }
