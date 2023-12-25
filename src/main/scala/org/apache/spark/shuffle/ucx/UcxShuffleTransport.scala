@@ -6,7 +6,7 @@ package org.apache.spark.shuffle.ucx
 
 import org.apache.spark.SparkEnv
 import org.apache.spark.internal.Logging
-import org.apache.spark.shuffle.ucx.memory.UcxMemPool
+import org.apache.spark.shuffle.ucx.memory.UcxLimitedMemPool
 import org.apache.spark.shuffle.ucx.rpc.GlobalWorkerRpcThread
 import org.apache.spark.shuffle.ucx.utils.{SerializableDirectBuffer, SerializationUtils}
 import org.apache.spark.shuffle.utils.UnsafeUtils
@@ -62,8 +62,8 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
   private val registeredBlocks = new TrieMap[BlockId, Block]
   private var progressThread: Thread = _
 
-  var hostBounceBufferMemoryPool: UcxMemPool = _
-  var serverBounceBufferMemoryPool: UcxMemPool = _
+  var hostBounceBufferMemoryPool: UcxLimitedMemPool = _
+  var serverBounceBufferMemoryPool: UcxLimitedMemPool = _
 
   private[spark] lazy val replyThreadPool = ThreadUtils.newForkJoinPool(
     "UcxListenerThread", ucxShuffleConf.numListenerThreads)
@@ -106,12 +106,12 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
       ucxShuffleConf.maxReplySize * ucxShuffleConf.numListenerThreads.toLong *
       4L)
     val clientMaxRegSize = ucxShuffleConf.maxRegistrationSize - serverMaxRegSize
-    hostBounceBufferMemoryPool = new UcxMemPool(ucxContext)
+    hostBounceBufferMemoryPool = new UcxLimitedMemPool(ucxContext)
     hostBounceBufferMemoryPool.init(
       ucxShuffleConf.minBufferSize, ucxShuffleConf.maxBufferSize,
       ucxShuffleConf.minRegistrationSize, clientMaxRegSize,
       ucxShuffleConf.preallocateBuffersMap)
-    serverBounceBufferMemoryPool = new UcxMemPool(ucxContext)
+    serverBounceBufferMemoryPool = new UcxLimitedMemPool(ucxContext)
     serverBounceBufferMemoryPool.init(
       ucxShuffleConf.minBufferSize, ucxShuffleConf.maxBufferSize,
       ucxShuffleConf.minRegistrationSize, serverMaxRegSize,

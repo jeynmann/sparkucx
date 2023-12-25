@@ -454,8 +454,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
     val tagAndSizes = UnsafeUtils.INT_SIZE + UnsafeUtils.INT_SIZE * blocks.length
     val msgSize = tagAndSizes + blocks.map(_.getSize).sum
     val resultMemory = memPool.get(msgSize).asInstanceOf[UcxLinkedMemBlock]
-    val resultBuffer = resultMemory.byteBuffer
-    resultBuffer.clear()
+    val resultBuffer = UcxUtils.getByteBufferView(resultMemory.address, msgSize)
     resultBuffer.putInt(replyTag)
 
     var offset = 0
@@ -549,12 +548,11 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
     def send(workerWrapper: UcxWorkerWrapper, currentId: Int,
              sendLatch: CountDownLatch): Unit = try {
       val mem = memPool.get(maxReplySize).asInstanceOf[UcxLinkedMemBlock]
-      val buffer = mem.byteBuffer
+      val buffer = mem.toByteBuffer()
 
       val remaining = blockSlice.length - currentId - 1
       val currentOffset = blockSlice(currentId)
       val currentSize = (blockSize - currentOffset).min(maxBodySize)
-      buffer.clear()
       buffer.limit(headerSize + currentSize.toInt)
       buffer.putInt(replyTag)
       buffer.putInt(remaining)

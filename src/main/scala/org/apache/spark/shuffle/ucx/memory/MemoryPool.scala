@@ -154,9 +154,13 @@ class UcxHostBounceBuffersPool(ucxContext: UcpContext)
 class UcxMemBlock(private[ucx] val memory: UcpMemory,
                   private[ucx] val allocator: UcxMemoryAllocator,
                   override val address: Long, override val size: Long)
-  extends MemoryBlock(address, size, memory.getMemType == UcsConstants.MEMORY_TYPE.UCS_MEMORY_TYPE_HOST) {
+  extends MemoryBlock(address, size,memory.getMemType ==
+    UcsConstants.MEMORY_TYPE.UCS_MEMORY_TYPE_HOST) {
 
-  lazy val byteBuffer = UnsafeUtils.getByteBufferView(address, size.min(Int.MaxValue).toInt)
+  private[memory] lazy val byteBuffer = UnsafeUtils.getByteBufferView(
+    address, size.min(Int.MaxValue).toInt)
+
+  def toByteBuffer() = byteBuffer.duplicate()
 
   override def close(): Unit = {
     allocator.deallocate(this)
@@ -273,10 +277,11 @@ case class UcxLinkedMemAllocator(length: Long, minRegistrationSize: Long,
   }
 }
 
-case class UcxMemPool(ucxContext: UcpContext)
+case class UcxLimitedMemPool(ucxContext: UcpContext)
   extends Closeable with UcxLogging {
   private[memory] val memRange = (1 until 29).map(1 << _).reverse
   private[memory] val memGroupSize = 3
+  private[memory] val maxMemFactor = 1L - 1L / (1L << (memGroupSize - 1L))
   private[memory] var minBufferSize: Long = 4096L
   private[memory] var maxBufferSize: Long = 2L * 1024 * 1024 * 1024
   private[memory] var minRegistrationSize: Long = 1024L * 1024
@@ -287,17 +292,17 @@ case class UcxMemPool(ucxContext: UcpContext)
     minBufferSize = roundUpToTheNextPowerOf2(minBufSize)
     maxBufferSize = roundUpToTheNextPowerOf2(maxBufSize)
     minRegistrationSize = roundUpToTheNextPowerOf2(minRegSize)
-    maxRegistrationSize = roundUpToTheNextPowerOf2(maxRegSize / 2)
+    maxRegistrationSize = roundUpToTheNextPowerOf2(maxRegSize * maxMemFactor)
     val minLimit = (maxRegistrationSize / maxBufferSize).max(1L)
                                                         .min(Int.MaxValue)
                                                         .toInt
-    logInfo(s"UcxMemPool limit $minLimit buf ($minBufferSize, $maxBufferSize)" +
+    logInfo(s"UcxLimitedMemPool limit $minLimit buf ($minBufferSize, $maxBufferSize)" +
             s"reg ($minRegistrationSize, $maxRegistrationSize)")
     for (i <- 0 until memRange.length by memGroupSize) {
       var superAllocator: UcxLinkedMemAllocator = null
       for (j <- 0 until memGroupSize.min(memRange.length - i)) {
         val memSize = memRange(i + j)
-        if ((memSize >= minBufSize) && (memSize <= maxBufferSize)) {
+        if ((memSize >= minBufferSize) && (memSize <= maxBufferSize)) {
           val current = new UcxLinkedMemAllocator(memSize, minRegistrationSize,
                                                   superAllocator, ucxContext)
           superAllocator = current
