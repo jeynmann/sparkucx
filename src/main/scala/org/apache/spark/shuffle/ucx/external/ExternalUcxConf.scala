@@ -10,7 +10,9 @@ package org.apache.spark.shuffle.ucx
 trait ExternalUcxConf {
   lazy val preallocateBuffersMap: Map[Long, Int] = ExternalUcxConf.PREALLOCATE_BUFFERS_DEFAULT
   lazy val minBufferSize: Long = ExternalUcxConf.MIN_BUFFER_SIZE_DEFAULT
-  lazy val minRegistrationSize: Int = ExternalUcxConf.MIN_REGISTRATION_SIZE_DEFAULT
+  lazy val maxBufferSize: Long = ExternalUcxConf.MAX_BUFFER_SIZE_DEFAULT
+  lazy val minRegistrationSize: Long = ExternalUcxConf.MIN_REGISTRATION_SIZE_DEFAULT
+  lazy val maxRegistrationSize: Long = ExternalUcxConf.MAX_REGISTRATION_SIZE_DEFAULT
   lazy val listenerAddress: String = ExternalUcxConf.SOCKADDR_DEFAULT
   lazy val useWakeup: Boolean = ExternalUcxConf.WAKEUP_FEATURE_DEFAULT
   lazy val numIoThreads: Int = ExternalUcxConf.NUM_IO_THREADS_DEFAULT
@@ -28,10 +30,16 @@ object ExternalUcxConf {
   lazy val PREALLOCATE_BUFFERS_DEFAULT = Map.empty[Long, Int]
 
   lazy val MIN_BUFFER_SIZE_KEY = getUcxConf("memory.minBufferSize")
-  lazy val MIN_BUFFER_SIZE_DEFAULT = 4096
+  lazy val MIN_BUFFER_SIZE_DEFAULT = 4096L
+
+  lazy val MAX_BUFFER_SIZE_KEY = getUcxConf("memory.maxBufferSize")
+  lazy val MAX_BUFFER_SIZE_DEFAULT = Int.MaxValue.toLong
 
   lazy val MIN_REGISTRATION_SIZE_KEY = getUcxConf("memory.minAllocationSize")
-  lazy val MIN_REGISTRATION_SIZE_DEFAULT = 1024 * 1024
+  lazy val MIN_REGISTRATION_SIZE_DEFAULT = 1L * 1024 * 1024
+
+  lazy val MAX_REGISTRATION_SIZE_KEY = getUcxConf("memory.maxAllocationSize")
+  lazy val MAX_REGISTRATION_SIZE_DEFAULT = 16L * 1024 * 1024 * 1024
 
   lazy val SOCKADDR_KEY = getUcxConf("listener.sockaddr")
   lazy val SOCKADDR_DEFAULT = "0.0.0.0:0"

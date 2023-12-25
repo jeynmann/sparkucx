@@ -217,8 +217,8 @@ case class ExternalUcxClientWorker(val worker: UcpWorker,
               override def onSuccess(r: UcpRequest): Unit = {
                 request.completed = true
                 stats.endTime = System.nanoTime()
-                logDebug(s"Received rndv data of size: ${mem.size} for tag $i in " +
-                  s"${stats.getElapsedTimeNs} ns " +
+                logDebug(s"Received rndv data of size: ${ucpAmData.getLength} " +
+                  s"for tag $i in ${stats.getElapsedTimeNs} ns " +
                   s"time from amHandle: ${System.nanoTime() - stats.amHandleTime} ns")
                 for (b <- 0 until numBlocks) {
                   val blockSize = headerBuffer.getInt

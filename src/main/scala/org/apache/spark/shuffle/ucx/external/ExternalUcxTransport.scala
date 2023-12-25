@@ -4,18 +4,18 @@
  */
 package org.apache.spark.shuffle.ucx
 
-import org.apache.spark.shuffle.ucx.memory.UcxHostBounceBuffersPool
+import org.apache.spark.shuffle.ucx.memory.UcxLimitedMemPool
 import org.apache.spark.shuffle.utils.UcxLogging
 import org.openucx.jucx.ucp._
 
 import java.nio.ByteBuffer
 import java.util.concurrent.{Executors, ExecutorService}
 
-class ExternalUcxTransport(var ucxShuffleConf: ExternalUcxConf) extends UcxLogging {
+class ExternalUcxTransport(val ucxShuffleConf: ExternalUcxConf) extends UcxLogging {
   @volatile protected var initialized: Boolean = false
   @volatile protected var running: Boolean = true
   private[ucx] var ucxContext: UcpContext = _
-  private[ucx] var hostBounceBufferMemoryPool: UcxHostBounceBuffersPool = _
+  private[ucx] var hostBounceBufferMemoryPool: UcxLimitedMemPool = _
   private[ucx] val ucpWorkerParams = new UcpWorkerParams().requestThreadSafety()
   private[ucx] var progressExecutors: ExecutorService = _
 
@@ -37,7 +37,12 @@ class ExternalUcxTransport(var ucxShuffleConf: ExternalUcxConf) extends UcxLoggi
   }
 
   def initMemoryPool(): Unit = {
-    hostBounceBufferMemoryPool = new UcxHostBounceBuffersPool(ucxContext)
+    hostBounceBufferMemoryPool = new UcxLimitedMemPool(ucxContext)
+    hostBounceBufferMemoryPool.init(ucxShuffleConf.minBufferSize,
+                                    ucxShuffleConf.maxBufferSize,
+                                    ucxShuffleConf.minRegistrationSize,
+                                    ucxShuffleConf.maxRegistrationSize,
+                                    ucxShuffleConf.preallocateBuffersMap)
   }
 
   def initProgressPool(threadNum: Int): Unit = {

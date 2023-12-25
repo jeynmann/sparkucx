@@ -36,14 +36,31 @@ class ExternalUcxClientConf(val sparkConf: SparkConf) extends SparkConf with Ext
   override lazy val minBufferSize: Long = sparkConf.getSizeAsBytes(MIN_BUFFER_SIZE.key,
     MIN_BUFFER_SIZE.defaultValue.get)
 
+  private lazy val MAX_BUFFER_SIZE = ConfigBuilder(ExternalUcxConf.MAX_BUFFER_SIZE_KEY)
+    .doc("Maximal buffer size in memory pool.")
+    .bytesConf(ByteUnit.BYTE)
+    .createWithDefault(ExternalUcxConf.MAX_BUFFER_SIZE_DEFAULT)
+
+  override lazy val maxBufferSize: Long = sparkConf.getSizeAsBytes(MAX_BUFFER_SIZE.key,
+    MAX_BUFFER_SIZE.defaultValue.get)
+
   private lazy val MIN_REGISTRATION_SIZE =
     ConfigBuilder(ExternalUcxConf.MIN_REGISTRATION_SIZE_KEY)
     .doc("Minimal memory registration size in memory pool.")
     .bytesConf(ByteUnit.BYTE)
     .createWithDefault(ExternalUcxConf.MIN_REGISTRATION_SIZE_DEFAULT)
 
-  override lazy val minRegistrationSize: Int = sparkConf.getSizeAsBytes(MIN_REGISTRATION_SIZE.key,
+  override lazy val minRegistrationSize: Long = sparkConf.getSizeAsBytes(MIN_REGISTRATION_SIZE.key,
     MIN_REGISTRATION_SIZE.defaultValue.get).toInt
+
+  private lazy val MAX_REGISTRATION_SIZE =
+    ConfigBuilder(ExternalUcxConf.MAX_REGISTRATION_SIZE_KEY)
+    .doc("Maximal memory registration size in memory pool.")
+    .bytesConf(ByteUnit.BYTE)
+    .createWithDefault(ExternalUcxConf.MAX_REGISTRATION_SIZE_DEFAULT)
+
+  override lazy val maxRegistrationSize: Long = sparkConf.getSizeAsBytes(MAX_REGISTRATION_SIZE.key,
+    MAX_REGISTRATION_SIZE.defaultValue.get).toInt
 
   private lazy val SOCKADDR =
     ConfigBuilder(ExternalUcxConf.SOCKADDR_KEY)

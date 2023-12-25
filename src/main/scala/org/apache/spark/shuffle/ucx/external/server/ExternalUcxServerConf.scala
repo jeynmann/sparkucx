@@ -23,9 +23,17 @@ class ExternalUcxServerConf(val yarnConf: Configuration) extends ExternalUcxConf
     ExternalUcxConf.MIN_BUFFER_SIZE_KEY,
     ExternalUcxConf.MIN_BUFFER_SIZE_DEFAULT)
 
-  override lazy val minRegistrationSize: Int = yarnConf.getInt(
+  override lazy val maxBufferSize: Long = yarnConf.getLong(
+    ExternalUcxConf.MAX_BUFFER_SIZE_KEY,
+    ExternalUcxConf.MAX_BUFFER_SIZE_DEFAULT)
+
+  override lazy val minRegistrationSize: Long = yarnConf.getLong(
     ExternalUcxConf.MIN_REGISTRATION_SIZE_KEY,
     ExternalUcxConf.MIN_REGISTRATION_SIZE_DEFAULT)
+
+  override lazy val maxRegistrationSize: Long = yarnConf.getLong(
+    ExternalUcxConf.MAX_REGISTRATION_SIZE_KEY,
+    ExternalUcxConf.MAX_REGISTRATION_SIZE_DEFAULT)
 
   override lazy val listenerAddress: String = yarnConf.get(
     ExternalUcxConf.SOCKADDR_KEY,

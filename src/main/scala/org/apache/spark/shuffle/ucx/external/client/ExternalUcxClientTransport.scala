@@ -6,7 +6,7 @@ import org.apache.spark.network.netty.SparkTransportConf
 import org.apache.spark.network.buffer.{ManagedBuffer, NioManagedBuffer}
 import org.apache.spark.network.shuffle.{BlockFetchingListener, DownloadFileManager}
 import org.apache.spark.shuffle.utils.{UcxLogging, UnsafeUtils}
-import org.apache.spark.shuffle.ucx.memory.UcxHostBounceBuffersPool
+import org.apache.spark.shuffle.ucx.memory.UcxLimitedMemPool
 import org.apache.spark.shuffle.ucx.utils.{SerializableDirectBuffer, SerializationUtils}
 import org.apache.spark.storage.BlockManagerId
 import org.openucx.jucx.ucp._
@@ -76,12 +76,6 @@ extends ExternalUcxTransport(clientConf) with UcxLogging {
         allocatedWorker.foreach(_.close)
       }
     }
-  }
-  override def initMemoryPool(): Unit = {
-    hostBounceBufferMemoryPool = new UcxHostBounceBuffersPool(ucxContext)
-    hostBounceBufferMemoryPool.init(clientConf.minRegistrationSize,
-      clientConf.minBufferSize,
-      clientConf.preallocateBuffersMap)
   }
 
   // @inline

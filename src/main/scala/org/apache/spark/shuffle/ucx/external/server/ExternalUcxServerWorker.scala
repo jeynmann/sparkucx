@@ -14,7 +14,7 @@ import org.openucx.jucx.ucs.UcsConstants
 import org.openucx.jucx.ucs.UcsConstants.MEMORY_TYPE
 import org.openucx.jucx.{UcxCallback, UcxException, UcxUtils}
 import org.apache.spark.network.buffer.ManagedBuffer
-import org.apache.spark.shuffle.ucx.memory.UcxBounceBufferMemoryBlock
+import org.apache.spark.shuffle.ucx.memory.UcxLinkedMemBlock
 import org.apache.spark.shuffle.utils.{UnsafeUtils, UcxLogging}
 
 /**
@@ -96,10 +96,9 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
     }
 
     val tagAndSizes = UnsafeUtils.INT_SIZE + UnsafeUtils.INT_SIZE * blocks.size
-    val resultMemory = memPool.get(tagAndSizes + blocks.map(x => x._1).sum)
-      .asInstanceOf[UcxBounceBufferMemoryBlock]
-    val resultBuffer = UcxUtils.getByteBufferView(resultMemory.address,
-      resultMemory.size)
+    val msgSize = tagAndSizes + blocks.map(x => x._1).sum
+    val resultMemory = memPool.get(msgSize).asInstanceOf[UcxLinkedMemBlock]
+    val resultBuffer = UcxUtils.getByteBufferView(resultMemory.address, msgSize)
     val blockCh = blocks.map(x => Channels.newChannel(x._2.createInputStream()))
 
     resultBuffer.putInt(replyTag)
@@ -116,15 +115,16 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
     val ep = getConnectionBack(clientWorker)
     worker.synchronized {
       ep.sendAmNonBlocking(1, resultMemory.address, tagAndSizes,
-      resultMemory.address + tagAndSizes, resultMemory.size - tagAndSizes, 0, new UcxCallback {
+      resultMemory.address + tagAndSizes, msgSize - tagAndSizes, 0, new UcxCallback {
         override def onSuccess(request: UcpRequest): Unit = {
-          logTrace(s"Sent to ${clientWorker} ${blocks.length} blocks of size: ${resultMemory.size} " +
+          logTrace(s"Sent to ${clientWorker} ${blocks.length} blocks of size: ${msgSize} " +
           s"tag $replyTag in ${System.nanoTime() - startTime} ns.")
-          memPool.put(resultMemory)
+          resultMemory.close()
         }
-
+        
         override def onError(ucsStatus: Int, errorMsg: String): Unit = {
           logError(s"Failed to send $errorMsg")
+          resultMemory.close()
         }
       }, new UcpRequestParams().setMemoryType(UcsConstants.MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
       .setMemoryHandle(resultMemory.memory))
@@ -146,8 +146,8 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
 
     def send(workerWrapper: ExternalUcxServerWorker, currentId: Int,
              sendLatch: CountDownLatch): Unit = try {
-      val mem = memPool.get(maxReplySize).asInstanceOf[UcxBounceBufferMemoryBlock]
-      val buffer = UcxUtils.getByteBufferView(mem.address, maxReplySize)
+      val mem = memPool.get(maxReplySize).asInstanceOf[UcxLinkedMemBlock]
+      val buffer = mem.toByteBuffer()
 
       val remaining = blockSlice.length - currentId - 1
       val currentOffset = blockSlice(currentId)
