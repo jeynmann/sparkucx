@@ -448,10 +448,10 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
     }
 
     val tagAndSizes = UnsafeUtils.INT_SIZE + UnsafeUtils.INT_SIZE * blocks.length
-    val resultMemory = transport.hostBounceBufferMemoryPool.get(tagAndSizes + blocks.map(_.getSize).sum)
+    val msgSize = tagAndSizes + blocks.map(_.getSize).sum
+    val resultMemory = transport.hostBounceBufferMemoryPool.get(msgSize)
       .asInstanceOf[UcxBounceBufferMemoryBlock]
-    val resultBuffer = UcxUtils.getByteBufferView(resultMemory.address,
-      resultMemory.size)
+    val resultBuffer = UcxUtils.getByteBufferView(resultMemory.address, msgSize)
     resultBuffer.putInt(replyTag)
 
     var offset = 0
@@ -483,10 +483,10 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
     val ep = connections(replyExecutor)
     worker.synchronized {
       ep.sendAmNonBlocking(1, resultMemory.address, tagAndSizes,
-        resultMemory.address + tagAndSizes, resultMemory.size - tagAndSizes,
+        resultMemory.address + tagAndSizes, msgSize - tagAndSizes,
         0, new UcxCallback {
           override def onSuccess(request: UcpRequest): Unit = {
-            logTrace(s"Sent ${blocks.length} blocks of size: ${resultMemory.size} " +
+            logTrace(s"Sent ${blocks.length} blocks of size: ${msgSize} " +
               s"to tag $replyTag in ${System.nanoTime() - startTime} ns read " +
               s"${startTime - readTime} ns")
             transport.hostBounceBufferMemoryPool.put(resultMemory)
