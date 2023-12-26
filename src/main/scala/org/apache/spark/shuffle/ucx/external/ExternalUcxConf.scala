@@ -25,7 +25,7 @@ trait ExternalUcxConf {
 }
 
 object ExternalUcxConf {
-  protected def getUcxConf(name: String) = s"spark.shuffle.ucx.$name"
+  private[ucx] def getUcxConf(name: String) = s"spark.shuffle.ucx.$name"
 
   lazy val PREALLOCATE_BUFFERS_KEY = getUcxConf("memory.preAllocateBuffers")
   lazy val PREALLOCATE_BUFFERS_DEFAULT = ""

@@ -59,24 +59,9 @@ class ExternalUcxServerConf(val yarnConf: Configuration) extends ExternalUcxConf
     ExternalUcxServerConf.SPARK_UCX_SHUFFLE_EPS_NUM_DEFAULT)
 }
 
-object ExternalUcxServerConf extends ExternalUcxConf {
-  lazy val SPARK_UCX_SHUFFLE_EPS_NUM_KEY = "spark.shuffle.ucx.eps.num"
+object ExternalUcxServerConf {
+  lazy val SPARK_UCX_SHUFFLE_SERVICE_TCP_PORT_KEY = ExternalUcxConf.getUcxConf("service.tcp.port")
+
+  lazy val SPARK_UCX_SHUFFLE_EPS_NUM_KEY = ExternalUcxConf.getUcxConf("eps.num")
   lazy val SPARK_UCX_SHUFFLE_EPS_NUM_DEFAULT = 16777216
-
-  // Copied from spark ExternalShuffleService.java
-
-  // Port on which the shuffle server listens for fetch requests
-  lazy val SPARK_SHUFFLE_SERVICE_PORT_KEY = "spark.shuffle.service.port"
-  lazy val DEFAULT_SPARK_SHUFFLE_SERVICE_PORT = 7337
-
-  // Whether the shuffle server should authenticate fetch requests
-  lazy val SPARK_AUTHENTICATE_KEY = "spark.authenticate"
-  lazy val DEFAULT_SPARK_AUTHENTICATE = false
-
-  lazy val RECOVERY_FILE_NAME = "registeredExecutors.ldb"
-  lazy val SECRETS_RECOVERY_FILE_NAME = "sparkShuffleRecovery.ldb"
-
-  // Whether failure during service initialization should stop the NM.
-  lazy val STOP_ON_FAILURE_KEY = "spark.yarn.shuffle.stopOnFailure"
-  lazy val DEFAULT_STOP_ON_FAILURE = false
 }
