@@ -292,12 +292,12 @@ case class UcxLimitedMemPool(ucxContext: UcpContext)
     maxBufferSize = roundUpToTheNextPowerOf2(maxBufSize)
     minRegistrationSize = roundUpToTheNextPowerOf2(minRegSize)
     maxRegistrationSize = roundUpToTheNextPowerOf2(maxRegSize * maxMemFactor)
-    val memRange = (1 until 29).map(1 << _).reverse
+    val memRange = (1 until 47).map(1L << _).reverse
     val minLimit = (maxRegistrationSize / maxBufferSize).max(1L)
                                                         .min(Int.MaxValue)
                                                         .toInt
-    logInfo(s"UcxLimitedMemPool limit $minLimit buf ($minBufferSize, $maxBufferSize)" +
-            s"reg ($minRegistrationSize, $maxRegistrationSize)")
+    logInfo(s"limit $minLimit buf ($minBufferSize, $maxBufferSize) reg " +
+            s"($minRegistrationSize, $maxRegistrationSize)")
     for (i <- 0 until memRange.length by memGroupSize) {
       var superAllocator: UcxLinkedMemAllocator = null
       for (j <- 0 until memGroupSize.min(memRange.length - i)) {
@@ -346,6 +346,8 @@ case class UcxLimitedMemPool(ucxContext: UcpContext)
   }
 
   def get(size: Long): MemoryBlock = {
-    allocatorMap.get(roundUpToTheNextPowerOf2(size)).allocate()
+    allocatorMap.computeIfAbsent(roundUpToTheNextPowerOf2(size), s =>
+      new UcxLinkedMemAllocator(s, minRegistrationSize, null, ucxContext))
+      .allocate()
   }
 }
