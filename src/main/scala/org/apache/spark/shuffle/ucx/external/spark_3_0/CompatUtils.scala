@@ -1,7 +1,8 @@
 package org.apache.spark.shuffle.ucx
 
+import org.apache.spark.shuffle.utils.UcxThreadFactory
 import java.nio.ByteBuffer
-import java.util.concurrent.{ForkJoinPool, ForkJoinWorkerThread}
+import java.util.concurrent.{Executors, ExecutorService, ForkJoinPool, ForkJoinWorkerThread}
 
 case class UcxShuffleBlockId(shuffleId: Int, mapId: Long, reduceId: Int) extends BlockId {
   override def serializedSize: Int = 16

@@ -40,7 +40,7 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
     worker.synchronized {
       shuffleClients.remove(workerId).map(ep =>
         try {
-          ep.closeNonBlockingForce()
+          ep.close()
         } catch {
           case e: Exception => logInfo(s"$workerId close $e")
         })
