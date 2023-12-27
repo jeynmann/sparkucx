@@ -311,7 +311,7 @@ case class UcxLimitedMemPool(ucxContext: UcpContext)
             val memLimit = (maxRegistrationSize / memSize).min(minLimit << i)
                                                           .max(1L)
                                                           .min(Int.MaxValue)
-            logInfo(s"mem $memSize limit $memLimit")
+            logDebug(s"mem $memSize limit $memLimit")
             current.setLimit(memLimit.toInt)
           }
           superAllocator = current
