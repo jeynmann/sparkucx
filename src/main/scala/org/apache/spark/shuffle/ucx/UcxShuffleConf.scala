@@ -30,6 +30,14 @@ class UcxShuffleConf(sparkConf: SparkConf) extends SparkConf {
       }).toMap
   }
 
+  private lazy val MEMORY_LIMIT = ConfigBuilder(getUcxConf("memory.limit"))
+    .doc("Enable memory pool size limit.")
+    .booleanConf
+    .createWithDefault(false)
+
+  lazy val memoryLimit: Boolean = sparkConf.getBoolean(MEMORY_LIMIT.key,
+    MEMORY_LIMIT.defaultValue.get)
+
   private lazy val MIN_BUFFER_SIZE = ConfigBuilder(getUcxConf("memory.minBufferSize"))
     .doc("Minimal buffer size in memory pool.")
     .bytesConf(ByteUnit.BYTE)

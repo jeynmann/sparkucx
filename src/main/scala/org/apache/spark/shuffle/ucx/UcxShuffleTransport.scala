@@ -102,20 +102,23 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
 
     ucxContext = new UcpContext(params)
     globalWorker = ucxContext.newWorker(ucpWorkerParams)
+    val maxSizeInFlight = ucxShuffleConf.getSparkConf.getSizeAsBytes("spark.reducer.maxSizeInFlight", "48m")
     val serverMaxRegSize = (ucxShuffleConf.maxRegistrationSize / 2L).min(
-      ucxShuffleConf.maxReplySize * ucxShuffleConf.numListenerThreads.toLong *
-      4L)
+      maxSizeInFlight.max(ucxShuffleConf.maxReplySize * 4L) *
+      ucxShuffleConf.numListenerThreads.toLong)
     val clientMaxRegSize = ucxShuffleConf.maxRegistrationSize - serverMaxRegSize
     hostBounceBufferMemoryPool = new UcxLimitedMemPool(ucxContext)
     hostBounceBufferMemoryPool.init(
       ucxShuffleConf.minBufferSize, ucxShuffleConf.maxBufferSize,
       ucxShuffleConf.minRegistrationSize, clientMaxRegSize,
-      ucxShuffleConf.preallocateBuffersMap)
+      ucxShuffleConf.preallocateBuffersMap,
+      ucxShuffleConf.memoryLimit)
     serverBounceBufferMemoryPool = new UcxLimitedMemPool(ucxContext)
     serverBounceBufferMemoryPool.init(
       ucxShuffleConf.minBufferSize, ucxShuffleConf.maxBufferSize,
       ucxShuffleConf.minRegistrationSize, serverMaxRegSize,
-      ucxShuffleConf.preallocateBuffersMap)
+      ucxShuffleConf.preallocateBuffersMap,
+      ucxShuffleConf.memoryLimit)
 
     allocatedServerWorkers = new Array[UcxWorkerWrapper](ucxShuffleConf.numListenerThreads)
     logInfo(s"Allocating ${ucxShuffleConf.numListenerThreads} server workers")

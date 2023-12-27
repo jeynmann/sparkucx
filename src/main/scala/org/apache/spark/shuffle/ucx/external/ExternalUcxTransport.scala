@@ -42,7 +42,8 @@ class ExternalUcxTransport(val ucxShuffleConf: ExternalUcxConf) extends UcxLoggi
                                     ucxShuffleConf.maxBufferSize,
                                     ucxShuffleConf.minRegistrationSize,
                                     ucxShuffleConf.maxRegistrationSize,
-                                    ucxShuffleConf.preallocateBuffersMap)
+                                    ucxShuffleConf.preallocateBuffersMap,
+                                    ucxShuffleConf.memoryLimit)
   }
 
   def initProgressPool(threadNum: Int): Unit = {

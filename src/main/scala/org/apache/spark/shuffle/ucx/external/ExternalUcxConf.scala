@@ -10,6 +10,7 @@ package org.apache.spark.shuffle.ucx
 trait ExternalUcxConf {
   lazy val preallocateBuffersMap: Map[Long, Int] =
     ExternalUcxConf.preAllocateConfToMap(ExternalUcxConf.PREALLOCATE_BUFFERS_DEFAULT)
+  lazy val memoryLimit: Boolean = ExternalUcxConf.MEMORY_LIMIT_DEFAULT
   lazy val minBufferSize: Long = ExternalUcxConf.MIN_BUFFER_SIZE_DEFAULT
   lazy val maxBufferSize: Long = ExternalUcxConf.MAX_BUFFER_SIZE_DEFAULT
   lazy val minRegistrationSize: Long = ExternalUcxConf.MIN_REGISTRATION_SIZE_DEFAULT
@@ -29,6 +30,9 @@ object ExternalUcxConf {
 
   lazy val PREALLOCATE_BUFFERS_KEY = getUcxConf("memory.preAllocateBuffers")
   lazy val PREALLOCATE_BUFFERS_DEFAULT = ""
+
+  lazy val MEMORY_LIMIT_KEY = getUcxConf("memory.limit")
+  lazy val MEMORY_LIMIT_DEFAULT = false
 
   lazy val MIN_BUFFER_SIZE_KEY = getUcxConf("memory.minBufferSize")
   lazy val MIN_BUFFER_SIZE_DEFAULT = 4096L

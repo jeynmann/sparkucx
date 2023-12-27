@@ -286,18 +286,19 @@ case class UcxLimitedMemPool(ucxContext: UcpContext)
   private[memory] var minRegistrationSize: Long = 1024L * 1024
   private[memory] var maxRegistrationSize: Long = 16L * 1024 * 1024 * 1024
 
-  def init(minBufSize: Long, maxBufSize: Long, minRegSize: Long, maxRegSize: Long, preAllocMap: Map[Long, Int]):
+  def init(minBufSize: Long, maxBufSize: Long, minRegSize: Long, maxRegSize: Long, preAllocMap: Map[Long, Int], limit: Boolean):
     Unit = {
     minBufferSize = roundUpToTheNextPowerOf2(minBufSize)
     maxBufferSize = roundUpToTheNextPowerOf2(maxBufSize)
     minRegistrationSize = roundUpToTheNextPowerOf2(minRegSize)
     maxRegistrationSize = roundUpToTheNextPowerOf2(maxRegSize * maxMemFactor)
+
     val memRange = (1 until 47).map(1L << _).reverse
     val minLimit = (maxRegistrationSize / maxBufferSize).max(1L)
                                                         .min(Int.MaxValue)
-                                                        .toInt
-    logInfo(s"limit $minLimit buf ($minBufferSize, $maxBufferSize) reg " +
+    logInfo(s"limit $limit buf ($minBufferSize, $maxBufferSize) reg " +
             s"($minRegistrationSize, $maxRegistrationSize)")
+
     for (i <- 0 until memRange.length by memGroupSize) {
       var superAllocator: UcxLinkedMemAllocator = null
       for (j <- 0 until memGroupSize.min(memRange.length - i)) {
@@ -305,12 +306,16 @@ case class UcxLimitedMemPool(ucxContext: UcpContext)
         if ((memSize >= minBufferSize) && (memSize <= maxBufferSize)) {
           val current = new UcxLinkedMemAllocator(memSize, minRegistrationSize,
                                                   superAllocator, ucxContext)
+          // set limit to top allocator
+          if (limit && (superAllocator == null)) {
+            val memLimit = (maxRegistrationSize / memSize).min(minLimit << i)
+                                                          .max(1L)
+                                                          .min(Int.MaxValue)
+            logInfo(s"mem $memSize limit $memLimit")
+            current.setLimit(memLimit.toInt)
+          }
           superAllocator = current
           allocatorMap.put(memSize, current)
-          // set limit to top allocator
-          if (superAllocator == null) {
-            current.setLimit(minLimit << i)
-          }
         }
       }
     }
@@ -346,8 +351,6 @@ case class UcxLimitedMemPool(ucxContext: UcpContext)
   }
 
   def get(size: Long): MemoryBlock = {
-    allocatorMap.computeIfAbsent(roundUpToTheNextPowerOf2(size), s =>
-      new UcxLinkedMemAllocator(s, minRegistrationSize, null, ucxContext))
-      .allocate()
+    allocatorMap.get(roundUpToTheNextPowerOf2(size)).allocate()
   }
 }
