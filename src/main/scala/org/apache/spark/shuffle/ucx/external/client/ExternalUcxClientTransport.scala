@@ -20,6 +20,8 @@ extends ExternalUcxTransport(clientConf) with UcxLogging {
   private[spark] val serverPort = clientConf.ucxServerPort
   private[spark] lazy val sparkTransportConf = SparkTransportConf.fromSparkConf(
     clientConf.getSparkConf, "shuffle", clientConf.numWorkers)
+  private[spark] lazy val maxBlocksPerRequest = maxBlocksInAmHeader.min(
+    clientConf.maxBlocksPerRequest).toInt
 
   private[ucx] lazy val currentWorkerId = new AtomicInteger()
   private[ucx] lazy val workerLocal = new ThreadLocal[ExternalUcxClientWorker]
@@ -95,6 +97,10 @@ extends ExternalUcxTransport(clientConf) with UcxLogging {
         worker
       }
     }
+  }
+
+  def maxBlocksInAmHeader(): Long = {
+    (allocatedWorker(0).worker.getMaxAmHeaderSize - 2) / UnsafeUtils.INT_SIZE
   }
 
   def connect(shuffleServer: SerializableDirectBuffer): Unit = {

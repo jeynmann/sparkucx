@@ -2,7 +2,7 @@
 * Copyright (C) Mellanox Technologies Ltd. 2019. ALL RIGHTS RESERVED.
 * See file LICENSE for terms.
 */
-package org.apache.spark.shuffle.compat.spark_2_4
+package org.apache.spark.shuffle.compat.spark_3_0
 
 import java.io.InputStream
 import java.util.concurrent.LinkedBlockingQueue
