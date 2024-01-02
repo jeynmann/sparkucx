@@ -69,6 +69,8 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
     "UcxListenerThread", ucxShuffleConf.numListenerThreads)
   private[spark] lazy val sparkTransportConf = SparkTransportConf.fromSparkConf(
     ucxShuffleConf, "shuffle", ucxShuffleConf.numWorkers)
+  private[spark] lazy val maxBlocksPerRequest = maxBlocksInAmHeader.min(
+    ucxShuffleConf.maxBlocksPerRequest).toInt
 
   private val errorHandler = new UcpEndpointErrorHandler {
     override def onError(ucpEndpoint: UcpEndpoint, errorCode: Int, errorString: String): Unit = {
@@ -189,6 +191,10 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
         ucxContext = null
       }
     }
+  }
+
+  def maxBlocksInAmHeader(): Long = {
+    (globalWorker.getMaxAmHeaderSize - 2) / UnsafeUtils.INT_SIZE
   }
 
   /**

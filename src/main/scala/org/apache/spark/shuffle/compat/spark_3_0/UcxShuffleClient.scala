@@ -14,7 +14,6 @@ import org.apache.spark.storage.{BlockId => SparkBlockId, ShuffleBlockId => Spar
 import java.nio.ByteBuffer
 
 class UcxShuffleClient(val transport: UcxShuffleTransport, mapId2PartitionId: Map[Long, Int]) extends BlockStoreClient with Logging {
-  private lazy val maxBlocksPerRequest = transport.ucxShuffleConf.maxBlocksPerRequest
 
   override def fetchBlocks(host: String, port: Int, execId: String, blockIds: Array[String],
                            listener: BlockFetchingListener,
@@ -32,6 +31,7 @@ class UcxShuffleClient(val transport: UcxShuffleTransport, mapId2PartitionId: Ma
                                           blockId.reduceId)
         callbacks(i) = new UcxFetchCallBack(blockIds(i), listener)
       }
+      val maxBlocksPerRequest = transport.maxBlocksPerRequest
       for (i <- 0 until blockIds.length by maxBlocksPerRequest) {
         val j = i + maxBlocksPerRequest
         transport.fetchBlocksByBlockIds(execId.toLong, ucxBlockIds.slice(i, j),
