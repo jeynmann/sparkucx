@@ -241,15 +241,6 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
     val headerSize = UnsafeUtils.INT_SIZE + UnsafeUtils.LONG_SIZE
     val ep = getConnection(executorId)
 
-    if (worker.getMaxAmHeaderSize <=
-      headerSize + UnsafeUtils.INT_SIZE * blockIds.length) {
-      val (b1, b2) = blockIds.splitAt(blockIds.length / 2)
-      val (c1, c2) = callbacks.splitAt(callbacks.length / 2)
-      val r1 = fetchBlocksByBlockIds(executorId, b1, resultBufferAllocator, c1)
-      val r2 = fetchBlocksByBlockIds(executorId, b2, resultBufferAllocator, c2)
-      return r1 ++ r2
-    }
-
     val t = tag.incrementAndGet()
 
     val buffer = Platform.allocateDirectBuffer(headerSize + blockIds.map(_.serializedSize).sum)

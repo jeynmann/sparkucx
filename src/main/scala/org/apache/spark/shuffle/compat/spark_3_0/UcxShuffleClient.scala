@@ -16,13 +16,6 @@ class UcxShuffleClient(val transport: UcxShuffleTransport, mapId2PartitionId: Ma
   override def fetchBlocks(host: String, port: Int, execId: String, blockIds: Array[String],
                            listener: BlockFetchingListener,
                            downloadFileManager: DownloadFileManager): Unit = {
-    if (blockIds.length > transport.ucxShuffleConf.maxBlocksPerRequest) {
-      val (b1, b2) = blockIds.splitAt(blockIds.length / 2)
-      fetchBlocks(host, port, execId, b1, listener, downloadFileManager)
-      fetchBlocks(host, port, execId, b2, listener, downloadFileManager)
-      return
-    }
-
     val ucxBlockIds = Array.ofDim[UcxShuffleBockId](blockIds.length)
     val callbacks = Array.ofDim[OperationCallback](blockIds.length)
     for (i <- blockIds.indices) {
@@ -39,9 +32,14 @@ class UcxShuffleClient(val transport: UcxShuffleTransport, mapId2PartitionId: Ma
         })
       }
     }
+    val maxBlocksPerRequest= transport.maxBlocksPerRequest
     val resultBufferAllocator = (size: Long) => transport.hostBounceBufferMemoryPool.get(size)
-    transport.fetchBlocksByBlockIds(execId.toLong, ucxBlockIds, resultBufferAllocator, callbacks)
-    transport.progress()
+    for (i <- 0 until blockIds.length by maxBlocksPerRequest) {
+      val j = i + maxBlocksPerRequest
+      transport.fetchBlocksByBlockIds(execId.toLong, ucxBlockIds.slice(i, j),
+                                      resultBufferAllocator,
+                                      callbacks.slice(i, j))
+    }
   }
 
   override def close(): Unit = {

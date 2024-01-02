@@ -27,8 +27,14 @@ class UcxShuffleClient(val transport: UcxShuffleTransport) extends ShuffleClient
         })
       }
     }
+    val maxBlocksPerRequest= transport.maxBlocksPerRequest
     val resultBufferAllocator = (size: Long) => transport.hostBounceBufferMemoryPool.get(size)
-    transport.fetchBlocksByBlockIds(execId.toLong, ucxBlockIds, resultBufferAllocator, callbacks)
+    for (i <- 0 until blockIds.length by maxBlocksPerRequest) {
+      val j = i + maxBlocksPerRequest
+      transport.fetchBlocksByBlockIds(execId.toLong, ucxBlockIds.slice(i, j),
+                                      resultBufferAllocator,
+                                      callbacks.slice(i, j))
+    }
   }
 
   override def close(): Unit = {
