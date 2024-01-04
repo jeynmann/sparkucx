@@ -7,7 +7,7 @@ package org.apache.spark.shuffle.ucx.rpc
 import org.openucx.jucx.ucp.{UcpAmData, UcpConstants, UcpEndpoint, UcpWorker}
 import org.openucx.jucx.ucs.UcsConstants
 import org.apache.spark.internal.Logging
-import org.apache.spark.shuffle.ucx.UcxShuffleTransport
+import org.apache.spark.shuffle.ucx.{UcxShuffleTransport, UcxShuffleBockId}
 import org.apache.spark.shuffle.utils.UnsafeUtils
 
 class GlobalWorkerRpcThread(globalWorker: UcpWorker, transport: UcxShuffleTransport)
@@ -34,6 +34,15 @@ class GlobalWorkerRpcThread(globalWorker: UcpWorker, transport: UcxShuffleTransp
     transport.connectServerWorkers(executorId, workerAddress)
     UcsConstants.STATUS.UCS_OK
   }, UcpConstants.UCP_AM_FLAG_WHOLE_MSG)
+
+  globalWorker.setAmRecvHandler(2, (headerAddress: Long, headerSize: Long, amData: UcpAmData, _: UcpEndpoint) => {
+    val header = UnsafeUtils.getByteBufferView(headerAddress, headerSize.toInt)
+    val replyTag = header.getInt
+    val replyExecutor = header.getLong
+    val blockId = UcxShuffleBockId.deserialize(header)
+    transport.handleFetchBlockStream(replyTag, blockId, replyExecutor)
+    UcsConstants.STATUS.UCS_OK
+  }, UcpConstants.UCP_AM_FLAG_WHOLE_MSG )
 
   override def run(): Unit = {
     if (transport.ucxShuffleConf.useWakeup) {
