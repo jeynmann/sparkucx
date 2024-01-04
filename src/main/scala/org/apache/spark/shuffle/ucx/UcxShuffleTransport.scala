@@ -4,6 +4,7 @@
  */
 package org.apache.spark.shuffle.ucx
 
+import org.apache.spark.network.netty.SparkTransportConf
 import org.apache.spark.SparkEnv
 import org.apache.spark.internal.Logging
 import org.apache.spark.util.ThreadUtils
@@ -89,10 +90,11 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
   private var progressThread: Thread = _
   var hostBounceBufferMemoryPool: UcxHostBounceBuffersPool = _
 
-  private[ucx] lazy val replyWorkersThreadPool = 
+  private[spark] lazy val replyWorkersThreadPool = 
     ThreadUtils.newDaemonFixedThreadPool(ucxShuffleConf.numListenerThreads,
                                          "UcxListenerThread")
-
+  private[spark] lazy val sparkTransportConf = SparkTransportConf.fromSparkConf(
+    ucxShuffleConf.getSparkConf, "shuffle", ucxShuffleConf.numWorkers)
   private[spark] lazy val maxBlocksPerRequest = maxBlocksInAmHeader.min(
     ucxShuffleConf.maxBlocksPerRequest).toInt
 
