@@ -6,6 +6,7 @@ package org.apache.spark.shuffle.ucx
 
 import org.apache.spark.SparkEnv
 import org.apache.spark.internal.Logging
+import org.apache.spark.util.ThreadUtils
 import org.apache.spark.shuffle.ucx.memory.UcxHostBounceBuffersPool
 import org.apache.spark.shuffle.ucx.rpc.GlobalWorkerRpcThread
 import org.apache.spark.shuffle.ucx.utils.{SerializableDirectBuffer, SerializationUtils}
@@ -87,6 +88,10 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
   private val registeredBlocks = new TrieMap[BlockId, Block]
   private var progressThread: Thread = _
   var hostBounceBufferMemoryPool: UcxHostBounceBuffersPool = _
+
+  private[ucx] lazy val replyWorkersThreadPool = 
+    ThreadUtils.newDaemonFixedThreadPool(ucxShuffleConf.numListenerThreads,
+                                         "UcxListenerThread")
 
   private[spark] lazy val maxBlocksPerRequest = maxBlocksInAmHeader.min(
     ucxShuffleConf.maxBlocksPerRequest).toInt
@@ -284,22 +289,28 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
   }
 
   def handleFetchBlockRequest(replyTag: Int, amData: UcpAmData, replyExecutor: Long): Unit = {
-    val buffer = UnsafeUtils.getByteBufferView(amData.getDataAddress, amData.getLength.toInt)
-    val blockIds = mutable.ArrayBuffer.empty[BlockId]
+    replyWorkersThreadPool.submit(new Runnable {
+      override def run(): Unit = {
+        val buffer = UnsafeUtils.getByteBufferView(amData.getDataAddress,
+                                                   amData.getLength.toInt)
+        val blockIds = mutable.ArrayBuffer.empty[BlockId]
 
-    // 1. Deserialize blockIds from header
-    while (buffer.remaining() > 0) {
-      val blockId = UcxShuffleBockId.deserialize(buffer)
-      if (!registeredBlocks.contains(blockId)) {
-        throw new UcxException(s"$blockId is not registered")
+        // 1. Deserialize blockIds from header
+        while (buffer.remaining() > 0) {
+          val blockId = UcxShuffleBockId.deserialize(buffer)
+          if (!registeredBlocks.contains(blockId)) {
+            throw new UcxException(s"$blockId is not registered")
+          }
+          blockIds += blockId
+        }
+
+        val blocks = blockIds.map(bid => registeredBlocks(bid))
+        amData.close()
+        allocatedServerWorkers(
+          (Thread.currentThread().getId % allocatedServerWorkers.length).toInt)
+          .handleFetchBlockRequest(blocks, replyTag, replyExecutor)
       }
-      blockIds += blockId
-    }
-
-    val blocks = blockIds.map(bid => registeredBlocks(bid))
-    amData.close()
-    allocatedServerWorkers((Thread.currentThread().getId % allocatedServerWorkers.length).toInt)
-      .handleFetchBlockRequest(blocks, replyTag, replyExecutor)
+    })
   }
 
 
