@@ -113,14 +113,12 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
     hostBounceBufferMemoryPool.init(
       ucxShuffleConf.minBufferSize, ucxShuffleConf.maxBufferSize,
       ucxShuffleConf.minRegistrationSize, clientMaxRegSize,
-      ucxShuffleConf.preallocateBuffersMap,
-      ucxShuffleConf.memoryLimit)
+      ucxShuffleConf.preallocateBuffersMap, ucxShuffleConf.memoryLimit)
     serverBounceBufferMemoryPool = new UcxLimitedMemPool(ucxContext)
     serverBounceBufferMemoryPool.init(
       ucxShuffleConf.minBufferSize, ucxShuffleConf.maxBufferSize,
       ucxShuffleConf.minRegistrationSize, serverMaxRegSize,
-      ucxShuffleConf.preallocateBuffersMap,
-      ucxShuffleConf.memoryLimit)
+      Map[Long, Int](), ucxShuffleConf.memoryLimit)
 
     allocatedServerWorkers = new Array[UcxWorkerWrapper](ucxShuffleConf.numListenerThreads)
     logInfo(s"Allocating ${ucxShuffleConf.numListenerThreads} server workers")
