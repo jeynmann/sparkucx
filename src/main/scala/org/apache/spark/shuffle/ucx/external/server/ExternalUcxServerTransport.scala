@@ -7,7 +7,8 @@ import org.apache.spark.network.buffer.ManagedBuffer
 import org.apache.spark.network.shuffle.ExternalUcxShuffleBlockResolver
 import org.openucx.jucx.ucp._
 import org.openucx.jucx.ucs.UcsConstants
-import org.openucx.jucx.UcxException
+import org.openucx.jucx.ucs.UcsConstants.MEMORY_TYPE
+import org.openucx.jucx.{UcxCallback, UcxException, UcxUtils}
 
 import java.net.InetSocketAddress
 import java.nio.ByteBuffer
@@ -81,7 +82,7 @@ class ExternalUcxServerTransport(
           .setName(s"Endpoint to ${ucpConnectionRequest.getClientId}")))
       }))
     // Main RPC thread. Submit each RPC request to separate thread and send reply back from separate worker.
-    globalWorker.setAmRecvHandler(0,
+    globalWorker.setAmRecvHandler(ExternalUcxAmId.FETCH_BLOCK,
       (headerAddress: Long, headerSize: Long, amData: UcpAmData, _: UcpEndpoint) => {
       val header = UnsafeUtils.getByteBufferView(headerAddress, headerSize.toInt)
       val workerId = UcxWorkerId.deserialize(header)
@@ -91,7 +92,7 @@ class ExternalUcxServerTransport(
       UcsConstants.STATUS.UCS_INPROGRESS
     }, UcpConstants.UCP_AM_FLAG_PERSISTENT_DATA | UcpConstants.UCP_AM_FLAG_WHOLE_MSG )
     // AM to get worker address for client worker and connect server workers to it
-    globalWorker.setAmRecvHandler(1,
+    globalWorker.setAmRecvHandler(ExternalUcxAmId.CONNECT,
       (headerAddress: Long, headerSize: Long, amData: UcpAmData, _: UcpEndpoint) => {
       val header = UnsafeUtils.getByteBufferView(headerAddress, headerSize.toInt)
       val workerId = UcxWorkerId.deserialize(header)
@@ -99,7 +100,8 @@ class ExternalUcxServerTransport(
       connectBack(workerId, workerAddress)
       UcsConstants.STATUS.UCS_OK
     }, UcpConstants.UCP_AM_FLAG_WHOLE_MSG)
-    globalWorker.setAmRecvHandler(2,
+    // Main RPC thread. Submit each RPC request to separate thread and send stream back from separate worker.
+    globalWorker.setAmRecvHandler(ExternalUcxAmId.FETCH_STREAM,
       (headerAddress: Long, headerSize: Long, amData: UcpAmData, _: UcpEndpoint) => {
       val header = UnsafeUtils.getByteBufferView(headerAddress, headerSize.toInt)
       val workerId = UcxWorkerId.deserialize(header)
@@ -107,6 +109,16 @@ class ExternalUcxServerTransport(
       val exeId = header.getInt
       val blockId = UcxShuffleBlockId.deserialize(header)
       handleFetchBlockStream(workerId, exeId, replyTag, blockId)
+      UcsConstants.STATUS.UCS_OK
+    }, UcpConstants.UCP_AM_FLAG_WHOLE_MSG )
+    // Main RPC thread. reply with ucpAddress.
+    globalWorker.setAmRecvHandler(ExternalUcxAmId.ADDRESS,
+      (headerAddress: Long, headerSize: Long, amData: UcpAmData, ep: UcpEndpoint) => {
+      val header = UnsafeUtils.getByteBufferView(headerAddress, headerSize.toInt)
+      val workerId = UcxWorkerId.deserialize(header)
+      val workerAddress = UnsafeUtils.getByteBufferView(amData.getDataAddress, amData.getLength.toInt)
+      connectBack(workerId, workerAddress)
+      replyAddress(ep)
       UcsConstants.STATUS.UCS_OK
     }, UcpConstants.UCP_AM_FLAG_WHOLE_MSG )
 
@@ -190,6 +202,21 @@ class ExternalUcxServerTransport(
         allocatedWorker.foreach(_.getConnectionBack(clientWorker))
       }
     })
+  }
+
+  def replyAddress(ep: UcpEndpoint): Unit = {
+    val workerAddress = globalWorker.getAddress()
+    val headerAddress = UcxUtils.getAddress(workerAddress)
+    ep.sendAmNonBlocking(ExternalUcxAmId.REPLY_ADDRESS,
+                         headerAddress, workerAddress.remaining(),
+                         headerAddress, 0,
+                         UcpConstants.UCP_AM_SEND_FLAG_EAGER,
+                        new UcxCallback() {
+      override def onSuccess(request: UcpRequest): Unit = {
+        workerAddress.clear()
+      }
+      override def onError(ucsStatus: Int, errorMsg: String): Unit = {}
+    }, MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
   }
 
   def handleFetchBlockRequest(clientWorker: UcxWorkerId, exeId: Int,
