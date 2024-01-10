@@ -17,15 +17,18 @@ class ExternalUcxExecutorRpcEndpoint(override val rpcEnv: RpcEnv, transport: Ext
   extends RpcEndpoint with Logging {
 
   override def receive: PartialFunction[Any, Unit] = {
-    case PushServiceAddress(shuffleServer: SerializableDirectBuffer, endpoint: RpcEndpointRef) =>
-      logDebug(s"Received PushServiceAddress($shuffleServer)")
+    case PushServiceAddress(serverBuffer: SerializableDirectBuffer,
+                            addressBuffer: SerializableDirectBuffer,
+                            _: RpcEndpointRef) =>
+      logDebug(s"Received PushServiceAddress($serverBuffer)")
       executorService.submit(new Runnable {
-        override def run(): Unit = transport.connect(shuffleServer)
+        override def run(): Unit = transport.connect(serverBuffer, addressBuffer)
       })
-    case PushAllServiceAddress(shuffleServerSet: Set[SerializableDirectBuffer]) =>
-      logDebug(s"Received PushAllServiceAddress(${shuffleServerSet}")
+    case PushAllServiceAddress(serverAddressMap: Map[SerializableDirectBuffer,
+                                                     SerializableDirectBuffer]) =>
+      logDebug(s"Received PushAllServiceAddress(${serverAddressMap}")
       executorService.submit(new Runnable {
-        override def run(): Unit = transport.connectAll(shuffleServerSet)
+        override def run(): Unit = transport.connectAll(serverAddressMap)
       })
   }
 }

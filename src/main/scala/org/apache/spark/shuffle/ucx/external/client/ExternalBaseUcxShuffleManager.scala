@@ -4,6 +4,7 @@
 */
 package org.apache.spark.shuffle.ucx
 
+import java.net.InetSocketAddress
 import java.util.concurrent.TimeUnit
 
 import scala.concurrent.ExecutionContext.Implicits.global
@@ -13,7 +14,7 @@ import org.apache.spark.rpc.RpcEnv
 import org.apache.spark.shuffle.sort.SortShuffleManager
 import org.apache.spark.shuffle.ucx.rpc.{ExternalUcxExecutorRpcEndpoint, ExternalUcxDriverRpcEndpoint}
 import org.apache.spark.shuffle.ucx.rpc.UcxRpcMessages.{PushServiceAddress, PushAllServiceAddress}
-import org.apache.spark.shuffle.ucx.utils.SerializableDirectBuffer
+import org.apache.spark.shuffle.ucx.utils.{SerializableDirectBuffer, SerializationUtils}
 import org.apache.spark.util.{RpcUtils, ThreadUtils}
 import org.apache.spark.{SecurityManager, SparkConf, SparkEnv}
 import org.openucx.jucx.{NativeLibs, UcxException}
@@ -53,7 +54,7 @@ abstract class ExternalBaseUcxShuffleManager(val conf: SparkConf, isDriver: Bool
         driverEndpoint = new ExternalUcxDriverRpcEndpoint(rpcEnv)
         rpcEnv.setupEndpoint(driverRpcName, driverEndpoint)
       } else {
-        while (SparkEnv.get.blockManager.blockManagerId == null) {
+        while (SparkEnv.get.blockManager.shuffleServerId == null) {
           Thread.sleep(5)
         }
         startUcxTransport()
@@ -75,9 +76,9 @@ abstract class ExternalBaseUcxShuffleManager(val conf: SparkConf, isDriver: Bool
    * Atomically starts UcxNode singleton - one for all shuffle threads.
    */
   def startUcxTransport(): Unit = if (ucxTransport == null) {
-    val blockManager = SparkEnv.get.blockManager.blockManagerId
+    val blockManager = SparkEnv.get.blockManager.shuffleServerId
     val transport = new ExternalUcxClientTransport(ucxShuffleConf, blockManager)
-    val address = transport.init()
+    val ucpAddress = transport.init()
     ucxTransport = transport
     val rpcEnv = SparkEnv.get.rpcEnv
     executorEndpoint = new ExternalUcxExecutorRpcEndpoint(rpcEnv, ucxTransport, setupThread)
@@ -85,8 +86,11 @@ abstract class ExternalBaseUcxShuffleManager(val conf: SparkConf, isDriver: Bool
       s"ucx-shuffle-executor-${blockManager.executorId}",
       executorEndpoint)
     val driverEndpoint = RpcUtils.makeDriverRef(driverRpcName, conf, rpcEnv)
-    driverEndpoint.ask[PushAllServiceAddress](
-      PushServiceAddress(new SerializableDirectBuffer(address), endpoint))
+    val shuffleServer = new InetSocketAddress(blockManager.host, blockManager.port)
+    val shuffleServerBuf = SerializationUtils.serializeInetAddress(shuffleServer)
+    driverEndpoint.ask[PushAllServiceAddress](PushServiceAddress(
+      new SerializableDirectBuffer(shuffleServerBuf),
+      new SerializableDirectBuffer(ucpAddress), endpoint))
       .andThen {
         case Success(msg) =>
           logInfo(s"Receive reply $msg")
