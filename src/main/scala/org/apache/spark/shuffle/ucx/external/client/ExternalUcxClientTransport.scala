@@ -1,5 +1,6 @@
 package org.apache.spark.shuffle.ucx
 
+import scala.collection.concurrent.TrieMap
 // import org.apache.spark.SparkEnv
 import org.apache.spark.network.util.TransportConf
 import org.apache.spark.network.netty.SparkTransportConf
@@ -18,14 +19,20 @@ import java.util.concurrent.atomic.AtomicInteger
 class ExternalUcxClientTransport(clientConf: ExternalUcxClientConf, blockManagerId: BlockManagerId)
 extends ExternalUcxTransport(clientConf) with UcxLogging {
   @volatile protected var running: Boolean = true
-  private[spark] val serverPort = clientConf.ucxServerPort
+  private[spark] val timeout = clientConf.getSparkConf.getTimeAsMs(
+    "spark.network.timeout", "10s")
   private[spark] lazy val sparkTransportConf = SparkTransportConf.fromSparkConf(
-    clientConf.getSparkConf, "shuffle", clientConf.numWorkers)
+    clientConf.getSparkConf, "ucx-shuffle", clientConf.numWorkers)
   private[spark] lazy val maxBlocksPerRequest = maxBlocksInAmHeader.min(
     clientConf.maxBlocksPerRequest).toInt
 
-  private[ucx] lazy val currentWorkerId = new AtomicInteger()
-  private[ucx] lazy val workerLocal = new ThreadLocal[ExternalUcxClientWorker]
+  private[ucx] val tcpServer = new InetSocketAddress(blockManagerId.host,
+                                                     blockManagerId.port)
+  private[ucx] val ucxServer = new InetSocketAddress(tcpServer.getHostName,
+                                                     clientConf.ucxServerPort)
+  private[ucx] val serverMap = new TrieMap[InetSocketAddress, ByteBuffer]
+  private[ucx] val currentWorkerId = new AtomicInteger()
+  private[ucx] val workerLocal = new ThreadLocal[ExternalUcxClientWorker]
   private[ucx] var allocatedWorker: Array[ExternalUcxClientWorker] = _
 
   private[this] class ProgressTask(worker: UcpWorker) extends Runnable {
@@ -68,9 +75,16 @@ extends ExternalUcxTransport(clientConf) with UcxLogging {
     }
 
     initialized = true
-    val shuffleServer = new InetSocketAddress(blockManagerId.host, serverPort)
-    logInfo(s"Shuffle server ${shuffleServer}")
-    SerializationUtils.serializeInetAddress(shuffleServer)
+    logInfo(s"Query UCX-service ${blockManagerId}")
+    queryService()
+  }
+
+  def queryService(): ByteBuffer = {
+    allocatedWorker.foreach(_.queryService(tcpServer, ucxServer))
+    while (!serverMap.contains(tcpServer)) {
+      Thread.sleep(5)
+    }
+    serverMap(tcpServer)
   }
 
   override def close(): Unit = {
@@ -108,32 +122,40 @@ extends ExternalUcxTransport(clientConf) with UcxLogging {
     (allocatedWorker(0).worker.getMaxAmHeaderSize - 2) / UnsafeUtils.INT_SIZE
   }
 
-  def connect(shuffleServer: SerializableDirectBuffer): Unit = {
-    val addressBuffer = shuffleServer.value
-    val address = SerializationUtils.deserializeInetAddress(addressBuffer)
-    allocatedWorker.foreach(_.getConnection(address))
+  def connect(serverBuffer: SerializableDirectBuffer,
+              addressBuffer: SerializableDirectBuffer): Unit = {
+    val server = SerializationUtils.deserializeInetAddress(serverBuffer.value)
+    serverMap.getOrElseUpdate(server, addressBuffer.value)
+    allocatedWorker.foreach(_.getConnection(server))
   }
 
-  def connectAll(shuffleServerSet: Set[SerializableDirectBuffer]): Unit = {
-    val addressSet = shuffleServerSet.map(addressBuffer =>
-      SerializationUtils.deserializeInetAddress(addressBuffer.value))
-    allocatedWorker.foreach(w => addressSet.foreach(w.getConnection(_)))
+  def connectAll(serverAddressMap: Map[SerializableDirectBuffer,
+                                       SerializableDirectBuffer]): Unit = {
+    val serverSet = serverAddressMap.map(serverAddress => {
+      val server = SerializationUtils.deserializeInetAddress(
+        serverAddress._1.value)
+      val ucpAddress = serverAddress._2.value
+      serverMap.getOrElseUpdate(server, ucpAddress)
+      server
+    })
+    allocatedWorker.foreach(w => serverSet.foreach(w.getConnection(_)))
   }
 
   /**
    * Batch version of [[ fetchBlocksByBlockIds ]].
    */
-  def fetchBlocksByBlockIds(host: String, exeId: Int,
+  def fetchBlocksByBlockIds(host: String, port: Int, exeId: Int,
                             blockIds: Seq[BlockId],
                             callbacks: Seq[OperationCallback]): Unit = {
-    selectWorker.fetchBlocksByBlockIds(
-      new InetSocketAddress(host, serverPort), exeId, blockIds, callbacks)
+    val server = new InetSocketAddress(host, port)
+    selectWorker.fetchBlocksByBlockIds(server, exeId, blockIds, callbacks)
   }
 
-  def fetchBlockByStream(host: String, exeId: Int, blockId: BlockId,
+  def fetchBlockByStream(host: String, port: Int, exeId: Int,
+                         blockId: BlockId,
                          callback: OperationCallback): Unit = {
-    selectWorker.fetchBlockByStream(
-      new InetSocketAddress(host, serverPort), exeId, blockId, callback)
+    val server = new InetSocketAddress(host, port)
+    selectWorker.fetchBlockByStream(server, exeId, blockId, callback)
   }
 }
 
@@ -162,18 +184,18 @@ private[shuffle] class UcxDownloadCallBack(
 
   private[this] val targetFile = downloadFileManager.createTempFile(
     transportConf)
-  private[this] val channel = targetFile.openForWriting();
+  private[this] val channel = targetFile.openForWriting()
 
   override def onData(buffer: ByteBuffer): Unit = {
     while (buffer.hasRemaining()) {
-      channel.write(buffer);
+      channel.write(buffer)
     }
   }
 
   override def onComplete(result: OperationResult): Unit = {
-    listener.onBlockFetchSuccess(blockId, channel.closeAndRead());
+    listener.onBlockFetchSuccess(blockId, channel.closeAndRead())
     if (!downloadFileManager.registerTempFileToClean(targetFile)) {
-      targetFile.delete();
+      targetFile.delete()
     }
   }
 }

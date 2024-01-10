@@ -37,6 +37,19 @@ case class ExternalUcxClientWorker(val worker: UcpWorker,
   private[this] lazy val memPool = transport.hostBounceBufferMemoryPool
   private[this] lazy val maxReplySize = transport.ucxShuffleConf.maxReplySize
 
+  private[this] case class UcxAddressReplyHandle() extends UcpAmRecvCallback() {
+    override def onReceive(headerAddress: Long, headerSize: Long,
+                           ucpAmData: UcpAmData, ep: UcpEndpoint): Int = {
+      transport.serverMap.getOrElseUpdate(transport.tcpServer, {
+        val msg = UnsafeUtils.getByteBufferView(headerAddress, headerSize.toInt)
+        val ucpAddress = ByteBuffer.allocateDirect(msg.remaining())
+        ucpAddress.put(msg)
+        ucpAddress
+      })
+      UcsConstants.STATUS.UCS_OK
+    }
+  }
+
   private[this] case class UcxSliceReplyHandle() extends UcpAmRecvCallback() {
     override def onReceive(headerAddress: Long, headerSize: Long,
                            ucpAmData: UcpAmData, ep: UcpEndpoint): Int = {
@@ -171,68 +184,72 @@ case class ExternalUcxClientWorker(val worker: UcpWorker,
     }
   }
 
-    // Receive block data handler
-    worker.setAmRecvHandler(3, UcxSliceReplyHandle(), UcpConstants.UCP_AM_FLAG_WHOLE_MSG)
-    worker.setAmRecvHandler(2, UcxStreamReplyHandle(), UcpConstants.UCP_AM_FLAG_WHOLE_MSG)
-    worker.setAmRecvHandler(1,
-      (headerAddress: Long, headerSize: Long, ucpAmData: UcpAmData, _: UcpEndpoint) => {
-        val headerBuffer = UnsafeUtils.getByteBufferView(headerAddress, headerSize.toInt)
-        val i = headerBuffer.getInt
-        val data = requestData.remove(i)
+  // Receive block data handler
+  worker.setAmRecvHandler(ExternalUcxAmId.REPLY_ADDRESS, UcxAddressReplyHandle(),
+                          UcpConstants.UCP_AM_FLAG_WHOLE_MSG)
+  worker.setAmRecvHandler(ExternalUcxAmId.REPLY_SLICE, UcxSliceReplyHandle(),
+                          UcpConstants.UCP_AM_FLAG_WHOLE_MSG)
+  worker.setAmRecvHandler(ExternalUcxAmId.REPLY_STREAM, UcxStreamReplyHandle(),
+                          UcpConstants.UCP_AM_FLAG_WHOLE_MSG)
+  worker.setAmRecvHandler(ExternalUcxAmId.REPLY_BLOCK,
+    (headerAddress: Long, headerSize: Long, ucpAmData: UcpAmData, _: UcpEndpoint) => {
+      val headerBuffer = UnsafeUtils.getByteBufferView(headerAddress, headerSize.toInt)
+      val i = headerBuffer.getInt
+      val data = requestData.remove(i)
 
-        if (data.isEmpty) {
-          throw new UcxException(s"No data for tag $i.")
-        }
+      if (data.isEmpty) {
+        throw new UcxException(s"No data for tag $i.")
+      }
 
-        val (callbacks, request) = data.get
-        val stats = request.getStats.get.asInstanceOf[UcxStats]
-        stats.receiveSize = ucpAmData.getLength
+      val (callbacks, request) = data.get
+      val stats = request.getStats.get.asInstanceOf[UcxStats]
+      stats.receiveSize = ucpAmData.getLength
 
-        // Header contains tag followed by sizes of blocks
-        val numBlocks = (headerSize.toInt - UnsafeUtils.INT_SIZE) / UnsafeUtils.INT_SIZE
+      // Header contains tag followed by sizes of blocks
+      val numBlocks = (headerSize.toInt - UnsafeUtils.INT_SIZE) / UnsafeUtils.INT_SIZE
 
-        var offset = 0
-        val refCounts = new AtomicInteger(numBlocks)
-        if (ucpAmData.isDataValid) {
-          request.completed = true
-          stats.endTime = System.nanoTime()
-          logDebug(s"Received amData: $ucpAmData for tag $i " +
-            s"in ${stats.getElapsedTimeNs} ns")
+      var offset = 0
+      val refCounts = new AtomicInteger(numBlocks)
+      if (ucpAmData.isDataValid) {
+        request.completed = true
+        stats.endTime = System.nanoTime()
+        logDebug(s"Received amData: $ucpAmData for tag $i " +
+          s"in ${stats.getElapsedTimeNs} ns")
 
-          for (b <- 0 until numBlocks) {
-            val blockSize = headerBuffer.getInt
-            if (callbacks(b) != null) {
-              callbacks(b).onComplete(new UcxSucceedOperationResult(
-                new UcxAmDataMemoryBlock(ucpAmData, offset, blockSize,
-                                         refCounts), stats))
-              offset += blockSize
-            }
+        for (b <- 0 until numBlocks) {
+          val blockSize = headerBuffer.getInt
+          if (callbacks(b) != null) {
+            callbacks(b).onComplete(new UcxSucceedOperationResult(
+              new UcxAmDataMemoryBlock(ucpAmData, offset, blockSize,
+                                        refCounts), stats))
+            offset += blockSize
           }
-          if (callbacks.isEmpty) UcsConstants.STATUS.UCS_OK else UcsConstants.STATUS.UCS_INPROGRESS
-        } else {
-          val mem = memPool.get(ucpAmData.getLength)
-          stats.amHandleTime = System.nanoTime()
-          request.setRequest(worker.recvAmDataNonBlocking(ucpAmData.getDataHandle, mem.address, ucpAmData.getLength,
-            new UcxCallback() {
-              override def onSuccess(r: UcpRequest): Unit = {
-                request.completed = true
-                stats.endTime = System.nanoTime()
-                logDebug(s"Received rndv data of size: ${ucpAmData.getLength} " +
-                  s"for tag $i in ${stats.getElapsedTimeNs} ns " +
-                  s"time from amHandle: ${System.nanoTime() - stats.amHandleTime} ns")
-                for (b <- 0 until numBlocks) {
-                  val blockSize = headerBuffer.getInt
-                  callbacks(b).onComplete(new UcxSucceedOperationResult(
-                    new UcxRefCountMemoryBlock(mem, offset, blockSize,
-                                               refCounts), stats))
-                  offset += blockSize
-                }
-
-              }
-            }, UcsConstants.MEMORY_TYPE.UCS_MEMORY_TYPE_HOST))
-          UcsConstants.STATUS.UCS_OK
         }
-      }, UcpConstants.UCP_AM_FLAG_PERSISTENT_DATA | UcpConstants.UCP_AM_FLAG_WHOLE_MSG)
+        if (callbacks.isEmpty) UcsConstants.STATUS.UCS_OK else UcsConstants.STATUS.UCS_INPROGRESS
+      } else {
+        val mem = memPool.get(ucpAmData.getLength)
+        stats.amHandleTime = System.nanoTime()
+        request.setRequest(worker.recvAmDataNonBlocking(ucpAmData.getDataHandle, mem.address, ucpAmData.getLength,
+          new UcxCallback() {
+            override def onSuccess(r: UcpRequest): Unit = {
+              request.completed = true
+              stats.endTime = System.nanoTime()
+              logDebug(s"Received rndv data of size: ${ucpAmData.getLength} " +
+                s"for tag $i in ${stats.getElapsedTimeNs} ns " +
+                s"time from amHandle: ${System.nanoTime() - stats.amHandleTime} ns")
+              for (b <- 0 until numBlocks) {
+                val blockSize = headerBuffer.getInt
+                callbacks(b).onComplete(new UcxSucceedOperationResult(
+                  new UcxRefCountMemoryBlock(mem, offset, blockSize,
+                                              refCounts), stats))
+                offset += blockSize
+              }
+
+            }
+          }, UcsConstants.MEMORY_TYPE.UCS_MEMORY_TYPE_HOST))
+        UcsConstants.STATUS.UCS_OK
+      }
+    }, UcpConstants.UCP_AM_FLAG_PERSISTENT_DATA | UcpConstants.UCP_AM_FLAG_WHOLE_MSG)
 
   override def close(): Unit = {
     val closeRequests = shuffleServers.map {
@@ -252,39 +269,78 @@ case class ExternalUcxClientWorker(val worker: UcpWorker,
     worker.progress()
   }
 
+  def queryService(tcpServer: InetSocketAddress,
+                   ucxServer: InetSocketAddress): Unit = {
+    shuffleServers.getOrElseUpdate(tcpServer, {
+      val endpointParams = new UcpEndpointParams().setPeerErrorHandlingMode()
+        .setSocketAddress(ucxServer).sendClientId()
+        .setErrorHandler(new UcpEndpointErrorHandler() {
+          override def onError(ep: UcpEndpoint, status: Int, errorMsg: String): Unit = {
+            logError(s"Endpoint to $ucxServer got an error: $errorMsg")
+            shuffleServers.remove(tcpServer)
+          }
+        }).setName(s"Client to $ucxServer")
+
+      val ep = worker.synchronized {
+        worker.newEndpoint(endpointParams)
+      }
+      connect(ep, ExternalUcxAmId.ADDRESS, UcpConstants.UCP_AM_SEND_FLAG_REPLY)
+      ep
+    })
+  }
+
   def getConnection(shuffleServer: InetSocketAddress): UcpEndpoint = {
     shuffleServers.getOrElseUpdate(shuffleServer, {
+      val serverMap = transport.serverMap
+      if (!serverMap.contains(shuffleServer)) {
+        val timeout = transport.timeout
+        val startTime = System.currentTimeMillis()
+        while (!serverMap.contains(shuffleServer)) {
+          if  (System.currentTimeMillis() - startTime > timeout) {
+            throw new UcxException(s"Don't get a worker address for $UcxWorkerId")
+          }
+          Thread.`yield`
+        }
+      }
+      val ucpAddress = serverMap(shuffleServer)
       val endpointParams = new UcpEndpointParams().setPeerErrorHandlingMode()
-        .setSocketAddress(shuffleServer).sendClientId()
+        .setUcpAddress(ucpAddress).sendClientId()
         .setErrorHandler(new UcpEndpointErrorHandler() {
           override def onError(ep: UcpEndpoint, status: Int, errorMsg: String): Unit = {
             logError(s"Endpoint to $shuffleServer got an error: $errorMsg")
             shuffleServers.remove(shuffleServer)
           }
         }).setName(s"Client to $shuffleServer")
-
-      logDebug(s"$workerId connecting to external service $shuffleServer")
-
-      val header = Platform.allocateDirectBuffer(workerId.serializedSize)
-      workerId.serialize(header)
-      header.rewind()
-      val workerAddress = worker.getAddress
-
-      worker.synchronized {
-        val ep = worker.newEndpoint(endpointParams)
-        ep.sendAmNonBlocking(1, UcxUtils.getAddress(header), header.remaining(),
-        UcxUtils.getAddress(workerAddress), workerAddress.capacity(),
-        UcpConstants.UCP_AM_SEND_FLAG_EAGER,
-        new UcxCallback() {
-          override def onSuccess(request: UcpRequest): Unit = {
-            header.clear()
-            workerAddress.clear()
-          }
-          override def onError(ucsStatus: Int, errorMsg: String): Unit = {}
-        }, MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
-        ep
+      val ep = worker.synchronized {
+        worker.newEndpoint(endpointParams)
       }
+      connect(ep, ExternalUcxAmId.CONNECT, 0)
+      ep
     })
+  }
+
+  private[this] def connect(ep: UcpEndpoint, amId: Int, flags: Long): Unit = {
+    val header = Platform.allocateDirectBuffer(workerId.serializedSize)
+    val workerAddress = worker.getAddress
+    workerId.serialize(header)
+    header.rewind()
+
+    logInfo(s"$workerId connecting to external service $ep")
+
+    worker.synchronized {
+      ep.sendAmNonBlocking(amId, UcxUtils.getAddress(header),
+                           header.remaining(),
+                           UcxUtils.getAddress(workerAddress),
+                           workerAddress.remaining(),
+                           UcpConstants.UCP_AM_SEND_FLAG_EAGER | flags,
+                           new UcxCallback() {
+        override def onSuccess(request: UcpRequest): Unit = {
+          header.clear()
+          workerAddress.clear()
+        }
+        override def onError(ucsStatus: Int, errorMsg: String): Unit = {}
+      }, MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
+    }
   }
 
   def fetchBlocksByBlockIds(shuffleServer: InetSocketAddress, execId: Int,
@@ -310,7 +366,7 @@ case class ExternalUcxClientWorker(val worker: UcpWorker,
 
     val ep = getConnection(shuffleServer)
     worker.synchronized {
-      ep.sendAmNonBlocking(0, address,
+      ep.sendAmNonBlocking(ExternalUcxAmId.FETCH_BLOCK, address,
       headerSize, dataAddress, buffer.capacity() - headerSize,
       UcpConstants.UCP_AM_SEND_FLAG_EAGER, new UcxCallback() {
         override def onSuccess(request: UcpRequest): Unit = {
@@ -343,8 +399,9 @@ case class ExternalUcxClientWorker(val worker: UcpWorker,
 
     val ep = getConnection(shuffleServer)
     worker.synchronized {
-      ep.sendAmNonBlocking(2, address, headerSize, address, 0,
-        UcpConstants.UCP_AM_SEND_FLAG_EAGER, new UcxCallback() {
+      ep.sendAmNonBlocking(ExternalUcxAmId.FETCH_STREAM, address, headerSize,
+                           address, 0, UcpConstants.UCP_AM_SEND_FLAG_EAGER,
+                           new UcxCallback() {
         override def onSuccess(request: UcpRequest): Unit = {
           buffer.clear()
           logDebug(s"$workerId sent stream to $execId block $blockId " +

@@ -96,7 +96,8 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
   def handleFetchBlockRequest(clientWorker: UcxWorkerId, replyTag: Int,
                               blocks: Seq[(Long, ManagedBuffer)]): Unit = try {
     if (blocks.size == 1 && blocks(0)._1 > maxReplySize) {
-      return handleFetchBlockStream(clientWorker, replyTag, blocks(0), 3)
+      return handleFetchBlockStream(clientWorker, replyTag, blocks(0),
+                                    ExternalUcxAmId.REPLY_SLICE)
     }
 
     val tagAndSizes = UnsafeUtils.INT_SIZE + UnsafeUtils.INT_SIZE * blocks.size
@@ -118,11 +119,12 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
     val startTime = System.nanoTime()
     val ep = getConnectionBack(clientWorker)
     worker.synchronized {
-      ep.sendAmNonBlocking(1, resultMemory.address, tagAndSizes,
-      resultMemory.address + tagAndSizes, msgSize - tagAndSizes, 0, new UcxCallback {
+      ep.sendAmNonBlocking(ExternalUcxAmId.REPLY_BLOCK, resultMemory.address,
+      tagAndSizes, resultMemory.address + tagAndSizes, msgSize - tagAndSizes, 0,
+      new UcxCallback {
         override def onSuccess(request: UcpRequest): Unit = {
-          logTrace(s"Sent to ${clientWorker} ${blocks.length} blocks of size: ${msgSize} " +
-          s"tag $replyTag in ${System.nanoTime() - startTime} ns.")
+          logTrace(s"Sent to ${clientWorker} ${blocks.length} blocks of size: " +
+          s"${msgSize} tag $replyTag in ${System.nanoTime() - startTime} ns.")
           resultMemory.close()
         }
         
@@ -140,7 +142,8 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
   }
 
   def handleFetchBlockStream(clientWorker: UcxWorkerId, replyTag: Int,
-                             blockInfo: (Long, ManagedBuffer), amId: Int = 2)
+                             blockInfo: (Long, ManagedBuffer),
+                             amId: Int = ExternalUcxAmId.REPLY_STREAM)
                              : Unit = {
     val headerSize = UnsafeUtils.INT_SIZE + UnsafeUtils.INT_SIZE
     val maxBodySize = maxReplySize - headerSize.toLong
