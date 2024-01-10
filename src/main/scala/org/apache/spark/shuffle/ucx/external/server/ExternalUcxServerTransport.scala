@@ -219,6 +219,21 @@ class ExternalUcxServerTransport(
     }, MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
   }
 
+  def replyAddress(ep: UcpEndpoint): Unit = {
+    val workerAddress = globalWorker.getAddress()
+    val headerAddress = UcxUtils.getAddress(workerAddress)
+    ep.sendAmNonBlocking(ExternalUcxAmId.REPLY_ADDRESS,
+                         headerAddress, workerAddress.remaining(),
+                         headerAddress, 0,
+                         UcpConstants.UCP_AM_SEND_FLAG_EAGER,
+                        new UcxCallback() {
+      override def onSuccess(request: UcpRequest): Unit = {
+        workerAddress.clear()
+      }
+      override def onError(ucsStatus: Int, errorMsg: String): Unit = {}
+    }, MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
+  }
+
   def handleFetchBlockRequest(clientWorker: UcxWorkerId, exeId: Int,
                               replyTag: Int, amData: UcpAmData): Unit = {
     replyExecutors.submit(new Runnable {
