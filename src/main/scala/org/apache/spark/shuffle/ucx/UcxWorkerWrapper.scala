@@ -370,9 +370,8 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport,
 
     connections.getOrElseUpdate(executorId, {
       val address = transport.executorAddresses(executorId)
-      val socketAddress = SerializationUtils.deserializeInetAddress(address)
       val endpointParams = new UcpEndpointParams().setPeerErrorHandlingMode()
-        .setSocketAddress(socketAddress).sendClientId()
+        .setUcpAddress(address).sendClientId()
         .setErrorHandler(new UcpEndpointErrorHandler() {
           override def onError(ep: UcpEndpoint, status: Int, errorMsg: String): Unit = {
             logError(s"Endpoint to $executorId got an error: $errorMsg")
