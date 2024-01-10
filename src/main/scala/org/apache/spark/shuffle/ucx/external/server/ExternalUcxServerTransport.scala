@@ -158,6 +158,8 @@ class ExternalUcxServerTransport(
     }
   }
 
+  def workerAddress(): ByteBuffer = globalWorker.getAddress
+
   def applicationRemoved(appId: String): Unit = {
     workerMap.remove(appId).map(clientAddress => {
       val shuffleClients = clientAddress.map(x => UcxWorkerId(appId, x._1))

@@ -254,8 +254,20 @@ case class ExternalUcxClientWorker(val worker: UcpWorker,
 
   def getConnection(shuffleServer: InetSocketAddress): UcpEndpoint = {
     shuffleServers.getOrElseUpdate(shuffleServer, {
+      val serverMap = transport.serverMap
+      if (!serverMap.contains(shuffleServer)) {
+        val timeout = transport.timeout
+        val startTime = System.currentTimeMillis()
+        while (!serverMap.contains(shuffleServer)) {
+          if  (System.currentTimeMillis() - startTime > timeout) {
+            throw new UcxException(s"Don't get a worker address for $UcxWorkerId")
+          }
+          Thread.`yield`
+        }
+      }
+      val ucpAddress = serverMap(shuffleServer)
       val endpointParams = new UcpEndpointParams().setPeerErrorHandlingMode()
-        .setSocketAddress(shuffleServer).sendClientId()
+        .setUcpAddress(ucpAddress).sendClientId()
         .setErrorHandler(new UcpEndpointErrorHandler() {
           override def onError(ep: UcpEndpoint, status: Int, errorMsg: String): Unit = {
             logError(s"Endpoint to $shuffleServer got an error: $errorMsg")

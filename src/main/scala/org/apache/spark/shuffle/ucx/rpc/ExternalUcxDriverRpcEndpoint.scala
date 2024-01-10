@@ -17,25 +17,27 @@ import org.apache.spark.shuffle.ucx.utils.{SerializableDirectBuffer, Serializati
 class ExternalUcxDriverRpcEndpoint(override val rpcEnv: RpcEnv) extends ThreadSafeRpcEndpoint with Logging {
 
   private val endpoints = mutable.HashSet.empty[RpcEndpointRef]
-  private var shuffleServerMap = mutable.HashMap.empty[InetSocketAddress, SerializableDirectBuffer]
-
+  private var serverAddressMap = HashMap.empty[SerializableDirectBuffer,
+                                               SerializableDirectBuffer]
 
   override def receiveAndReply(context: RpcCallContext): PartialFunction[Any, Unit] = {
-    case message@PushServiceAddress(addressBuffer: SerializableDirectBuffer, endpoint: RpcEndpointRef) => {
+    case message@PushServiceAddress(serverBuffer: SerializableDirectBuffer,
+                                    addressBuffer: SerializableDirectBuffer,
+                                    endpoint: RpcEndpointRef) => {
       // Driver receives a message from executor with it's workerAddress
-      val shuffleServer = SerializationUtils.deserializeInetAddress(addressBuffer.value)
-      logInfo(s"Received message $shuffleServer from ${context.senderAddress}")
+      val server = SerializationUtils.deserializeInetAddress(serverBuffer.value)
+      logInfo(s"Received message $server from ${context.senderAddress}")
       // 1. For each existing member introduce newly joined executor.
-      if (!shuffleServerMap.contains(shuffleServer)) {
-        shuffleServerMap += shuffleServer -> addressBuffer
+      if (!serverAddressMap.contains(serverBuffer)) {
+        serverAddressMap += serverBuffer -> addressBuffer
         endpoints.foreach(ep => {
-          logDebug(s"Sending message $shuffleServer to $ep")
+          logDebug(s"Sending message $server to $ep")
           ep.send(message)
         })
       }
       // 2. Introduce existing members of a cluster
-      if (shuffleServerMap.nonEmpty) {
-        val msg = PushAllServiceAddress(shuffleServerMap.values.toSet)
+      if (serverAddressMap.nonEmpty) {
+        val msg = PushAllServiceAddress(serverAddressMap)
         logDebug(s"Replying $msg to $endpoint")
         context.reply(msg)
       }

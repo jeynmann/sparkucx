@@ -16,10 +16,16 @@ import org.apache.spark.shuffle.utils.{UcxUtils, UcxLogging}
  * A wrapper around a java.nio.ByteBuffer that is serializable through Java serialization, to make
  * it easier to pass ByteBuffers in case class messages.
  */
-class SerializableDirectBuffer(@transient var buffer: ByteBuffer) extends Serializable
-  with UcxLogging {
+class SerializableDirectBuffer(@transient var buffer: ByteBuffer)
+  extends Serializable {
 
   def value: ByteBuffer = buffer
+
+  override def equals(x: Any): Boolean = buffer.equals(x)
+
+  override def hashCode(): Int = buffer.hashCode()
+
+  override def toString(): String = buffer.toString()
 
   private def readObject(in: ObjectInputStream): Unit = UcxUtils.tryOrIOException {
     val length = in.readInt()

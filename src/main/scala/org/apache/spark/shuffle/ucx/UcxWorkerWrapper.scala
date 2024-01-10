@@ -86,8 +86,8 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
   private[ucx] lazy val ioTaskSupport = new ForkJoinTaskSupport(ioThreadPool)
   private[ucx] var progressThread: Thread = _
 
-  private[ucx] lazy val maxReplySize = transport.ucxShuffleConf.maxReplySize
-  private[ucx] lazy val memPool = if (isClientWorker) {
+  private[ucx] val maxReplySize = transport.ucxShuffleConf.maxReplySize
+  private[ucx] val memPool = if (isClientWorker) {
     transport.hostBounceBufferMemoryPool
   } else {
     transport.serverBounceBufferMemoryPool

@@ -25,7 +25,7 @@ class ExternalUcxShuffleClient(val transport: ExternalUcxClientTransport) extend
       val maxBlocksPerRequest = transport.maxBlocksPerRequest
       for (i <- 0 until ucxBlockIds.length by maxBlocksPerRequest) {
         val j = i + maxBlocksPerRequest
-        transport.fetchBlocksByBlockIds(host, execId.toInt,
+        transport.fetchBlocksByBlockIds(host, port, execId.toInt,
                                         ucxBlockIds.slice(i, j),
                                         callbacks.slice(i, j))
       }
@@ -38,7 +38,7 @@ class ExternalUcxShuffleClient(val transport: ExternalUcxClientTransport) extend
         val callback = new UcxDownloadCallBack(blockIds(i), listener,
                                                downloadFileManager,
                                                transport.sparkTransportConf)
-        transport.fetchBlockByStream(host, execId.toInt, ucxBid, callback)
+        transport.fetchBlockByStream(host, port, execId.toInt, ucxBid, callback)
       }
     }
   }
