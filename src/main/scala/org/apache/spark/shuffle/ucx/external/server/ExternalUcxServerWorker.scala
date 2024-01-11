@@ -147,8 +147,7 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
     val blockCh = Channels.newChannel(blockInfo._2.createInputStream())
     val firstLatch = new CountDownLatch(1)
 
-    def send(workerWrapper: ExternalUcxServerWorker, currentId: Int,
-             sendLatch: CountDownLatch): Unit = try {
+    def send(currentId: Int, sendLatch: CountDownLatch): Unit = try {
       val mem = memPool.get(maxReplySize).asInstanceOf[UcxLinkedMemBlock]
       val buffer = mem.toByteBuffer()
 
@@ -165,8 +164,8 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
       sendLatch.await()
 
       val startTime = System.nanoTime()
-      val ep = workerWrapper.getConnectionBack(clientWorker)
-      workerWrapper.worker.synchronized {
+      val ep = getConnectionBack(clientWorker)
+      worker.synchronized {
         ep.sendAmNonBlocking(amId, mem.address, headerSize,
           mem.address + headerSize, currentSize, 0, new UcxCallback {
             override def onSuccess(request: UcpRequest): Unit = {
@@ -186,10 +185,7 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
       }
       
       if (remaining > 0) {
-        transport.submit(new Runnable {
-          override def run = send(transport.selectWorker, currentId + 1,
-                                  nextLatch)
-        })
+        send(currentId + 1, nextLatch)
       } else {
         blockCh.close()
       }

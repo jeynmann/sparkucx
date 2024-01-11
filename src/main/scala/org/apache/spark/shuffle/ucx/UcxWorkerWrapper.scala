@@ -138,7 +138,8 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport,
         worker.recvAmDataNonBlocking(
           ucpAmData.getDataHandle, currentAddress, ucpAmData.getLength,
           new UcxCallback() {
-            override def onSuccess(r: UcpRequest): Unit = {
+            override def onSuccess(r: UcpRequest): Unit = transport.submit(
+              new Runnable { override def run = {
               stats.endTime = System.nanoTime()
               logDebug(s"Slice receive rndv data size ${ucpAmData.getLength} " +
                 s"tag $i in ${stats.getElapsedTimeNs} ns amHandle " +
@@ -152,7 +153,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport,
                   new UcxSucceedOperationResult(result, stats))
                 sliceData.remove(i)
               }
-            }
+            }})
           }, UcsConstants.MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
       }
       UcsConstants.STATUS.UCS_OK
@@ -200,7 +201,8 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport,
         worker.recvAmDataNonBlocking(
           ucpAmData.getDataHandle, mem.address, ucpAmData.getLength,
           new UcxCallback() {
-            override def onSuccess(r: UcpRequest): Unit = {
+            override def onSuccess(r: UcpRequest): Unit = transport.submit(
+              new Runnable { override def run = {
               stats.endTime = System.nanoTime()
               logDebug(s"Stream receive rndv data size ${ucpAmData.getLength} " +
                 s"tag $i in ${stats.getElapsedTimeNs} ns amHandle " +
@@ -214,7 +216,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport,
                   new UcxSucceedOperationResult(null, stats))
                 streamData.remove(i)
               }
-            }
+            }})
           }, UcsConstants.MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
       }
       UcsConstants.STATUS.UCS_OK
@@ -229,11 +231,12 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport,
     val buffer = UnsafeUtils.getByteBufferView(amData.getDataAddress,
                                                 amData.getLength.toInt)
     val blockNum = buffer.remaining() / UcxShuffleBockId.serializedSize
-    val blocks = (0 until blockNum).map(x => {
+    val blockIds = (0 until blockNum).map(x => {
       UcxShuffleBockId.deserialize(buffer)
-    }).map(transport.registeredBlocks(_))
+    })
     transport.submit(new Runnable {
-      override def run = {
+      override def run: Unit = {
+        val blocks = blockIds.map(transport.registeredBlocks(_))
         handleFetchBlockRequest(blocks, replyTag, replyExecutor)
       }
     })
@@ -245,9 +248,9 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport,
     val replyTag = header.getInt
     val replyExecutor = header.getLong
     val blockId = UcxShuffleBockId.deserialize(header)
-    val block = transport.registeredBlocks(blockId)
     transport.submit(new Runnable {
-      override def run = {
+      override def run: Unit = {
+        val block = transport.registeredBlocks(blockId)
         handleFetchBlockStream(block, replyTag, replyExecutor)
       }
     })
@@ -297,18 +300,24 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport,
         request.setRequest(worker.recvAmDataNonBlocking(ucpAmData.getDataHandle, mem.address, ucpAmData.getLength,
           new UcxCallback() {
             override def onSuccess(r: UcpRequest): Unit = {
-              request.completed = true
-              stats.endTime = System.nanoTime()
-              logDebug(s"Received rndv data of size: ${ucpAmData.getLength}" +
-                s" for tag $i in ${stats.getElapsedTimeNs} ns " +
-                s"time from amHandle: ${System.nanoTime() - stats.amHandleTime} ns")
-              for (b <- 0 until numBlocks) {
-                val blockSize = headerBuffer.getInt
-                val memBlock = new UcxRefCountMemoryBlock(mem, offset, blockSize, refCounts)
-                callbacks(b).onComplete(new UcxSucceedOperationResult(memBlock, stats))
-                offset += blockSize
+              val cb = new Runnable { override def run = {
+                request.completed = true
+                stats.endTime = System.nanoTime()
+                logDebug(s"Received rndv data of size: ${ucpAmData.getLength}" +
+                  s" for tag $i in ${stats.getElapsedTimeNs} ns " +
+                  s"time from amHandle: ${System.nanoTime() - stats.amHandleTime} ns")
+                for (b <- 0 until numBlocks) {
+                  val blockSize = headerBuffer.getInt
+                  val memBlock = new UcxRefCountMemoryBlock(mem, offset, blockSize, refCounts)
+                  callbacks(b).onComplete(new UcxSucceedOperationResult(memBlock, stats))
+                  offset += blockSize
+                }
+              }}
+              if (mem.size > (1L << 10)) {
+                transport.submit(cb)
+              } else {
+                cb.run()
               }
-
             }
           }, UcsConstants.MEMORY_TYPE.UCS_MEMORY_TYPE_HOST))
         UcsConstants.STATUS.UCS_OK
@@ -516,12 +525,13 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport,
     val firstLatch = new CountDownLatch(1)
 
     def send(currentId: Int, sendLatch: CountDownLatch): Unit = try {
-      val mem = memPool.get(maxReplySize).asInstanceOf[UcxLinkedMemBlock]
-      val buffer = mem.toByteBuffer()
-
       val remaining = blockSlice.length - currentId - 1
+
       val currentOffset = blockSlice(currentId)
       val currentSize = (blockSize - currentOffset).min(maxBodySize)
+      val mem = memPool.get(currentSize + headerSize).asInstanceOf[UcxLinkedMemBlock]
+      val buffer = mem.toByteBuffer()
+
       buffer.limit(headerSize + currentSize.toInt)
       buffer.putInt(replyTag)
       buffer.putInt(remaining)
@@ -551,9 +561,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport,
             .setMemoryHandle(mem.memory))
       })
       if (remaining > 0) {
-        transport.submit(new Runnable {
-          override def run = send(currentId + 1, nextLatch)
-        })
+        send(currentId + 1, nextLatch)
       }
     } catch {
       case ex: Throwable => logError(s"Failed to reply stream $ex.")

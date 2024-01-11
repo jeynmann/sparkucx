@@ -64,10 +64,9 @@ private[ucx] class UcxWorkerThread(worker: UcpWorker, useWakeup: Boolean) extend
       if (task != null) {
         task.run()
       }
-      worker.synchronized {
-        while (worker.progress != 0) {}
-      }
-      if (useWakeup && taskQueue.isEmpty && waiting.compareAndSet(0, 1)) {
+      val progressed = worker.progress
+      if (useWakeup && (progressed == 0) && (taskQueue.isEmpty) &&
+          waiting.compareAndSet(0, 1)) {
         worker.waitForEvents()
       }
     }
