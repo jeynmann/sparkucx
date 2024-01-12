@@ -57,28 +57,13 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
   @volatile private var initialized: Boolean = false
   private[ucx] var ucxContext: UcpContext = _
   private var globalWorker: UcpWorker = _
-  private var listener: UcpListener = _
   private var globalWrapper: UcxWorkerWrapper = _
   private val ucpWorkerParams = new UcpWorkerParams().requestThreadSafety()
-  val endpoints = new TrieMap[ExecutorId, UcpEndpoint]
   val executorAddresses = new TrieMap[ExecutorId, ByteBuffer]
 
   private val registeredBlocks = new TrieMap[BlockId, Block]
   private var progressThread: GlobalWorkerRpcThread = _
   var hostBounceBufferMemoryPool: UcxLimitedMemPool = _
-
-  private val errorHandler = new UcpEndpointErrorHandler {
-    override def onError(ucpEndpoint: UcpEndpoint, errorCode: Int, errorString: String): Unit = {
-      if (errorCode == UcsConstants.STATUS.UCS_ERR_CONNECTION_RESET) {
-        logWarning(s"Connection closed on ep: $ucpEndpoint")
-      } else {
-        logError(s"Ep $ucpEndpoint got an error: $errorString")
-      }
-      endpoints.filter(x => x._2 == ucpEndpoint).foreach(
-        x => endpoints.remove(x._1))
-      ucpEndpoint.close()
-    }
-  }
 
   private[spark] val timeout = ucxShuffleConf.getSparkConf.getTimeAsMs(
     "spark.network.timeout", "10s")
@@ -114,29 +99,13 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
 
     ucpWorkerParams.setClientId(executorId)
     globalWorker = ucxContext.newWorker(ucpWorkerParams)
-
-    val Array(host, port) = ucxShuffleConf.listenerAddress.split(":")
-    listener = globalWorker.newListener(new UcpListenerParams().setSockAddr(
-      new InetSocketAddress(Utils.localCanonicalHostName, port.toInt))
-      .setConnectionHandler((ucpConnectionRequest: UcpConnectionRequest) => {
-        val executorId = ucpConnectionRequest.getClientId()
-        endpoints.getOrElseUpdate(
-          executorId, {
-            globalWorker.newEndpoint(
-              new UcpEndpointParams().setConnectionRequest(ucpConnectionRequest)
-              .setPeerErrorHandlingMode().setErrorHandler(errorHandler)
-              .setName(s"Endpoint to ${executorId}"))
-          })
-      }))
-
     globalWrapper = UcxWorkerWrapper(globalWorker, this, executorId)
     progressThread = new GlobalWorkerRpcThread(globalWorker, this)
     progressThread.start()
 
     initialized = true
-    logInfo(s"Started listener on ${listener.getAddress}")
-    SerializationUtils.serializeInetAddress(listener.getAddress)
-    // globalWorker.getAddress()
+    logInfo(s"Started listener on ${globalWorker.getAddress}")
+    globalWorker.getAddress()
   }
 
   /**
@@ -144,15 +113,7 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
    */
   override def close(): Unit = {
     if (initialized) {
-      endpoints.foreach(x => x._2.closeNonBlockingForce())
-      endpoints.clear()
-
       hostBounceBufferMemoryPool.close()
-
-      if (listener != null) {
-        listener.close()
-        listener = null
-      }
 
       if (progressThread != null) {
         progressThread.close()

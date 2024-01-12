@@ -402,8 +402,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport,
     connections.getOrElseUpdate(executorId, {
       val address = transport.executorAddresses(executorId)
       val endpointParams = new UcpEndpointParams().setPeerErrorHandlingMode()
-        .setSocketAddress(SerializationUtils.deserializeInetAddress(address)).sendClientId()
-        // .setUcpAddress(address).sendClientId()
+        .setUcpAddress(address).sendClientId()
         .setErrorHandler(new UcpEndpointErrorHandler() {
           override def onError(ep: UcpEndpoint, status: Int, errorMsg: String): Unit = {
             logError(s"Endpoint to $executorId got an error: $errorMsg")
