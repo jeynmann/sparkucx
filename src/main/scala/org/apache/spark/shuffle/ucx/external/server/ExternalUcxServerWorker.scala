@@ -24,33 +24,84 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
                                    transport: ExternalUcxServerTransport,
                                    workerId: UcxWorkerId)
   extends Closeable with UcxLogging {
-  private[this] lazy val shuffleClients = new TrieMap[UcxWorkerId, UcpEndpoint]
-  private[this] lazy val memPool = transport.hostBounceBufferMemoryPool
-  private[this] lazy val maxReplySize = transport.ucxShuffleConf.maxReplySize
+  private[this] final val shuffleClients = new TrieMap[UcxWorkerId, UcpEndpoint]
+  private[this] final val memPool = transport.hostBounceBufferMemoryPool
+  private[this] final val maxReplySize = transport.ucxShuffleConf.maxReplySize
+  private[this] final val blockManager = transport.blockManager
+
+  // Main RPC thread. Submit each RPC request to separate thread and send reply back from separate worker.
+  worker.setAmRecvHandler(ExternalUcxAmId.FETCH_BLOCK,
+    (headerAddress: Long, headerSize: Long, amData: UcpAmData, _: UcpEndpoint) => {
+    val header = UnsafeUtils.getByteBufferView(headerAddress, headerSize.toInt)
+    val workerId = UcxWorkerId.deserialize(header)
+    val replyTag = header.getInt
+    val exeId = header.getInt
+    val buffer = UnsafeUtils.getByteBufferView(amData.getDataAddress,
+                                               amData.getLength.toInt)
+    val BlockNum = buffer.remaining() / UcxShuffleBlockId.serializedSize
+    val blockIds = (0 until BlockNum).map(
+      _ => UcxShuffleBlockId.deserialize(buffer))
+    transport.submit(() => {
+      val blockInfos = blockIds.map(bid => {
+        val buf = blockManager.getBlockData(workerId.appId, exeId.toString,
+                                            bid.shuffleId, bid.mapId,
+                                            bid.reduceId)
+        buf.size() -> buf
+      })
+      handleFetchBlockRequest(workerId, replyTag, blockInfos)
+    })
+    UcsConstants.STATUS.UCS_OK
+  }, UcpConstants.UCP_AM_FLAG_WHOLE_MSG )
+
+  // Main RPC thread. Submit each RPC request to separate thread and send stream back from separate worker.
+  worker.setAmRecvHandler(ExternalUcxAmId.FETCH_STREAM,
+    (headerAddress: Long, headerSize: Long, amData: UcpAmData, _: UcpEndpoint) => {
+    val header = UnsafeUtils.getByteBufferView(headerAddress, headerSize.toInt)
+    val workerId = UcxWorkerId.deserialize(header)
+    val replyTag = header.getInt
+    val exeId = header.getInt
+    val blockId = UcxShuffleBlockId.deserialize(header)
+    transport.submit(() => {
+      val buf = blockManager.getBlockData(workerId.appId, exeId.toString,
+                                          blockId.shuffleId, blockId.mapId,
+                                          blockId.reduceId)
+      val blockInfo = buf.size() -> buf
+      handleFetchBlockStream(workerId, replyTag, blockInfo)
+    })
+    UcsConstants.STATUS.UCS_OK
+  }, UcpConstants.UCP_AM_FLAG_WHOLE_MSG )
+
+  // AM to get worker address for client worker and connect server workers to it
+  worker.setAmRecvHandler(ExternalUcxAmId.CONNECT,
+    (headerAddress: Long, headerSize: Long, amData: UcpAmData, _: UcpEndpoint) => {
+    val header = UnsafeUtils.getByteBufferView(headerAddress, headerSize.toInt)
+    val workerId = UcxWorkerId.deserialize(header)
+    val workerAddress = UnsafeUtils.getByteBufferView(amData.getDataAddress,
+                                                      amData.getLength.toInt)
+    val copiedAddress = ByteBuffer.allocateDirect(workerAddress.remaining)
+    copiedAddress.put(workerAddress)
+    transport.submit(() => {
+      shuffleClients += workerId -> connectBack(workerId, copiedAddress)
+      transport.registerWorker(workerId, copiedAddress)
+    })
+    UcsConstants.STATUS.UCS_OK
+  }, UcpConstants.UCP_AM_FLAG_WHOLE_MSG )
+  // Main RPC thread. reply with ucpAddress.
 
   override def close(): Unit = {
     worker.close()
   }
 
-  // def debugClients(): Unit = {
-  //   logDebug(s"$workerId clients ${shuffleClients.size}")
-  // }
+  def reportClients(): Unit = {
+    logDebug(s"$workerId clients ${shuffleClients.size}")
+  }
 
   def disconnect(workerId: UcxWorkerId): Unit = {
-    worker.synchronized {
-      shuffleClients.remove(workerId).map(ep =>
-        try {
-          ep.close()
-        } catch {
-          case e: Exception => logInfo(s"$workerId close $e")
-        })
-    }
+    shuffleClients.remove(workerId).map(_.close)
   }
 
   def disconnect(workerIds: Seq[UcxWorkerId]): Unit = {
-    worker.synchronized {
-      workerIds.foreach(disconnect(_))
-    }
+    workerIds.foreach(disconnect(_))
   }
 
   def getConnectionBack(shuffleClient: UcxWorkerId): UcpEndpoint = {
@@ -84,14 +135,17 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
     }
   }
 
-  def connectBack(shuffleClient: UcxWorkerId, workerAddress: ByteBuffer): UcpEndpoint = {
-      logDebug(s"$workerId connecting back to $shuffleClient by worker address")
-      worker.synchronized {
-        worker.newEndpoint(new UcpEndpointParams()
-          .setName(s"Server to $UcxWorkerId")
+  def connectBack(
+    clientWorker: UcxWorkerId, workerAddress: ByteBuffer): UcpEndpoint = {
+      logDebug(s"$workerId connecting back to $clientWorker by worker address")
+      val f = new FutureTask(new Callable[UcpEndpoint] {
+        override def call = worker.newEndpoint(
+          new UcpEndpointParams().setName(s"Server to $UcxWorkerId")
           .setUcpAddress(workerAddress))
-      }
-  }
+      })
+      transport.post(f)
+      f.get()
+    }
 
   def handleFetchBlockRequest(clientWorker: UcxWorkerId, replyTag: Int,
                               blocks: Seq[(Long, ManagedBuffer)]): Unit = try {
@@ -118,7 +172,7 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
 
     val startTime = System.nanoTime()
     val ep = getConnectionBack(clientWorker)
-    worker.synchronized {
+    transport.post(() => {
       ep.sendAmNonBlocking(ExternalUcxAmId.REPLY_BLOCK, resultMemory.address,
       tagAndSizes, resultMemory.address + tagAndSizes, msgSize - tagAndSizes, 0,
       new UcxCallback {
@@ -134,11 +188,11 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
         }
       }, new UcpRequestParams().setMemoryType(UcsConstants.MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
       .setMemoryHandle(resultMemory.memory))
-    }
+    })
 
     blockCh.foreach(_.close())
   } catch {
-    case ex: Throwable => logError(s"Failed to read and send data: $ex")
+    case ex: Throwable => logError(s"Failed to reply block tag $replyTag $ex.")
   }
 
   def handleFetchBlockStream(clientWorker: UcxWorkerId, replyTag: Int,
@@ -151,8 +205,7 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
     val blockCh = Channels.newChannel(blockInfo._2.createInputStream())
     val firstLatch = new CountDownLatch(1)
 
-    def send(workerWrapper: ExternalUcxServerWorker, currentId: Int,
-             sendLatch: CountDownLatch): Unit = try {
+    def send(currentId: Int, sendLatch: CountDownLatch): Unit = try {
       val mem = memPool.get(maxReplySize).asInstanceOf[UcxLinkedMemBlock]
       val buffer = mem.toByteBuffer()
 
@@ -169,8 +222,8 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
       sendLatch.await()
 
       val startTime = System.nanoTime()
-      val ep = workerWrapper.getConnectionBack(clientWorker)
-      workerWrapper.worker.synchronized {
+      val ep = getConnectionBack(clientWorker)
+      transport.post(() => {
         ep.sendAmNonBlocking(amId, mem.address, headerSize,
           mem.address + headerSize, currentSize, 0, new UcxCallback {
             override def onSuccess(request: UcpRequest): Unit = {
@@ -187,22 +240,20 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
           }, new UcpRequestParams()
             .setMemoryType(UcsConstants.MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
             .setMemoryHandle(mem.memory))
-      }
-      
+      })
       if (remaining > 0) {
-        transport.submit(new Runnable {
-          override def run = send(transport.selectWorker, currentId + 1,
-                                  nextLatch)
-        })
+        transport.submit(() => send(currentId + 1, nextLatch))
       } else {
         blockCh.close()
       }
     } catch {
-      case ex: Throwable =>
+      case ex: Throwable => {
         logError(s"Failed to reply stream $currentId tag $replyTag $ex.")
+        blockCh.close()
+      }
     }
 
     firstLatch.countDown()
-    send(this, 0, firstLatch)
+    send(0, firstLatch)
   }
 }

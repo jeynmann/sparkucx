@@ -202,3 +202,13 @@ class UcxStats extends OperationStats {
    */
   override def recvSize: Long = receiveSize
 }
+
+class UcxStreamState(val callback: OperationCallback,
+                     val request: UcxRequest,
+                     var remaining: Int) {}
+
+class UcxSliceState(val callback: OperationCallback,
+                    val request: UcxRequest,
+                    val mem: MemoryBlock,
+                    var offset: Long,
+                    var remaining: Int) {}

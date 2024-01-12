@@ -9,14 +9,16 @@ import org.apache.spark.shuffle.utils.UcxLogging
 import org.openucx.jucx.ucp._
 
 import java.nio.ByteBuffer
-import java.util.concurrent.ExecutorService
+import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.atomic.AtomicBoolean
 
 class ExternalUcxTransport(val ucxShuffleConf: ExternalUcxConf) extends UcxLogging {
   @volatile protected var initialized: Boolean = false
-  private[ucx] var ucxContext: UcpContext = _
+  protected var ucxContext: UcpContext = _
+  protected val ucpWorkerParams = new UcpWorkerParams().requestThreadSafety()
   private[ucx] var hostBounceBufferMemoryPool: UcxLimitedMemPool = _
-  private[ucx] val ucpWorkerParams = new UcpWorkerParams().requestThreadSafety()
-  private[ucx] var progressExecutors: ExecutorService = _
+  private[ucx] var worker: UcpWorker = _
+  private[ucx] var progressThread: ProgressThread = _
 
   def estimateNumEps(): Int = 1
 
@@ -45,49 +47,90 @@ class ExternalUcxTransport(val ucxShuffleConf: ExternalUcxConf) extends UcxLoggi
                                     ucxShuffleConf.memoryLimit)
   }
 
-  def initProgressPool(threadNum: Int): Unit = {
-    progressExecutors = UcxThreadUtils.newFixedDaemonPool("UCX", threadNum)
+  def initWorker(): Unit = {
+    if (ucxShuffleConf.useWakeup) {
+      ucpWorkerParams.requestWakeupRX().requestWakeupTX().requestWakeupEdge()
+    }
+
+    logInfo(s"Allocating global workers")
+    worker = ucxContext.newWorker(ucpWorkerParams)
+  }
+
+  def initProgressPool(threadNum: Int, useWakeup: Boolean): Unit = {
+    progressThread = new ProgressThread(worker, threadNum, useWakeup)
+    progressThread.start()
   }
 
   def init(): ByteBuffer = ???
+
+  @inline
+  def submit(task: Runnable): Unit = {
+    progressThread.submit(task)
+  }
+
+  @inline
+  def post(task: Runnable): Unit = {
+    progressThread.post(task)
+  }
 
   def close(): Unit = {
     if (initialized) {
       if (hostBounceBufferMemoryPool != null) {
         hostBounceBufferMemoryPool.close()
+        hostBounceBufferMemoryPool = null
+      }
+      if (progressThread != null) {
+        progressThread.close()
+        progressThread = null
       }
       if (ucxContext != null) {
         ucxContext.close()
-      }
-      if (progressExecutors != null) {
-        progressExecutors.shutdown()
+        ucxContext = null
       }
       initialized = false
     }
   }
 }
 
-private[ucx] class UcxStreamState(val callback: OperationCallback,
-                                  val request: UcxRequest,
-                                  var remaining: Int) {}
+class ProgressThread(worker: UcpWorker, threadNum: Int, useWakeup: Boolean)
+  extends Thread with UcxLogging {
+  private val taskQueue = new ConcurrentLinkedQueue[Runnable]
+  private val waiting = new AtomicBoolean(false)
+  private val running = new AtomicBoolean(true)
 
-private[ucx] class UcxSliceState(val callback: OperationCallback,
-                                 val request: UcxRequest,
-                                 val mem: MemoryBlock,
-                                 var offset: Long,
-                                 var remaining: Int) {}
-
-private[ucx] class ProgressThread(
-  name: String, worker: UcpWorker, useWakeup: Boolean) extends Thread {
   setDaemon(true)
-  setName(name)
+  setName("UCX-progress")
+
+  private val replyWorkersThreadPool = UcxThreadUtils.newFixedDaemonPool(
+    "UcxListenerThread", threadNum)
+
+  @inline
+  def submit(task: Runnable): Unit = {
+    replyWorkersThreadPool.submit(task)
+  }
+
+  @inline
+  def post(task: Runnable): Unit = {
+    taskQueue.add(task)
+    if (waiting.compareAndSet(true, false)) {
+      worker.signal()
+    }
+  }
+
+  def close(): Unit = {
+    running.set(false)
+    worker.signal()
+    worker.close()
+  }
 
   override def run(): Unit = {
-    while (!isInterrupted) {
-      worker.synchronized {
-        while (worker.progress != 0) {}
+    while (running.get()) {
+      val task = taskQueue.poll()
+      if (task != null) {
+        task.run()
       }
-      if (useWakeup) {
+      while (worker.progress != 0) {}
+      if (useWakeup && taskQueue.isEmpty && waiting.compareAndSet(false, true)) {
         worker.waitForEvents()
       }
     }

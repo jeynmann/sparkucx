@@ -18,7 +18,6 @@ import java.util.concurrent.atomic.AtomicInteger
 
 class ExternalUcxClientTransport(val clientConf: ExternalUcxClientConf, val blockManagerId: BlockManagerId)
   extends ExternalUcxTransport(clientConf) with UcxLogging {
-  @volatile protected var running: Boolean = true
   private[spark] val timeout = clientConf.getSparkConf.getTimeAsMs(
     "spark.network.timeout", "10s")
   private[spark] lazy val sparkTransportConf = SparkTransportConf.fromSparkConf(
@@ -31,23 +30,8 @@ class ExternalUcxClientTransport(val clientConf: ExternalUcxClientConf, val bloc
   private[ucx] val ucxServer = new InetSocketAddress(tcpServer.getHostName,
                                                      clientConf.ucxServerPort)
   private[ucx] val serverMap = new TrieMap[InetSocketAddress, ByteBuffer]
-  private[ucx] val currentWorkerId = new AtomicInteger()
-  private[ucx] val workerLocal = new ThreadLocal[ExternalUcxClientWorker]
-  private[ucx] var allocatedWorker: Array[ExternalUcxClientWorker] = _
 
-  private[this] class ProgressTask(worker: UcpWorker) extends Runnable {
-    override def run(): Unit = {
-      val useWakeup = ucxShuffleConf.useWakeup
-      while (running) {
-        worker.synchronized {
-          while (worker.progress != 0) {}
-        }
-        if (useWakeup) {
-          worker.waitForEvents()
-        }
-      }
-    }
-  }
+  private var handler: ExternalUcxClientWorker = _
 
   override def estimateNumEps(): Int = clientConf.numWorkers *
       clientConf.sparkConf.getInt("spark.executor.instances", 1)
@@ -55,78 +39,42 @@ class ExternalUcxClientTransport(val clientConf: ExternalUcxClientConf, val bloc
   override def init(): ByteBuffer = {
     initContext()
     initMemoryPool()
-  
-    if (clientConf.useWakeup) {
-      ucpWorkerParams.requestWakeupRX().requestWakeupTX().requestWakeupEdge()
-    }
 
-    initProgressPool(clientConf.numWorkers)
-
-    logInfo(s"Allocating ${clientConf.numWorkers} client workers")
     val appId = clientConf.sparkConf.getAppId
     val exeId = blockManagerId.executorId.toLong
-    allocatedWorker = new Array[ExternalUcxClientWorker](clientConf.numWorkers)
-    for (i <- 0 until clientConf.numWorkers) {
-      ucpWorkerParams.setClientId((exeId << 32) | i.toLong)
-      val worker = ucxContext.newWorker(ucpWorkerParams)
-      val workerId = new UcxWorkerId(appId, exeId.toInt, i)
-      allocatedWorker(i) = new ExternalUcxClientWorker(worker, this, workerId)
-      progressExecutors.execute(new ProgressTask(allocatedWorker(i).worker))
-    }
+    ucpWorkerParams.setClientId(exeId)
+    initWorker()
+
+    val workerId = new UcxWorkerId(appId, exeId.toInt, 0)
+    handler = new ExternalUcxClientWorker(worker, this, workerId)
+
+    logInfo(s"Allocating ${clientConf.numWorkers} client threads")
+    initProgressPool(clientConf.numWorkers, clientConf.useWakeup)
 
     initialized = true
-    logInfo(s"Query UCX-service ${blockManagerId}")
-    queryService()
-  }
-
-  def queryService(): ByteBuffer = {
-    allocatedWorker.foreach(_.queryService(tcpServer, ucxServer))
-    while (!serverMap.contains(tcpServer)) {
-      Thread.sleep(5)
-    }
-    serverMap(tcpServer)
+    logInfo(s"Transport init done. ${blockManagerId}")
+    SerializationUtils.serializeInetAddress(ucxServer)
   }
 
   override def close(): Unit = {
     if (initialized) {
-      running = false
-
-      if (allocatedWorker != null) {
-        allocatedWorker.foreach(_.close)
+      if (handler != null) {
+        handler.close()
+        handler = null
       }
-
       super.close()
     }
   }
 
-  // @inline
-  // def selectWorker(): ExternalUcxClientWorker = {
-  //   allocatedWorker(
-  //     (currentWorkerId.incrementAndGet() % allocatedWorker.length).abs)
-  // }
-
-  @inline
-  def selectWorker(): ExternalUcxClientWorker = {
-    Option(workerLocal.get) match {
-      case Some(worker) => worker
-      case None => {
-        val worker = allocatedWorker(
-          (currentWorkerId.incrementAndGet() % allocatedWorker.length).abs)
-        workerLocal.set(worker)
-        worker
-      }
-    }
-  }
-
   def maxBlocksInAmHeader(): Long = {
-    (allocatedWorker(0).worker.getMaxAmHeaderSize - 2) / UnsafeUtils.INT_SIZE
+    (worker.getMaxAmHeaderSize - 2) / UnsafeUtils.INT_SIZE
   }
 
   def connect(serverBuffer: SerializableDirectBuffer,
               addressBuffer: SerializableDirectBuffer): Unit = {
     val server = SerializationUtils.deserializeInetAddress(serverBuffer.value)
     serverMap.getOrElseUpdate(server, addressBuffer.value)
-    allocatedWorker.foreach(_.getConnection(server))
+    handler.getConnection(server)
   }
 
   def connectAll(serverAddressMap: Map[SerializableDirectBuffer,
@@ -138,7 +86,7 @@ class ExternalUcxClientTransport(val clientConf: ExternalUcxClientConf, val bloc
       serverMap.getOrElseUpdate(server, ucpAddress)
       server
     })
-    allocatedWorker.foreach(w => serverSet.foreach(w.getConnection(_)))
+    serverSet.foreach(handler.getConnection(_))
   }
 
   /**
@@ -148,14 +96,14 @@ class ExternalUcxClientTransport(val clientConf: ExternalUcxClientConf, val bloc
                             blockIds: Seq[BlockId],
                             callbacks: Seq[OperationCallback]): Unit = {
     val server = new InetSocketAddress(host, port)
-    selectWorker.fetchBlocksByBlockIds(server, exeId, blockIds, callbacks)
+    handler.fetchBlocksByBlockIds(server, exeId, blockIds, callbacks)
   }
 
   def fetchBlockByStream(host: String, port: Int, exeId: Int,
                          blockId: BlockId,
                          callback: OperationCallback): Unit = {
     val server = new InetSocketAddress(host, port)
-    selectWorker.fetchBlockByStream(server, exeId, blockId, callback)
+    handler.fetchBlockByStream(server, exeId, blockId, callback)
   }
 }
 
