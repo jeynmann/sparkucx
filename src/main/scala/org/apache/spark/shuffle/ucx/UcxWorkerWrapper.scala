@@ -70,35 +70,93 @@ class UcxRefCountMemoryBlock(baseBlock: MemoryBlock, offset: Long, size: Long,
 /**
  * Worker per thread wrapper, that maintains connection and progress logic.
  */
-case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, isClientWorker: Boolean,
+case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport,
                             id: Long = 0L)
   extends Closeable with Logging {
   private[ucx] final val connections = new TrieMap[transport.ExecutorId, UcpEndpoint]
-  private[ucx] lazy val requestData = new TrieMap[Int, (Seq[OperationCallback], UcxRequest, transport.BufferAllocator)]
-  private[ucx] lazy val streamData = new TrieMap[Int, UcxStreamState]
-  private[ucx] lazy val sliceData = new TrieMap[Int, UcxSliceState]
-  private[ucx] lazy val tag = new AtomicInteger(Random.nextInt())
+  private[ucx] final val requestData = new TrieMap[Int, (Seq[OperationCallback], UcxRequest, transport.BufferAllocator)]
+  private[ucx] final val streamData = new TrieMap[Int, UcxStreamState]
+  private[ucx] final val sliceData = new TrieMap[Int, UcxSliceState]
+  private[ucx] final val tag = new AtomicInteger(Random.nextInt())
 
   private[ucx] lazy val ioThreadOn = transport.ucxShuffleConf.numIoThreads > 1
   private[ucx] lazy val ioThreadPool = ThreadUtils.newForkJoinPool("IO threads",
     transport.ucxShuffleConf.numIoThreads)
   private[ucx] lazy val ioTaskSupport = new ForkJoinTaskSupport(ioThreadPool)
 
-  private[ucx] lazy val maxReplySize = transport.ucxShuffleConf.maxReplySize
-  private[ucx] lazy val memPool = if (isClientWorker) {
-    transport.hostBounceBufferMemoryPool
-  } else {
-    transport.serverBounceBufferMemoryPool
-  }
+  private[ucx] val maxReplySize = transport.ucxShuffleConf.maxReplySize
+  private[ucx] val memPool = transport.hostBounceBufferMemoryPool
 
-  private[this] case class UcxSliceReplyHandle() extends UcpAmRecvCallback() {
-    override def onReceive(headerAddress: Long, headerSize: Long,
-                           ucpAmData: UcpAmData, ep: UcpEndpoint): Int = {
+  worker.setAmRecvHandler(UcxAmId.REPLY_SLICE,
+    (headerAddress: Long, headerSize: Long, ucpAmData: UcpAmData,
+    ep: UcpEndpoint) => {
       val headerBuffer = UnsafeUtils.getByteBufferView(headerAddress,
                                                        headerSize.toInt)
       val i = headerBuffer.getInt
       val remaining = headerBuffer.getInt
 
+      transport.submit(() => handleReplySlice(i, remaining, ucpAmData))
+      UcsConstants.STATUS.UCS_INPROGRESS
+    }, UcpConstants.UCP_AM_FLAG_PERSISTENT_DATA | UcpConstants.UCP_AM_FLAG_WHOLE_MSG)
+
+  worker.setAmRecvHandler(UcxAmId.REPLY_STREAM,
+    (headerAddress: Long, headerSize: Long, ucpAmData: UcpAmData,
+    _: UcpEndpoint) => {
+      val headerBuffer = UnsafeUtils.getByteBufferView(headerAddress,
+                                                       headerSize.toInt)
+      val i = headerBuffer.getInt
+      val remaining = headerBuffer.getInt
+
+      transport.submit(() => handleReplyStream(i, remaining, ucpAmData))
+      UcsConstants.STATUS.UCS_INPROGRESS
+    }, UcpConstants.UCP_AM_FLAG_PERSISTENT_DATA | UcpConstants.UCP_AM_FLAG_WHOLE_MSG)
+
+  // Receive block data handler
+  worker.setAmRecvHandler(UcxAmId.REPLY_BLOCK,
+    (headerAddress: Long, headerSize: Long, ucpAmData: UcpAmData,
+    _: UcpEndpoint) => {
+      val headerBuffer = UnsafeUtils.getByteBufferView(headerAddress, headerSize.toInt)
+      val i = headerBuffer.getInt
+      // Header contains tag followed by sizes of blocks
+      val numBlocks = headerBuffer.remaining() / UnsafeUtils.INT_SIZE
+      val blockSizes = (0 until numBlocks).map(_ => headerBuffer.getInt())
+
+      transport.submit(() => handleReplyBlock(i, blockSizes, ucpAmData))
+      UcsConstants.STATUS.UCS_INPROGRESS
+    }, UcpConstants.UCP_AM_FLAG_PERSISTENT_DATA | UcpConstants.UCP_AM_FLAG_WHOLE_MSG)
+
+    // Main RPC thread. Submit each RPC request to separate thread and send reply back from separate worker.
+  worker.setAmRecvHandler(UcxAmId.FETCH_BLOCK,
+    (headerAddress: Long, headerSize: Long, amData: UcpAmData, _: UcpEndpoint) => {
+      val header = UnsafeUtils.getByteBufferView(headerAddress, headerSize.toInt)
+      val replyTag = header.getInt
+      val replyExecutor = header.getLong
+      val buffer = UnsafeUtils.getByteBufferView(amData.getDataAddress,
+                                                amData.getLength.toInt)
+      val blockNum = buffer.remaining() / UcxShuffleBockId.serializedSize
+      val blockIds = (0 until blockNum).map(_ => UcxShuffleBockId.deserialize(buffer))
+      transport.submit(() => {
+        val blocks = blockIds.map(transport.getBlock(_))
+        handleFetchBlockRequest(blocks, replyTag, replyExecutor)
+      })
+      UcsConstants.STATUS.UCS_OK
+    }, UcpConstants.UCP_AM_FLAG_WHOLE_MSG )
+
+  worker.setAmRecvHandler(UcxAmId.FETCH_STREAM,
+    (headerAddress: Long, headerSize: Long, amData: UcpAmData, _: UcpEndpoint) => {
+      val header = UnsafeUtils.getByteBufferView(headerAddress, headerSize.toInt)
+      val replyTag = header.getInt
+      val replyExecutor = header.getLong
+      val blockId = UcxShuffleBockId.deserialize(header)
+      transport.submit(() => {
+        val block = transport.getBlock(blockId)
+        handleFetchBlockStream(block, replyTag, replyExecutor)
+      })
+      UcsConstants.STATUS.UCS_OK
+    }, UcpConstants.UCP_AM_FLAG_WHOLE_MSG )
+
+  private def handleReplySlice(
+    i: Int, remaining: Int, ucpAmData: UcpAmData): Unit = {
       val sliceState = sliceData.getOrElseUpdate(i, {
         requestData.remove(i) match {
           case Some(data) => {
@@ -137,6 +195,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
             new UcxSucceedOperationResult(result, stats))
           sliceData.remove(i)
         }
+        ucpAmData.close()
       } else {
         stats.amHandleTime = System.nanoTime()
         worker.recvAmDataNonBlocking(
@@ -159,18 +218,10 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
             }
           }, UcsConstants.MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
       }
-      UcsConstants.STATUS.UCS_OK
     }
-  }
 
-  private[this] case class UcxStreamReplyHandle() extends UcpAmRecvCallback() {
-    override def onReceive(headerAddress: Long, headerSize: Long,
-                           ucpAmData: UcpAmData, ep: UcpEndpoint): Int = {
-      val headerBuffer = UnsafeUtils.getByteBufferView(headerAddress,
-                                                       headerSize.toInt)
-      val i = headerBuffer.getInt
-      val remaining = headerBuffer.getInt
-
+  private def handleReplyStream(
+    i: Int, remaining: Int, ucpAmData: UcpAmData): Unit = {
       val data = streamData.get(i)
       if (data.isEmpty) {
         throw new UcxException(s"Stream tag $i context not found.")
@@ -198,6 +249,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
             new UcxSucceedOperationResult(null, stats))
           streamData.remove(i)
         }
+        ucpAmData.close()
       } else {
         val mem = memPool.get(ucpAmData.getLength)
         stats.amHandleTime = System.nanoTime()
@@ -221,22 +273,11 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
             }
           }, UcsConstants.MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
       }
-      UcsConstants.STATUS.UCS_OK
     }
-  }
 
-  if (isClientWorker) {
-    worker.setAmRecvHandler(UcxAmId.REPLY_SLICE, UcxSliceReplyHandle(),
-                            UcpConstants.UCP_AM_FLAG_WHOLE_MSG)
-    worker.setAmRecvHandler(UcxAmId.REPLY_STREAM, UcxStreamReplyHandle(),
-                            UcpConstants.UCP_AM_FLAG_WHOLE_MSG)
-    // Receive block data handler
-    worker.setAmRecvHandler(UcxAmId.REPLY_BLOCK,
-      (headerAddress: Long, headerSize: Long, ucpAmData: UcpAmData, _: UcpEndpoint) => {
-        val headerBuffer = UnsafeUtils.getByteBufferView(headerAddress, headerSize.toInt)
-        val i = headerBuffer.getInt
+    private def handleReplyBlock(
+      i: Int, blockSizes: Seq[Int], ucpAmData: UcpAmData): Unit = {
         val data = requestData.remove(i)
-
         if (data.isEmpty) {
           throw new UcxException(s"No data for tag $i.")
         }
@@ -246,7 +287,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
         stats.receiveSize = ucpAmData.getLength
 
         // Header contains tag followed by sizes of blocks
-        val numBlocks = (headerSize.toInt - UnsafeUtils.INT_SIZE) / UnsafeUtils.INT_SIZE
+        val numBlocks = blockSizes.length
 
         var offset = 0
         val refCounts = new AtomicInteger(numBlocks)
@@ -257,7 +298,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
             s"in ${stats.getElapsedTimeNs} ns")
 
           for (b <- 0 until numBlocks) {
-            val blockSize = headerBuffer.getInt
+            val blockSize = blockSizes(b)
             if (callbacks(b) != null) {
               callbacks(b).onComplete(new OperationResult {
                 override def getStatus: OperationStatus.Value = OperationStatus.SUCCESS
@@ -271,7 +312,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
               offset += blockSize
             }
           }
-          if (callbacks.isEmpty) UcsConstants.STATUS.UCS_OK else UcsConstants.STATUS.UCS_INPROGRESS
+          ucpAmData.close()
         } else {
           val mem = memPool.get(ucpAmData.getLength)
           stats.amHandleTime = System.nanoTime()
@@ -284,7 +325,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
                   s" for tag $i in ${stats.getElapsedTimeNs} ns " +
                   s"time from amHandle: ${System.nanoTime() - stats.amHandleTime} ns")
                 for (b <- 0 until numBlocks) {
-                  val blockSize = headerBuffer.getInt
+                  val blockSize = blockSizes(b)
                   callbacks(b).onComplete(new OperationResult {
                     override def getStatus: OperationStatus.Value = OperationStatus.SUCCESS
 
@@ -299,25 +340,25 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
 
               }
             }, UcsConstants.MEMORY_TYPE.UCS_MEMORY_TYPE_HOST))
-          UcsConstants.STATUS.UCS_OK
         }
-      }, UcpConstants.UCP_AM_FLAG_PERSISTENT_DATA | UcpConstants.UCP_AM_FLAG_WHOLE_MSG)
-  }
+      }
 
   override def close(): Unit = {
-    if (isClientWorker) {
-      val closeRequests = connections.map {
-        case (_, endpoint) => endpoint.closeNonBlockingForce()
-      }
-      while (!closeRequests.forall(_.isCompleted)) {
-        progress()
-      }
+    val closeRequests = connections.map {
+      case (_, endpoint) => endpoint.closeNonBlockingForce()
+    }
+    while (!closeRequests.forall(_.isCompleted)) {
+      progress()
     }
     connections.clear()
     if (ioThreadOn) {
       ioThreadPool.shutdown()
     }
     worker.close()
+  }
+
+  def maxBlocksInAmHeader(): Long = {
+    (worker.getMaxAmHeaderSize - 2) / UnsafeUtils.INT_SIZE
   }
 
   /**
@@ -372,9 +413,11 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
 
       logDebug(s"@D Worker ${id.toInt}:${id>>32} connecting to Executor($executorId)")
 
-      worker.synchronized {
-        worker.newEndpoint(endpointParams)
-      }
+      val f = new FutureTask(new Callable[UcpEndpoint] {
+        override def call = worker.newEndpoint(endpointParams)
+      })
+      transport.post(f)
+      f.get()
     })
   }
 
@@ -399,7 +442,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
     val dataAddress = address + headerSize
 
     val ep = getConnection(executorId)
-    worker.synchronized {
+    transport.post(() => {
       ep.sendAmNonBlocking(UcxAmId.FETCH_BLOCK, address,
         headerSize, dataAddress, buffer.capacity() - headerSize,
         UcpConstants.UCP_AM_SEND_FLAG_EAGER, new UcxCallback() {
@@ -409,7 +452,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
             s"in ${System.nanoTime() - startTime} ns")
         }
       }, MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
-    }
+    })
   }
 
   def fetchBlockByStream(executorId: transport.ExecutorId, blockId: BlockId,
@@ -432,7 +475,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
     val address = UnsafeUtils.getAdress(buffer)
 
     val ep = getConnection(executorId)
-    worker.synchronized {
+    transport.post(() => {
       ep.sendAmNonBlocking(UcxAmId.FETCH_STREAM, address, headerSize, address, 0,
         UcpConstants.UCP_AM_SEND_FLAG_EAGER, new UcxCallback() {
         override def onSuccess(request: UcpRequest): Unit = {
@@ -441,7 +484,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
             s"tag $t in ${System.nanoTime() - startTime} ns")
         }
       }, MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
-    }
+    })
   }
 
   def handleFetchBlockRequest(blocks: Seq[Block], replyTag: Int, replyExecutor: Long): Unit = try {
@@ -482,24 +525,22 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
 
     val startTime = System.nanoTime()
     val ep = connections(replyExecutor)
-    transport.globalThread.post(new Runnable {
-      override def run: Unit = {
-        ep.sendAmNonBlocking(UcxAmId.REPLY_BLOCK, resultMemory.address, tagAndSizes,
-          resultMemory.address + tagAndSizes, msgSize - tagAndSizes,
-          0, new UcxCallback {
-            override def onSuccess(request: UcpRequest): Unit = {
-              logTrace(s"Sent ${blocks.length} blocks of size: ${msgSize} " +
-                s"to tag $replyTag in ${System.nanoTime() - startTime} ns read " +
-                s"${startTime - readTime} ns")
-              resultMemory.close()
-            }
-            override def onError(ucsStatus: Int, errorMsg: String): Unit = {
-              logError(s"Failed to send $errorMsg")
-              resultMemory.close()
-            }
-          }, new UcpRequestParams().setMemoryType(UcsConstants.MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
-            .setMemoryHandle(resultMemory.memory))
-      }
+    transport.post(() => {
+      ep.sendAmNonBlocking(UcxAmId.REPLY_BLOCK, resultMemory.address, tagAndSizes,
+        resultMemory.address + tagAndSizes, msgSize - tagAndSizes,
+        0, new UcxCallback {
+          override def onSuccess(request: UcpRequest): Unit = {
+            logTrace(s"Sent ${blocks.length} blocks of size: ${msgSize} " +
+              s"to tag $replyTag in ${System.nanoTime() - startTime} ns read " +
+              s"${startTime - readTime} ns")
+            resultMemory.close()
+          }
+          override def onError(ucsStatus: Int, errorMsg: String): Unit = {
+            logError(s"Failed to send $errorMsg")
+            resultMemory.close()
+          }
+        }, new UcpRequestParams().setMemoryType(UcsConstants.MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
+          .setMemoryHandle(resultMemory.memory))
     })
   } catch {
     case ex: Throwable => logError(s"Failed to read and send data: $ex")
@@ -531,25 +572,23 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
 
       val startTime = System.nanoTime()
       val ep = connections(replyExecutor)
-      transport.globalThread.post(new Runnable {
-        override def run: Unit = {
-          ep.sendAmNonBlocking(amId, mem.address, headerSize,
-            mem.address + headerSize, currentSize, 0, new UcxCallback {
-              override def onSuccess(request: UcpRequest): Unit = {
-                logTrace(s"Reply stream block $currentId size $currentSize tag " +
-                  s"$replyTag in ${System.nanoTime() - startTime} ns.")
-                  mem.close()
-                  nextLatch.countDown()
-              }
-              override def onError(ucsStatus: Int, errorMsg: String): Unit = {
-                logError(s"Failed to reply stream $errorMsg")
+      transport.post(() => {
+        ep.sendAmNonBlocking(amId, mem.address, headerSize,
+          mem.address + headerSize, currentSize, 0, new UcxCallback {
+            override def onSuccess(request: UcpRequest): Unit = {
+              logTrace(s"Reply stream block $currentId size $currentSize tag " +
+                s"$replyTag in ${System.nanoTime() - startTime} ns.")
                 mem.close()
                 nextLatch.countDown()
-              }
-            }, new UcpRequestParams()
-              .setMemoryType(UcsConstants.MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
-              .setMemoryHandle(mem.memory))
-        }
+            }
+            override def onError(ucsStatus: Int, errorMsg: String): Unit = {
+              logError(s"Failed to reply stream $errorMsg")
+              mem.close()
+              nextLatch.countDown()
+            }
+          }, new UcpRequestParams()
+            .setMemoryType(UcsConstants.MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
+            .setMemoryHandle(mem.memory))
       })
       if (remaining > 0) {
         send(currentId + 1, nextLatch)
