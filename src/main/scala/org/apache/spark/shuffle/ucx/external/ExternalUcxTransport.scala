@@ -130,7 +130,7 @@ class ProgressThread(worker: UcpWorker, threadNum: Int, useWakeup: Boolean)
         task.run()
       }
       while (worker.progress != 0) {}
-      if (useWakeup && taskQueue.isEmpty && waiting.compareAndSet(false, true)) {
+      if (useWakeup && waiting.compareAndSet(false, true) && taskQueue.isEmpty) {
         worker.waitForEvents()
       }
     }

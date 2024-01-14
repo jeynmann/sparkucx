@@ -77,9 +77,10 @@ case class ExternalUcxClientWorker(val worker: UcpWorker,
             new UcxSucceedOperationResult(result, stats))
           sliceData.remove(i)
         }
+        transport.post(() => ucpAmData.close())
       } else {
         stats.amHandleTime = System.nanoTime()
-        worker.recvAmDataNonBlocking(
+        transport.post(() => worker.recvAmDataNonBlocking(
           ucpAmData.getDataHandle, currentAddress, ucpAmData.getLength,
           new UcxCallback() {
             override def onSuccess(r: UcpRequest): Unit = {
@@ -97,7 +98,7 @@ case class ExternalUcxClientWorker(val worker: UcpWorker,
                 sliceData.remove(i)
               }
             }
-          }, UcsConstants.MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
+          }, UcsConstants.MEMORY_TYPE.UCS_MEMORY_TYPE_HOST))
       }
     }
 
@@ -130,10 +131,11 @@ case class ExternalUcxClientWorker(val worker: UcpWorker,
             new UcxSucceedOperationResult(null, stats))
           streamData.remove(i)
         }
+        transport.post(() => ucpAmData.close())
       } else {
         val mem = memPool.get(ucpAmData.getLength)
         stats.amHandleTime = System.nanoTime()
-        worker.recvAmDataNonBlocking(
+        transport.post(() => worker.recvAmDataNonBlocking(
           ucpAmData.getDataHandle, mem.address, ucpAmData.getLength,
           new UcxCallback() {
             override def onSuccess(r: UcpRequest): Unit = {
@@ -151,7 +153,7 @@ case class ExternalUcxClientWorker(val worker: UcpWorker,
                 streamData.remove(i)
               }
             }
-          }, UcsConstants.MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
+          }, UcsConstants.MEMORY_TYPE.UCS_MEMORY_TYPE_HOST))
       }
     }
 
@@ -215,12 +217,14 @@ case class ExternalUcxClientWorker(val worker: UcpWorker,
         logDebug(s"Received amData: $ucpAmData for tag $i " +
           s"in ${stats.getElapsedTimeNs} ns")
 
+        val address = ucpAmData.getDataAddress
+        val closeCb = () => transport.post(() => ucpAmData.close())
         for (b <- 0 until numBlocks) {
           val blockSize = blockSizes(b)
           if (callbacks(b) != null) {
             callbacks(b).onComplete(new UcxSucceedOperationResult(
-              new UcxAmDataMemoryBlock(ucpAmData, offset, blockSize,
-                                        refCounts), stats))
+              new UcxCloaseCbMemoryBlock(closeCb, address + offset, blockSize,
+                                         refCounts), stats))
             offset += blockSize
           }
         }
@@ -228,7 +232,7 @@ case class ExternalUcxClientWorker(val worker: UcpWorker,
       } else {
         val mem = memPool.get(ucpAmData.getLength)
         stats.amHandleTime = System.nanoTime()
-        request.setRequest(worker.recvAmDataNonBlocking(ucpAmData.getDataHandle, mem.address, ucpAmData.getLength,
+        transport.post(() => request.setRequest(worker.recvAmDataNonBlocking(ucpAmData.getDataHandle, mem.address, ucpAmData.getLength,
           new UcxCallback() {
             override def onSuccess(r: UcpRequest): Unit = {
               request.completed = true
@@ -245,7 +249,7 @@ case class ExternalUcxClientWorker(val worker: UcpWorker,
               }
 
             }
-          }, UcsConstants.MEMORY_TYPE.UCS_MEMORY_TYPE_HOST))
+          }, UcsConstants.MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)))
         UcsConstants.STATUS.UCS_OK
       }
     }
@@ -296,7 +300,6 @@ case class ExternalUcxClientWorker(val worker: UcpWorker,
       }).setName(s"Client to $shuffleServer")
 
       val header = Platform.allocateDirectBuffer(workerId.serializedSize)
-      val workerAddress = worker.getAddress
       workerId.serialize(header)
       header.rewind()
 
@@ -305,6 +308,7 @@ case class ExternalUcxClientWorker(val worker: UcpWorker,
       shuffleServers.getOrElseUpdate(shuffleServer, {
         val f = new FutureTask(new Callable[UcpEndpoint] {
           override def call = {
+            val workerAddress = worker.getAddress
             val ep = worker.newEndpoint(endpointParams)
             ep.sendAmNonBlocking(
               ExternalUcxAmId.CONNECT, UcxUtils.getAddress(header),
