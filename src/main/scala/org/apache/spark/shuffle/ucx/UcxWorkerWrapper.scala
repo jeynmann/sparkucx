@@ -95,7 +95,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport,
       val i = headerBuffer.getInt
       val remaining = headerBuffer.getInt
 
-      transport.submit(() => handleReplySlice(i, remaining, ucpAmData))
+      transport.submitClient(() => handleReplySlice(i, remaining, ucpAmData))
       UcsConstants.STATUS.UCS_INPROGRESS
     }, UcpConstants.UCP_AM_FLAG_PERSISTENT_DATA | UcpConstants.UCP_AM_FLAG_WHOLE_MSG)
 
@@ -107,7 +107,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport,
       val i = headerBuffer.getInt
       val remaining = headerBuffer.getInt
 
-      transport.submit(() => handleReplyStream(i, remaining, ucpAmData))
+      transport.submitClient(() => handleReplyStream(i, remaining, ucpAmData))
       UcsConstants.STATUS.UCS_INPROGRESS
     }, UcpConstants.UCP_AM_FLAG_PERSISTENT_DATA | UcpConstants.UCP_AM_FLAG_WHOLE_MSG)
 
@@ -121,7 +121,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport,
       val numBlocks = headerBuffer.remaining() / UnsafeUtils.INT_SIZE
       val blockSizes = (0 until numBlocks).map(_ => headerBuffer.getInt())
 
-      transport.submit(() => handleReplyBlock(i, blockSizes, ucpAmData))
+      transport.submitClient(() => handleReplyBlock(i, blockSizes, ucpAmData))
       UcsConstants.STATUS.UCS_INPROGRESS
     }, UcpConstants.UCP_AM_FLAG_PERSISTENT_DATA | UcpConstants.UCP_AM_FLAG_WHOLE_MSG)
 
@@ -135,7 +135,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport,
                                                 amData.getLength.toInt)
       val blockNum = buffer.remaining() / UcxShuffleBockId.serializedSize
       val blockIds = (0 until blockNum).map(_ => UcxShuffleBockId.deserialize(buffer))
-      transport.submit(() => {
+      transport.submitServer(() => {
         val blocks = blockIds.map(transport.getBlock(_))
         handleFetchBlockRequest(blocks, replyTag, replyExecutor)
       })
@@ -148,7 +148,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport,
       val replyTag = header.getInt
       val replyExecutor = header.getLong
       val blockId = UcxShuffleBockId.deserialize(header)
-      transport.submit(() => {
+      transport.submitServer(() => {
         val block = transport.getBlock(blockId)
         handleFetchBlockStream(block, replyTag, replyExecutor)
       })
@@ -591,7 +591,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport,
             .setMemoryHandle(mem.memory))
       })
       if (remaining > 0) {
-        send(currentId + 1, nextLatch)
+        transport.submitServer(() => send(currentId + 1, nextLatch))
       }
     } catch {
       case ex: Throwable => logError(s"Failed to reply stream $ex.")
