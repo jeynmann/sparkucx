@@ -56,6 +56,17 @@ class UcxAmDataMemoryBlock(ucpAmData: UcpAmData, offset: Long, size: Long,
   }
 }
 
+class UcxCloaseCbMemoryBlock(closeCb: () => Unit, address: Long, size: Long,
+                             refCount: AtomicInteger)
+  extends MemoryBlock(address, size, true) with Logging {
+
+  override def close(): Unit = {
+    if (refCount.decrementAndGet() == 0) {
+      closeCb()
+    }
+  }
+}
+
 class UcxRefCountMemoryBlock(baseBlock: MemoryBlock, offset: Long, size: Long,
                              refCount: AtomicInteger)
   extends MemoryBlock(baseBlock.address + offset, size, true) with Logging {
@@ -195,10 +206,10 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport,
             new UcxSucceedOperationResult(result, stats))
           sliceData.remove(i)
         }
-        ucpAmData.close()
+        transport.post(() => ucpAmData.close())
       } else {
         stats.amHandleTime = System.nanoTime()
-        worker.recvAmDataNonBlocking(
+        transport.post(() => worker.recvAmDataNonBlocking(
           ucpAmData.getDataHandle, currentAddress, ucpAmData.getLength,
           new UcxCallback() {
             override def onSuccess(r: UcpRequest): Unit = {
@@ -216,7 +227,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport,
                 sliceData.remove(i)
               }
             }
-          }, UcsConstants.MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
+          }, UcsConstants.MEMORY_TYPE.UCS_MEMORY_TYPE_HOST))
       }
     }
 
@@ -249,11 +260,11 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport,
             new UcxSucceedOperationResult(null, stats))
           streamData.remove(i)
         }
-        ucpAmData.close()
+        transport.post(() => ucpAmData.close())
       } else {
         val mem = memPool.get(ucpAmData.getLength)
         stats.amHandleTime = System.nanoTime()
-        worker.recvAmDataNonBlocking(
+        transport.post(() => worker.recvAmDataNonBlocking(
           ucpAmData.getDataHandle, mem.address, ucpAmData.getLength,
           new UcxCallback() {
             override def onSuccess(r: UcpRequest): Unit = {
@@ -271,7 +282,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport,
                 streamData.remove(i)
               }
             }
-          }, UcsConstants.MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
+          }, UcsConstants.MEMORY_TYPE.UCS_MEMORY_TYPE_HOST))
       }
     }
 
@@ -297,6 +308,8 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport,
           logDebug(s"Received amData: $ucpAmData for tag $i " +
             s"in ${stats.getElapsedTimeNs} ns")
 
+          val address = ucpAmData.getDataAddress
+          val closeCb = () => transport.post(() => ucpAmData.close())
           for (b <- 0 until numBlocks) {
             val blockSize = blockSizes(b)
             if (callbacks(b) != null) {
@@ -307,16 +320,15 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport,
 
                 override def getStats: Option[OperationStats] = Some(stats)
 
-                override def getData: MemoryBlock = new UcxAmDataMemoryBlock(ucpAmData, offset, blockSize, refCounts)
+                override def getData: MemoryBlock = new UcxCloaseCbMemoryBlock(closeCb, address + offset, blockSize, refCounts)
               })
               offset += blockSize
             }
           }
-          ucpAmData.close()
         } else {
           val mem = memPool.get(ucpAmData.getLength)
           stats.amHandleTime = System.nanoTime()
-          request.setRequest(worker.recvAmDataNonBlocking(ucpAmData.getDataHandle, mem.address, ucpAmData.getLength,
+          transport.post(() => request.setRequest(worker.recvAmDataNonBlocking(ucpAmData.getDataHandle, mem.address, ucpAmData.getLength,
             new UcxCallback() {
               override def onSuccess(r: UcpRequest): Unit = {
                 request.completed = true
@@ -339,7 +351,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport,
                 }
 
               }
-            }, UcsConstants.MEMORY_TYPE.UCS_MEMORY_TYPE_HOST))
+            }, UcsConstants.MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)))
         }
       }
 

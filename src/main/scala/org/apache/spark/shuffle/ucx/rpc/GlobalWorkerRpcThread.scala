@@ -60,7 +60,7 @@ class GlobalWorkerRpcThread(globalWorker: UcpWorker, transport: UcxShuffleTransp
         task.run()
       }
       while (globalWorker.progress != 0) {}
-      if (useWakeup && taskQueue.isEmpty && waiting.compareAndSet(false, true)) {
+      if (useWakeup && waiting.compareAndSet(false, true) && taskQueue.isEmpty) {
         globalWorker.waitForEvents()
       }
     }
