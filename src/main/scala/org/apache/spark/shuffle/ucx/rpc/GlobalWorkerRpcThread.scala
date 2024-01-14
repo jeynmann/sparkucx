@@ -25,9 +25,17 @@ class GlobalWorkerRpcThread(globalWorker: UcpWorker, transport: UcxShuffleTransp
   private val replyWorkersThreadPool = ThreadUtils.newDaemonFixedThreadPool(
     transport.ucxShuffleConf.numListenerThreads, "UcxListenerThread")
 
+  private val fetchThreadPool = ThreadUtils.newDaemonFixedThreadPool(
+    transport.ucxShuffleConf.numWorkers, "UcxFetcherThread")
+
   @inline
-  def submit(task: Runnable): Unit = {
+  def submitServer(task: Runnable): Unit = {
     replyWorkersThreadPool.submit(task)
+  }
+
+  @inline
+  def submitClient(task: Runnable): Unit = {
+    fetchThreadPool.submit(task)
   }
 
   @inline

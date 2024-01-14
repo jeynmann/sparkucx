@@ -250,8 +250,13 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
   }
 
   @inline
-  def submit(task: Runnable): Unit = {
-    progressThread.submit(task)
+  def submitServer(task: Runnable): Unit = {
+    progressThread.submitServer(task)
+  }
+
+  @inline
+  def submitClient(task: Runnable): Unit = {
+    progressThread.submitClient(task)
   }
 
   @inline
