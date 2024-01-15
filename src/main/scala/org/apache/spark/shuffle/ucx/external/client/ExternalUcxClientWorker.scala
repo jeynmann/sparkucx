@@ -263,7 +263,7 @@ case class ExternalUcxClientWorker(val worker: UcpWorker,
           }
         }).setName(s"Client to $shuffleServer")
 
-      logInfo(s"$workerId connecting to external service $shuffleServer")
+      logDebug(s"$workerId connecting to external service $shuffleServer")
 
       val header = Platform.allocateDirectBuffer(workerId.serializedSize)
       workerId.serialize(header)

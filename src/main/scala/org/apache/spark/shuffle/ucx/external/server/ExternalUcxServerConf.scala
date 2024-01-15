@@ -46,6 +46,10 @@ class ExternalUcxServerConf(val yarnConf: Configuration) extends ExternalUcxConf
     ExternalUcxConf.WAKEUP_FEATURE_KEY,
     ExternalUcxConf.WAKEUP_FEATURE_DEFAULT)
 
+  override lazy val numWorkers: Int = yarnConf.getInt(
+    ExternalUcxConf.NUM_WORKERS_KEY,
+    ExternalUcxConf.NUM_WORKERS_DEFAULT)
+
   override lazy val numListenerThreads: Int = yarnConf.getInt(
     ExternalUcxConf.NUM_LISTNER_THREADS_KEY,
     ExternalUcxConf.NUM_LISTNER_THREADS_DEFAULT)

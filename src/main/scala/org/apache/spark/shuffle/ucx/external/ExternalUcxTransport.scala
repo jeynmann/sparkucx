@@ -13,7 +13,6 @@ import java.util.concurrent.ExecutorService
 
 class ExternalUcxTransport(val ucxShuffleConf: ExternalUcxConf) extends UcxLogging {
   @volatile protected var initialized: Boolean = false
-  @volatile protected var running: Boolean = true
   private[ucx] var ucxContext: UcpContext = _
   private[ucx] var hostBounceBufferMemoryPool: UcxLimitedMemPool = _
   private[ucx] val ucpWorkerParams = new UcpWorkerParams().requestThreadSafety()
@@ -54,7 +53,6 @@ class ExternalUcxTransport(val ucxShuffleConf: ExternalUcxConf) extends UcxLoggi
 
   def close(): Unit = {
     if (initialized) {
-      running = false
       if (hostBounceBufferMemoryPool != null) {
         hostBounceBufferMemoryPool.close()
       }

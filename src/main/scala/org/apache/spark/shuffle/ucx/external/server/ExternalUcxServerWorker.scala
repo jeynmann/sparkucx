@@ -54,7 +54,9 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
   }
 
   def getConnectionBack(shuffleClient: UcxWorkerId): UcpEndpoint = {
-    shuffleClients.getOrElseUpdate(shuffleClient, {
+    if (shuffleClients.contains(shuffleClient)) {
+      shuffleClients(shuffleClient)
+    } else {
       val exeWorkerId = UcxWorkerId.makeExeWorkerId(shuffleClient)
       val workerMap = transport.workerMap
       if (!workerMap.contains(shuffleClient.appId)) {
@@ -76,8 +78,10 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
           Thread.`yield`
         }
       }
-      connectBack(shuffleClient, appMap(exeWorkerId))
-    })
+      shuffleClients.getOrElseUpdate(shuffleClient, {
+        connectBack(shuffleClient, appMap(exeWorkerId))
+      })
+    }
   }
 
   def connectBack(shuffleClient: UcxWorkerId, workerAddress: ByteBuffer): UcpEndpoint = {

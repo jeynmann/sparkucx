@@ -17,6 +17,7 @@ import java.util.concurrent.atomic.AtomicInteger
 
 class ExternalUcxClientTransport(clientConf: ExternalUcxClientConf, blockManagerId: BlockManagerId)
 extends ExternalUcxTransport(clientConf) with UcxLogging {
+  @volatile protected var running: Boolean = true
   private[spark] val serverPort = clientConf.ucxServerPort
   private[spark] lazy val sparkTransportConf = SparkTransportConf.fromSparkConf(
     clientConf.getSparkConf, "shuffle", clientConf.numWorkers)
@@ -74,9 +75,13 @@ extends ExternalUcxTransport(clientConf) with UcxLogging {
 
   override def close(): Unit = {
     if (initialized) {
+      running = false
+
       if (allocatedWorker != null) {
         allocatedWorker.foreach(_.close)
       }
+
+      super.close()
     }
   }
 

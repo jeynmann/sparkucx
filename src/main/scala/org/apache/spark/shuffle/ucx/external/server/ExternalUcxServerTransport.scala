@@ -19,6 +19,7 @@ class ExternalUcxServerTransport(
   serverConf: ExternalUcxServerConf, blockManager: ExternalUcxShuffleBlockResolver)
   extends ExternalUcxTransport(serverConf)
   with UcxLogging {
+  @volatile protected var running: Boolean = true
   private[ucx] val workerMap = new TrieMap[String, TrieMap[Long, ByteBuffer]]
   private val errorHandler = new UcpEndpointErrorHandler {
     override def onError(ucpEndpoint: UcpEndpoint, errorCode: Int, errorString: String): Unit = {
@@ -109,12 +110,12 @@ class ExternalUcxServerTransport(
       UcsConstants.STATUS.UCS_OK
     }, UcpConstants.UCP_AM_FLAG_WHOLE_MSG )
 
-    initProgressPool(serverConf.numListenerThreads + 1)
+    initProgressPool(serverConf.numWorkers + 1)
 
-    logInfo(s"Allocating ${serverConf.numListenerThreads} server workers")
+    logInfo(s"Allocating ${serverConf.numWorkers} server workers")
 
-    allocatedWorker = new Array[ExternalUcxServerWorker](serverConf.numListenerThreads)
-    for (i <- 0 until serverConf.numListenerThreads) {
+    allocatedWorker = new Array[ExternalUcxServerWorker](serverConf.numWorkers)
+    for (i <- 0 until serverConf.numWorkers) {
       val worker = ucxContext.newWorker(ucpWorkerParams)
       val workerId = new UcxWorkerId("Server", 0, i)
       allocatedWorker(i) = new ExternalUcxServerWorker(worker, this, workerId)
@@ -135,6 +136,8 @@ class ExternalUcxServerTransport(
    */
   override def close(): Unit = {
     if (initialized) {
+      running = false
+
       endpoints.foreach(_.closeNonBlockingForce())
       endpoints.clear()
 
@@ -187,7 +190,6 @@ class ExternalUcxServerTransport(
         allocatedWorker.foreach(_.getConnectionBack(clientWorker))
       }
     })
-    allocatedWorker.foreach(_.connectBack(clientWorker, workerAddress))
   }
 
   def handleFetchBlockRequest(clientWorker: UcxWorkerId, exeId: Int,
