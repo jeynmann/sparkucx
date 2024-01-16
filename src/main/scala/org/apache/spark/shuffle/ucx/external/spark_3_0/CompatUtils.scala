@@ -5,7 +5,7 @@ import java.nio.ByteBuffer
 import java.util.concurrent.{Executors, ExecutorService, ForkJoinPool, ForkJoinWorkerThread}
 
 case class UcxShuffleBlockId(shuffleId: Int, mapId: Long, reduceId: Int) extends BlockId {
-  override def serializedSize: Int = 16
+  override def serializedSize: Int = UcxShuffleBlockId.serializedSize
 
   override def serialize(byteBuffer: ByteBuffer): Unit = {
     byteBuffer.putInt(shuffleId)
@@ -15,6 +15,8 @@ case class UcxShuffleBlockId(shuffleId: Int, mapId: Long, reduceId: Int) extends
 }
 
 object UcxShuffleBlockId {
+  final val serializedSize = 12
+
   def deserialize(byteBuffer: ByteBuffer): UcxShuffleBlockId = {
     val shuffleId = byteBuffer.getInt
     val reduceId = byteBuffer.getInt

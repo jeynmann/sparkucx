@@ -24,7 +24,7 @@ import scala.collection.concurrent.TrieMap
 import scala.collection.mutable
 
 case class UcxShuffleBockId(shuffleId: Int, mapId: Int, reduceId: Int) extends BlockId {
-  override def serializedSize: Int = 12
+  override def serializedSize: Int = UcxShuffleBockId.serializedSize
 
   override def serialize(byteBuffer: ByteBuffer): Unit = {
     byteBuffer.putInt(shuffleId)
@@ -34,6 +34,8 @@ case class UcxShuffleBockId(shuffleId: Int, mapId: Int, reduceId: Int) extends B
 }
 
 object UcxShuffleBockId {
+  final val serializedSize: Int = 12
+
   def deserialize(byteBuffer: ByteBuffer): UcxShuffleBockId = {
     val shuffleId = byteBuffer.getInt
     val mapId = byteBuffer.getInt
@@ -286,28 +288,13 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
       _.connectByWorkerAddress(executorId, workerAddress))
   }
 
-  def handleFetchBlockRequest(replyTag: Int, amData: UcpAmData,
+  def handleFetchBlockRequest(replyTag: Int, blockIds: Seq[BlockId],
                               replyExecutor: Long): Unit = {
     replyThreadPool.submit(new Runnable {
       override def run(): Unit = {
-        val buffer = UnsafeUtils.getByteBufferView(amData.getDataAddress,
-                                                   amData.getLength.toInt)
-        val blockIds = mutable.ArrayBuffer.empty[BlockId]
-
-        // 1. Deserialize blockIds from header
-        while (buffer.remaining() > 0) {
-          val blockId = UcxShuffleBockId.deserialize(buffer)
-          if (!registeredBlocks.contains(blockId)) {
-            throw new UcxException(s"$blockId is not registered")
-          }
-          blockIds += blockId
-        }
-
         val blocks = blockIds.map(bid => registeredBlocks(bid))
-
         selectServerWorker.handleFetchBlockRequest(blocks, replyTag,
                                                    replyExecutor)
-        amData.close()
       }
     })
   }

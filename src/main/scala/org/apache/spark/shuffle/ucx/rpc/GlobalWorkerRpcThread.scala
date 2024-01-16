@@ -21,9 +21,14 @@ class GlobalWorkerRpcThread(globalWorker: UcpWorker, transport: UcxShuffleTransp
     val header = UnsafeUtils.getByteBufferView(headerAddress, headerSize.toInt)
     val replyTag = header.getInt
     val replyExecutor = header.getLong
-    transport.handleFetchBlockRequest(replyTag, amData, replyExecutor)
-    UcsConstants.STATUS.UCS_INPROGRESS
-  }, UcpConstants.UCP_AM_FLAG_PERSISTENT_DATA | UcpConstants.UCP_AM_FLAG_WHOLE_MSG )
+    val buffer = UnsafeUtils.getByteBufferView(amData.getDataAddress,
+                                               amData.getLength.toInt)
+    val blockNum = buffer.remaining() / UcxShuffleBockId.serializedSize
+    val blockIds = (0 until blockNum).map(
+      _ => UcxShuffleBockId.deserialize(buffer))
+    transport.handleFetchBlockRequest(replyTag, blockIds, replyExecutor)
+    UcsConstants.STATUS.UCS_OK
+  }, UcpConstants.UCP_AM_FLAG_WHOLE_MSG )
 
   globalWorker.setAmRecvHandler(2, (headerAddress: Long, headerSize: Long, amData: UcpAmData, _: UcpEndpoint) => {
     val header = UnsafeUtils.getByteBufferView(headerAddress, headerSize.toInt)
