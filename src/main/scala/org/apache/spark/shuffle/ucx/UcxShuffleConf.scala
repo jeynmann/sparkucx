@@ -30,6 +30,14 @@ class UcxShuffleConf(sparkConf: SparkConf) extends SparkConf {
       }).toMap
   }
 
+  private lazy val MEMORY_LIMIT = ConfigBuilder(getUcxConf("memory.limit"))
+    .doc("Enable memory pool size limit.")
+    .booleanConf
+    .createWithDefault(false)
+
+  lazy val memoryLimit: Boolean = sparkConf.getBoolean(MEMORY_LIMIT.key,
+    MEMORY_LIMIT.defaultValue.get)
+
   private lazy val MIN_BUFFER_SIZE = ConfigBuilder(getUcxConf("memory.minBufferSize"))
     .doc("Minimal buffer size in memory pool.")
     .bytesConf(ByteUnit.BYTE)
@@ -37,6 +45,14 @@ class UcxShuffleConf(sparkConf: SparkConf) extends SparkConf {
 
   lazy val minBufferSize: Long = sparkConf.getSizeAsBytes(MIN_BUFFER_SIZE.key,
     MIN_BUFFER_SIZE.defaultValueString)
+
+  private lazy val MAX_BUFFER_SIZE = ConfigBuilder(getUcxConf("memory.maxBufferSize"))
+    .doc("Maximal buffer size in memory pool.")
+    .bytesConf(ByteUnit.BYTE)
+    .createWithDefault(Int.MaxValue)
+
+  lazy val maxBufferSize: Long = sparkConf.getSizeAsBytes(MAX_BUFFER_SIZE.key,
+    MAX_BUFFER_SIZE.defaultValueString)
 
   private lazy val MIN_REGISTRATION_SIZE =
     ConfigBuilder(getUcxConf("memory.minAllocationSize"))
@@ -46,6 +62,15 @@ class UcxShuffleConf(sparkConf: SparkConf) extends SparkConf {
 
   lazy val minRegistrationSize: Int = sparkConf.getSizeAsBytes(MIN_REGISTRATION_SIZE.key,
     MIN_REGISTRATION_SIZE.defaultValueString).toInt
+
+  private lazy val MAX_REGISTRATION_SIZE =
+    ConfigBuilder(getUcxConf("memory.maxAllocationSize"))
+    .doc("Maximal memory registration size in memory pool.")
+    .bytesConf(ByteUnit.MiB)
+    .createWithDefault(16384)
+
+  lazy val maxRegistrationSize: Long = sparkConf.getSizeAsBytes(MAX_REGISTRATION_SIZE.key,
+    MAX_REGISTRATION_SIZE.defaultValueString).toLong
 
   private lazy val SOCKADDR =
     ConfigBuilder(getUcxConf("listener.sockaddr"))
@@ -95,7 +120,7 @@ class UcxShuffleConf(sparkConf: SparkConf) extends SparkConf {
   private lazy val MAX_REPLY_SIZE = ConfigBuilder(getUcxConf("maxReplySize"))
     .doc("Maximum number blocks per request")
     .bytesConf(ByteUnit.MiB)
-    .createWithDefault(256)
+    .createWithDefault(32)
 
   lazy val maxReplySize: Long = sparkConf.getSizeAsBytes(MAX_REPLY_SIZE.key, MAX_REPLY_SIZE.defaultValueString)
 }

@@ -4,7 +4,7 @@
 */
 package org.apache.spark.shuffle
 
-import org.apache.spark.shuffle.compat.spark_2_4.{ExternalUcxShuffleClient, ExternalUcxShuffleReader}
+import org.apache.spark.shuffle.compat.spark_3_0.{ExternalUcxShuffleClient, ExternalUcxShuffleReader}
 import org.apache.spark.shuffle.ucx.ExternalBaseUcxShuffleManager
 import org.apache.spark.{SparkConf, TaskContext}
 

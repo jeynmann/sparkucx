@@ -6,7 +6,7 @@ import org.apache.spark.network.netty.SparkTransportConf
 import org.apache.spark.network.buffer.{ManagedBuffer, NioManagedBuffer}
 import org.apache.spark.network.shuffle.{BlockFetchingListener, DownloadFileManager}
 import org.apache.spark.shuffle.utils.{UcxLogging, UnsafeUtils}
-import org.apache.spark.shuffle.ucx.memory.UcxHostBounceBuffersPool
+import org.apache.spark.shuffle.ucx.memory.UcxLimitedMemPool
 import org.apache.spark.shuffle.ucx.utils.{SerializableDirectBuffer, SerializationUtils}
 import org.apache.spark.storage.BlockManagerId
 import org.openucx.jucx.ucp._
@@ -17,9 +17,12 @@ import java.util.concurrent.atomic.AtomicInteger
 
 class ExternalUcxClientTransport(clientConf: ExternalUcxClientConf, blockManagerId: BlockManagerId)
 extends ExternalUcxTransport(clientConf) with UcxLogging {
+  @volatile protected var running: Boolean = true
   private[spark] val serverPort = clientConf.ucxServerPort
   private[spark] lazy val sparkTransportConf = SparkTransportConf.fromSparkConf(
     clientConf.getSparkConf, "shuffle", clientConf.numWorkers)
+  private[spark] lazy val maxBlocksPerRequest = maxBlocksInAmHeader.min(
+    clientConf.maxBlocksPerRequest).toInt
 
   private[ucx] lazy val currentWorkerId = new AtomicInteger()
   private[ucx] lazy val workerLocal = new ThreadLocal[ExternalUcxClientWorker]
@@ -72,16 +75,14 @@ extends ExternalUcxTransport(clientConf) with UcxLogging {
 
   override def close(): Unit = {
     if (initialized) {
+      running = false
+
       if (allocatedWorker != null) {
         allocatedWorker.foreach(_.close)
       }
+
+      super.close()
     }
-  }
-  override def initMemoryPool(): Unit = {
-    hostBounceBufferMemoryPool = new UcxHostBounceBuffersPool(ucxContext)
-    hostBounceBufferMemoryPool.init(clientConf.minRegistrationSize,
-      clientConf.minBufferSize,
-      clientConf.preallocateBuffersMap)
   }
 
   // @inline
@@ -101,6 +102,10 @@ extends ExternalUcxTransport(clientConf) with UcxLogging {
         worker
       }
     }
+  }
+
+  def maxBlocksInAmHeader(): Long = {
+    (allocatedWorker(0).worker.getMaxAmHeaderSize - 2) / UnsafeUtils.INT_SIZE
   }
 
   def connect(shuffleServer: SerializableDirectBuffer): Unit = {
@@ -139,7 +144,7 @@ private[shuffle] class UcxFetchCallBack(
   override def onComplete(result: OperationResult): Unit = {
     val memBlock = result.getData
     val buffer = UnsafeUtils.getByteBufferView(memBlock.address,
-                                                memBlock.size.toInt)
+                                               memBlock.size.toInt)
     listener.onBlockFetchSuccess(blockId, new NioManagedBuffer(buffer) {
       override def release: ManagedBuffer = {
         memBlock.close()

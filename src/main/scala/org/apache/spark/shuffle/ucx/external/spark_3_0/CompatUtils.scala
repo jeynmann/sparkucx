@@ -1,7 +1,8 @@
 package org.apache.spark.shuffle.ucx
 
+import org.apache.spark.shuffle.utils.UcxThreadFactory
 import java.nio.ByteBuffer
-import java.util.concurrent.{ForkJoinPool, ForkJoinWorkerThread}
+import java.util.concurrent.{Executors, ExecutorService, ForkJoinPool, ForkJoinWorkerThread}
 
 case class UcxShuffleBlockId(shuffleId: Int, mapId: Long, reduceId: Int) extends BlockId {
   override def serializedSize: Int = 16
@@ -44,17 +45,25 @@ object UcxWorkerId {
     byteBuffer.get(appIdBytes)
     UcxWorkerId(new String(appIdBytes), exeId, workerId)
   }
+
   @`inline`
   def makeExeWorkerId(id: UcxWorkerId): Long = {
     (id.workerId.toLong << 32) | id.exeId
   }
+
   @`inline`
   def extractExeId(exeWorkerId: Long): Int = {
     exeWorkerId.toInt
   }
+
   @`inline`
   def extractWorkerId(exeWorkerId: Long): Int = {
     (exeWorkerId >> 32).toInt
+  }
+
+  def apply(appId: String, exeWorkerId: Long): UcxWorkerId = {
+    UcxWorkerId(appId, UcxWorkerId.extractExeId(exeWorkerId),
+                UcxWorkerId.extractWorkerId(exeWorkerId))
   }
 }
 
@@ -67,5 +76,10 @@ object UcxThreadUtils {
         }
     }
     new ForkJoinPool(maxThreadNumber, factory, null, false)
+  }
+
+  def newFixedDaemonPool(prefix: String, maxThreadNumber: Int): ExecutorService = {
+    val factory = new UcxThreadFactory().setDaemon(true).setPrefix(prefix)
+    Executors.newFixedThreadPool(maxThreadNumber, factory)
   }
 }

@@ -4,18 +4,17 @@
  */
 package org.apache.spark.shuffle.ucx
 
-import org.apache.spark.shuffle.ucx.memory.UcxHostBounceBuffersPool
+import org.apache.spark.shuffle.ucx.memory.UcxLimitedMemPool
 import org.apache.spark.shuffle.utils.UcxLogging
 import org.openucx.jucx.ucp._
 
 import java.nio.ByteBuffer
-import java.util.concurrent.{Executors, ExecutorService}
+import java.util.concurrent.ExecutorService
 
-class ExternalUcxTransport(var ucxShuffleConf: ExternalUcxConf) extends UcxLogging {
+class ExternalUcxTransport(val ucxShuffleConf: ExternalUcxConf) extends UcxLogging {
   @volatile protected var initialized: Boolean = false
-  @volatile protected var running: Boolean = true
   private[ucx] var ucxContext: UcpContext = _
-  private[ucx] var hostBounceBufferMemoryPool: UcxHostBounceBuffersPool = _
+  private[ucx] var hostBounceBufferMemoryPool: UcxLimitedMemPool = _
   private[ucx] val ucpWorkerParams = new UcpWorkerParams().requestThreadSafety()
   private[ucx] var progressExecutors: ExecutorService = _
 
@@ -37,18 +36,23 @@ class ExternalUcxTransport(var ucxShuffleConf: ExternalUcxConf) extends UcxLoggi
   }
 
   def initMemoryPool(): Unit = {
-    hostBounceBufferMemoryPool = new UcxHostBounceBuffersPool(ucxContext)
+    hostBounceBufferMemoryPool = new UcxLimitedMemPool(ucxContext)
+    hostBounceBufferMemoryPool.init(ucxShuffleConf.minBufferSize,
+                                    ucxShuffleConf.maxBufferSize,
+                                    ucxShuffleConf.minRegistrationSize,
+                                    ucxShuffleConf.maxRegistrationSize,
+                                    ucxShuffleConf.preallocateBuffersMap,
+                                    ucxShuffleConf.memoryLimit)
   }
 
   def initProgressPool(threadNum: Int): Unit = {
-    progressExecutors = Executors.newFixedThreadPool(threadNum)
+    progressExecutors = UcxThreadUtils.newFixedDaemonPool("UCX", threadNum)
   }
 
   def init(): ByteBuffer = ???
 
   def close(): Unit = {
     if (initialized) {
-      running = false
       if (hostBounceBufferMemoryPool != null) {
         hostBounceBufferMemoryPool.close()
       }
@@ -66,6 +70,12 @@ class ExternalUcxTransport(var ucxShuffleConf: ExternalUcxConf) extends UcxLoggi
 private[ucx] class UcxStreamState(val callback: OperationCallback,
                                   val request: UcxRequest,
                                   var remaining: Int) {}
+
+private[ucx] class UcxSliceState(val callback: OperationCallback,
+                                 val request: UcxRequest,
+                                 val mem: MemoryBlock,
+                                 var offset: Long,
+                                 var remaining: Int) {}
 
 private[ucx] class ProgressThread(
   name: String, worker: UcpWorker, useWakeup: Boolean) extends Thread {

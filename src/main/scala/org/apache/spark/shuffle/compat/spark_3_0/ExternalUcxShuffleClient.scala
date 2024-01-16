@@ -1,4 +1,4 @@
-package org.apache.spark.shuffle.compat.spark_2_4
+package org.apache.spark.shuffle.compat.spark_3_0
 
 import org.openucx.jucx.UcxUtils
 import org.apache.spark.network.buffer.{ManagedBuffer, NioManagedBuffer}
@@ -22,7 +22,13 @@ class ExternalUcxShuffleClient(val transport: ExternalUcxClientTransport) extend
                                            blockId.reduceId)
         callbacks(i) = new UcxFetchCallBack(blockIds(i), listener)
       }
-      transport.fetchBlocksByBlockIds(host, execId.toInt, ucxBlockIds, callbacks)
+      val maxBlocksPerRequest = transport.maxBlocksPerRequest
+      for (i <- 0 until blockIds.length by maxBlocksPerRequest) {
+        val j = i + maxBlocksPerRequest
+        transport.fetchBlocksByBlockIds(host, execId.toInt,
+                                        ucxBlockIds.slice(i, j),
+                                        callbacks.slice(i, j))
+      }
     } else {
       for (i <- blockIds.indices) {
         val blockId = SparkBlockId.apply(blockIds(i))

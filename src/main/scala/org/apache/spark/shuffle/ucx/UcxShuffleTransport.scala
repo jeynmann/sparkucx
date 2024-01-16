@@ -6,7 +6,7 @@ package org.apache.spark.shuffle.ucx
 
 import org.apache.spark.SparkEnv
 import org.apache.spark.internal.Logging
-import org.apache.spark.shuffle.ucx.memory.UcxHostBounceBuffersPool
+import org.apache.spark.shuffle.ucx.memory.UcxLimitedMemPool
 import org.apache.spark.shuffle.ucx.rpc.GlobalWorkerRpcThread
 import org.apache.spark.shuffle.ucx.utils.{SerializableDirectBuffer, SerializationUtils}
 import org.apache.spark.shuffle.utils.UnsafeUtils
@@ -62,12 +62,15 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
   private val registeredBlocks = new TrieMap[BlockId, Block]
   private var progressThread: Thread = _
 
-  var hostBounceBufferMemoryPool: UcxHostBounceBuffersPool = _
+  var hostBounceBufferMemoryPool: UcxLimitedMemPool = _
+  var serverBounceBufferMemoryPool: UcxLimitedMemPool = _
 
   private[spark] lazy val replyThreadPool = ThreadUtils.newForkJoinPool(
     "UcxListenerThread", ucxShuffleConf.numListenerThreads)
   private[spark] lazy val sparkTransportConf = SparkTransportConf.fromSparkConf(
     ucxShuffleConf, "shuffle", ucxShuffleConf.numWorkers)
+  private[spark] lazy val maxBlocksPerRequest = maxBlocksInAmHeader.min(
+    ucxShuffleConf.maxBlocksPerRequest).toInt
 
   private val errorHandler = new UcpEndpointErrorHandler {
     override def onError(ucpEndpoint: UcpEndpoint, errorCode: Int, errorString: String): Unit = {
@@ -101,10 +104,21 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
 
     ucxContext = new UcpContext(params)
     globalWorker = ucxContext.newWorker(ucpWorkerParams)
-    hostBounceBufferMemoryPool = new UcxHostBounceBuffersPool(ucxContext)
-    hostBounceBufferMemoryPool.init(ucxShuffleConf.minRegistrationSize,
-      ucxShuffleConf.minBufferSize,
-      ucxShuffleConf.preallocateBuffersMap)
+    val maxSizeInFlight = ucxShuffleConf.getSparkConf.getSizeAsBytes("spark.reducer.maxSizeInFlight", "48m")
+    val serverMaxRegSize = (ucxShuffleConf.maxRegistrationSize / 2L).min(
+      maxSizeInFlight.max(ucxShuffleConf.maxReplySize * 4L) *
+      ucxShuffleConf.numListenerThreads.toLong)
+    val clientMaxRegSize = ucxShuffleConf.maxRegistrationSize - serverMaxRegSize
+    hostBounceBufferMemoryPool = new UcxLimitedMemPool(ucxContext)
+    hostBounceBufferMemoryPool.init(
+      ucxShuffleConf.minBufferSize, ucxShuffleConf.maxBufferSize,
+      ucxShuffleConf.minRegistrationSize, clientMaxRegSize,
+      ucxShuffleConf.preallocateBuffersMap, ucxShuffleConf.memoryLimit)
+    serverBounceBufferMemoryPool = new UcxLimitedMemPool(ucxContext)
+    serverBounceBufferMemoryPool.init(
+      ucxShuffleConf.minBufferSize, ucxShuffleConf.maxBufferSize,
+      ucxShuffleConf.minRegistrationSize, serverMaxRegSize,
+      Map[Long, Int](), ucxShuffleConf.memoryLimit)
 
     allocatedServerWorkers = new Array[UcxWorkerWrapper](ucxShuffleConf.numListenerThreads)
     logInfo(s"Allocating ${ucxShuffleConf.numListenerThreads} server workers")
@@ -138,7 +152,7 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
     allocatedClientWorkers.foreach(_.progressStart())
     initialized = true
     logInfo(s"Started listener on ${listener.getAddress}")
-    SerializationUtils.serializeInetAddress(listener.getAddress)
+    globalWorker.getAddress()
   }
 
   /**
@@ -150,6 +164,7 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
       endpoints.clear()
 
       hostBounceBufferMemoryPool.close()
+      serverBounceBufferMemoryPool.close()
 
       allocatedClientWorkers.foreach(_.close())
       allocatedServerWorkers.foreach(_.close())
@@ -176,6 +191,10 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
     }
   }
 
+  def maxBlocksInAmHeader(): Long = {
+    (globalWorker.getMaxAmHeaderSize - 2) / UnsafeUtils.INT_SIZE
+  }
+
   /**
    * Add executor's worker address. For standalone testing purpose and for implementations that makes
    * connection establishment outside of UcxShuffleManager.
@@ -189,11 +208,10 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
     executorIdsToAddress.foreach {
       case (executorId, address) => executorAddresses.put(executorId, address.value)
     }
-    allocatedClientWorkers.foreach(w => executorIdsToAddress.foreach(
-      x => w.getConnection(x._1)))
   }
 
   def preConnect(): Unit = {
+    allocatedClientWorkers.foreach(_.preconnect())
   }
 
   /**

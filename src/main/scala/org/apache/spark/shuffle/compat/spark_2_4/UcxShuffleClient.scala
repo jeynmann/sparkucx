@@ -26,8 +26,13 @@ class UcxShuffleClient(val transport: UcxShuffleTransport) extends ShuffleClient
                                           blockId.reduceId)
         callbacks(i) = new UcxFetchCallBack(blockIds(i), listener)
       }
-      transport.fetchBlocksByBlockIds(execId.toLong, ucxBlockIds,
-                                      resultBufferAllocator, callbacks)
+      val maxBlocksPerRequest = transport.maxBlocksPerRequest
+      for (i <- 0 until ucxBlockIds.length by maxBlocksPerRequest) {
+        val j = i + maxBlocksPerRequest
+        transport.fetchBlocksByBlockIds(execId.toLong, ucxBlockIds.slice(i, j),
+                                        resultBufferAllocator,
+                                        callbacks.slice(i, j))
+      }
     } else {
       for (i <- blockIds.indices) {
         val blockId = SparkBlockId.apply(blockIds(i))
