@@ -172,9 +172,11 @@ case class ExternalUcxClientWorker(val worker: UcpWorker,
   }
 
     // Receive block data handler
-    worker.setAmRecvHandler(3, UcxSliceReplyHandle(), UcpConstants.UCP_AM_FLAG_WHOLE_MSG)
-    worker.setAmRecvHandler(2, UcxStreamReplyHandle(), UcpConstants.UCP_AM_FLAG_WHOLE_MSG)
-    worker.setAmRecvHandler(1,
+    worker.setAmRecvHandler(ExteranlAmId.REPLY_SLICE, UcxSliceReplyHandle(),
+                            UcpConstants.UCP_AM_FLAG_WHOLE_MSG)
+    worker.setAmRecvHandler(ExteranlAmId.REPLY_STREAM, UcxStreamReplyHandle(),
+                            UcpConstants.UCP_AM_FLAG_WHOLE_MSG)
+    worker.setAmRecvHandler(ExteranlAmId.REPLY_BLOCK,
       (headerAddress: Long, headerSize: Long, ucpAmData: UcpAmData, _: UcpEndpoint) => {
         val headerBuffer = UnsafeUtils.getByteBufferView(headerAddress, headerSize.toInt)
         val i = headerBuffer.getInt
@@ -272,9 +274,9 @@ case class ExternalUcxClientWorker(val worker: UcpWorker,
 
       worker.synchronized {
         val ep = worker.newEndpoint(endpointParams)
-        ep.sendAmNonBlocking(1, UcxUtils.getAddress(header), header.remaining(),
-        UcxUtils.getAddress(workerAddress), workerAddress.capacity(),
-        UcpConstants.UCP_AM_SEND_FLAG_EAGER,
+        ep.sendAmNonBlocking(ExteranlAmId.CONNECT, UcxUtils.getAddress(header),
+        header.remaining(), UcxUtils.getAddress(workerAddress),
+        workerAddress.capacity(), UcpConstants.UCP_AM_SEND_FLAG_EAGER,
         new UcxCallback() {
           override def onSuccess(request: UcpRequest): Unit = {
             header.clear()
@@ -310,7 +312,7 @@ case class ExternalUcxClientWorker(val worker: UcpWorker,
 
     val ep = getConnection(shuffleServer)
     worker.synchronized {
-      ep.sendAmNonBlocking(0, address,
+      ep.sendAmNonBlocking(ExteranlAmId.FETCH_BLOCK, address,
       headerSize, dataAddress, buffer.capacity() - headerSize,
       UcpConstants.UCP_AM_SEND_FLAG_EAGER, new UcxCallback() {
         override def onSuccess(request: UcpRequest): Unit = {
@@ -343,8 +345,8 @@ case class ExternalUcxClientWorker(val worker: UcpWorker,
 
     val ep = getConnection(shuffleServer)
     worker.synchronized {
-      ep.sendAmNonBlocking(2, address, headerSize, address, 0,
-        UcpConstants.UCP_AM_SEND_FLAG_EAGER, new UcxCallback() {
+      ep.sendAmNonBlocking(ExteranlAmId.FETCH_STREAM, address, headerSize,
+        address, 0, UcpConstants.UCP_AM_SEND_FLAG_EAGER, new UcxCallback() {
         override def onSuccess(request: UcpRequest): Unit = {
           buffer.clear()
           logDebug(s"$workerId sent stream to $execId block $blockId " +

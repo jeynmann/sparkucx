@@ -17,7 +17,6 @@ import java.util.concurrent.atomic.AtomicInteger
 
 class ExternalUcxClientTransport(clientConf: ExternalUcxClientConf, blockManagerId: BlockManagerId)
 extends ExternalUcxTransport(clientConf) with UcxLogging {
-  @volatile protected var running: Boolean = true
   private[spark] val serverPort = clientConf.ucxServerPort
   private[spark] lazy val sparkTransportConf = SparkTransportConf.fromSparkConf(
     clientConf.getSparkConf, "shuffle", clientConf.numWorkers)
@@ -27,20 +26,6 @@ extends ExternalUcxTransport(clientConf) with UcxLogging {
   private[ucx] lazy val currentWorkerId = new AtomicInteger()
   private[ucx] lazy val workerLocal = new ThreadLocal[ExternalUcxClientWorker]
   private[ucx] var allocatedWorker: Array[ExternalUcxClientWorker] = _
-
-  private[this] class ProgressTask(worker: UcpWorker) extends Runnable {
-    override def run(): Unit = {
-      val useWakeup = ucxShuffleConf.useWakeup
-      while (running) {
-        worker.synchronized {
-          while (worker.progress != 0) {}
-        }
-        if (useWakeup) {
-          worker.waitForEvents()
-        }
-      }
-    }
-  }
 
   override def estimateNumEps(): Int = clientConf.numWorkers *
       clientConf.sparkConf.getInt("spark.executor.instances", 1)
@@ -64,7 +49,7 @@ extends ExternalUcxTransport(clientConf) with UcxLogging {
       val worker = ucxContext.newWorker(ucpWorkerParams)
       val workerId = new UcxWorkerId(appId, exeId.toInt, i)
       allocatedWorker(i) = new ExternalUcxClientWorker(worker, this, workerId)
-      progressExecutors.execute(new ProgressTask(allocatedWorker(i).worker))
+      progressExecutors.execute(new ProgressTask(worker))
     }
 
     initialized = true

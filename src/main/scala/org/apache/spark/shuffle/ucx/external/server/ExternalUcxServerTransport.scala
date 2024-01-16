@@ -19,7 +19,6 @@ class ExternalUcxServerTransport(
   serverConf: ExternalUcxServerConf, blockManager: ExternalUcxShuffleBlockResolver)
   extends ExternalUcxTransport(serverConf)
   with UcxLogging {
-  @volatile protected var running: Boolean = true
   private[ucx] val workerMap = new TrieMap[String, TrieMap[Long, ByteBuffer]]
   private val errorHandler = new UcpEndpointErrorHandler {
     override def onError(ucpEndpoint: UcpEndpoint, errorCode: Int, errorString: String): Unit = {
@@ -43,24 +42,6 @@ class ExternalUcxServerTransport(
   private[ucx] lazy val workerLocal = new ThreadLocal[ExternalUcxServerWorker]
   private[ucx] var allocatedWorker: Array[ExternalUcxServerWorker] = _
 
-  private[this] class ProgressTask(worker: UcpWorker) extends Runnable {
-    override def run(): Unit = {
-      val useWakeup = ucxShuffleConf.useWakeup
-      while (running) {
-        try {
-          worker.synchronized {
-            while (worker.progress != 0) {}
-          }
-          if (useWakeup) {
-            worker.waitForEvents()
-          }
-        } catch {
-          case e: UcxException => logError(s"Exception in progress:${e}")
-        }
-      }
-    }
-  }
-
   override def estimateNumEps(): Int = serverConf.ucxEpsNum
 
   override def init(): ByteBuffer = {
@@ -81,7 +62,7 @@ class ExternalUcxServerTransport(
           .setName(s"Endpoint to ${ucpConnectionRequest.getClientId}")))
       }))
     // Main RPC thread. Submit each RPC request to separate thread and send reply back from separate worker.
-    globalWorker.setAmRecvHandler(0,
+    globalWorker.setAmRecvHandler(ExteranlAmId.FETCH_BLOCK,
       (headerAddress: Long, headerSize: Long, amData: UcpAmData, _: UcpEndpoint) => {
       val header = UnsafeUtils.getByteBufferView(headerAddress, headerSize.toInt)
       val workerId = UcxWorkerId.deserialize(header)
@@ -91,7 +72,7 @@ class ExternalUcxServerTransport(
       UcsConstants.STATUS.UCS_INPROGRESS
     }, UcpConstants.UCP_AM_FLAG_PERSISTENT_DATA | UcpConstants.UCP_AM_FLAG_WHOLE_MSG )
     // AM to get worker address for client worker and connect server workers to it
-    globalWorker.setAmRecvHandler(1,
+    globalWorker.setAmRecvHandler(ExteranlAmId.CONNECT,
       (headerAddress: Long, headerSize: Long, amData: UcpAmData, _: UcpEndpoint) => {
       val header = UnsafeUtils.getByteBufferView(headerAddress, headerSize.toInt)
       val workerId = UcxWorkerId.deserialize(header)
@@ -99,7 +80,7 @@ class ExternalUcxServerTransport(
       connectBack(workerId, workerAddress)
       UcsConstants.STATUS.UCS_OK
     }, UcpConstants.UCP_AM_FLAG_WHOLE_MSG)
-    globalWorker.setAmRecvHandler(2,
+    globalWorker.setAmRecvHandler(ExteranlAmId.FETCH_STREAM,
       (headerAddress: Long, headerSize: Long, amData: UcpAmData, _: UcpEndpoint) => {
       val header = UnsafeUtils.getByteBufferView(headerAddress, headerSize.toInt)
       val workerId = UcxWorkerId.deserialize(header)
@@ -119,7 +100,7 @@ class ExternalUcxServerTransport(
       val worker = ucxContext.newWorker(ucpWorkerParams)
       val workerId = new UcxWorkerId("Server", 0, i)
       allocatedWorker(i) = new ExternalUcxServerWorker(worker, this, workerId)
-      progressExecutors.execute(new ProgressTask(allocatedWorker(i).worker))
+      progressExecutors.execute(new ProgressTask(worker))
     }
 
     logInfo(s"Launching global workers")
