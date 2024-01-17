@@ -68,9 +68,15 @@ class ExternalUcxServerTransport(
       val workerId = UcxWorkerId.deserialize(header)
       val replyTag = header.getInt
       val exeId = header.getInt
-      handleFetchBlockRequest(workerId, exeId, replyTag, amData)
-      UcsConstants.STATUS.UCS_INPROGRESS
-    }, UcpConstants.UCP_AM_FLAG_PERSISTENT_DATA | UcpConstants.UCP_AM_FLAG_WHOLE_MSG )
+      // 1. Deserialize blockIds from header
+      val buffer = UnsafeUtils.getByteBufferView(amData.getDataAddress,
+                                                 amData.getLength.toInt)
+      val blockNum = buffer.remaining() / UcxShuffleBlockId.serializedSize
+      val blockIds = (0 until blockNum).map(
+        _ =>UcxShuffleBlockId.deserialize(buffer))
+      handleFetchBlockRequest(workerId, exeId, replyTag, blockIds)
+      UcsConstants.STATUS.UCS_OK
+    }, UcpConstants.UCP_AM_FLAG_WHOLE_MSG )
     // AM to get worker address for client worker and connect server workers to it
     globalWorker.setAmRecvHandler(ExteranlAmId.CONNECT,
       (headerAddress: Long, headerSize: Long, amData: UcpAmData, _: UcpEndpoint) => {
@@ -174,33 +180,16 @@ class ExternalUcxServerTransport(
   }
 
   def handleFetchBlockRequest(clientWorker: UcxWorkerId, exeId: Int,
-                              replyTag: Int, amData: UcpAmData): Unit = {
+                              replyTag: Int, blockIds: Seq[UcxShuffleBlockId])
+                              : Unit = {
     replyExecutors.submit(new Runnable {
       override def run(): Unit = {
-        val buffer = UnsafeUtils.getByteBufferView(amData.getDataAddress,
-                                                   amData.getLength.toInt)
-        // val blockIds = mutable.ArrayBuffer.empty[UcxShuffleBlockId]
-        val blockInfos = mutable.ArrayBuffer.empty[(Long, ManagedBuffer)]
-
-        // 1. Deserialize blockIds from header
-        while (buffer.remaining() > 0) {
-          val bid = UcxShuffleBlockId.deserialize(buffer)
+        val blockInfos = blockIds.map(bid => {
           val buf = blockManager.getBlockData(clientWorker.appId, exeId.toString,
                                               bid.shuffleId, bid.mapId,
                                               bid.reduceId)
-          blockInfos += buf.size() -> buf
-        }
-
-        amData.close()
-
-        // val blocks = blockInfos.map{ case (length, ch) => {
-        //   new Block {
-        //     override def getBlock(byteBuffer: ByteBuffer): Unit = {
-        //       ch.read(byteBuffer)
-        //     }
-        //     override def getSize: Long = length
-        //   }
-        // }}
+          buf.size() -> buf
+        })
         selectWorker.handleFetchBlockRequest(clientWorker, replyTag, blockInfos)
       }
     })
