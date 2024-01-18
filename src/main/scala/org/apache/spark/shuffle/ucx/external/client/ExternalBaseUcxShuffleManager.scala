@@ -9,6 +9,7 @@ import java.util.concurrent.TimeUnit
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.util.Success
 
+import org.apache.spark.SparkException
 import org.apache.spark.rpc.RpcEnv
 import org.apache.spark.shuffle.sort.SortShuffleManager
 import org.apache.spark.shuffle.ucx.rpc.{ExternalUcxExecutorRpcEndpoint, ExternalUcxDriverRpcEndpoint}
@@ -84,12 +85,23 @@ abstract class ExternalBaseUcxShuffleManager(val conf: SparkConf, isDriver: Bool
     val endpoint = rpcEnv.setupEndpoint(
       s"ucx-shuffle-executor-${blockManager.executorId}",
       executorEndpoint)
-    val driverEndpoint = RpcUtils.makeDriverRef(driverRpcName, conf, rpcEnv)
+    var driverCost = 0
+    var driverEndpoint = RpcUtils.makeDriverRef(driverRpcName, conf, rpcEnv)
+    while (driverEndpoint == null) {
+      try {
+        driverEndpoint = RpcUtils.makeDriverRef(driverRpcName, conf, rpcEnv)
+      } catch {
+        case e: SparkException => {
+          Thread.sleep(5)
+          driverCost += 5
+        }
+      }
+    }
     driverEndpoint.ask[PushAllServiceAddress](
       PushServiceAddress(new SerializableDirectBuffer(address), endpoint))
       .andThen {
         case Success(msg) =>
-          logInfo(s"Receive reply $msg")
+          logInfo(s"Driver take $driverCost ms. Receive reply $msg")
           executorEndpoint.receive(msg)
       }
   }

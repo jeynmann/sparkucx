@@ -35,7 +35,6 @@ case class ExternalUcxClientWorker(val worker: UcpWorker,
   private[this] lazy val sliceData = new TrieMap[Int, UcxSliceState]
   private[this] lazy val tag = new AtomicInteger(Random.nextInt())
   private[this] lazy val memPool = transport.hostBounceBufferMemoryPool
-  private[this] lazy val maxReplySize = transport.ucxShuffleConf.maxReplySize
 
   private[this] case class UcxSliceReplyHandle() extends UcpAmRecvCallback() {
     override def onReceive(headerAddress: Long, headerSize: Long,
@@ -48,7 +47,7 @@ case class ExternalUcxClientWorker(val worker: UcpWorker,
       val sliceState = sliceData.getOrElseUpdate(i, {
         requestData.remove(i) match {
           case Some(data) => {
-            val mem = memPool.get(maxReplySize * (remaining + 1))
+            val mem = memPool.get(ucpAmData.getLength * (remaining + 1))
             new UcxSliceState(data._1(0), data._2, mem, 0L, Int.MaxValue)
           }
           case None => throw new UcxException(s"Slice tag $i context not found.")
