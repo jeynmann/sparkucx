@@ -7,7 +7,8 @@ import org.apache.spark.network.buffer.ManagedBuffer
 import org.apache.spark.network.shuffle.ExternalUcxShuffleBlockResolver
 import org.openucx.jucx.ucp._
 import org.openucx.jucx.ucs.UcsConstants
-import org.openucx.jucx.UcxException
+import org.openucx.jucx.ucs.UcsConstants.MEMORY_TYPE
+import org.openucx.jucx.{UcxCallback, UcxException, UcxUtils}
 
 import java.net.InetSocketAddress
 import java.nio.ByteBuffer
@@ -33,10 +34,7 @@ class ExternalUcxServerTransport(
   }
 
   private val endpoints = mutable.Set.empty[UcpEndpoint]
-  private var globalWorker: UcpWorker = _
   private var listener: UcpListener = _
-  private val replyExecutors = UcxThreadUtils.newFixedDaemonPool(
-    "UCX-server", serverConf.numListenerThreads)
 
   private[ucx] lazy val currentWorkerId = new AtomicInteger()
   private[ucx] lazy val workerLocal = new ThreadLocal[ExternalUcxServerWorker]
@@ -52,52 +50,7 @@ class ExternalUcxServerTransport(
       ucpWorkerParams.requestWakeupRX().requestWakeupTX().requestWakeupEdge()
     }
 
-    logInfo(s"Allocating global workers")
-    globalWorker = ucxContext.newWorker(ucpWorkerParams)
-    listener = globalWorker.newListener(new UcpListenerParams().setSockAddr(
-      new InetSocketAddress("0.0.0.0", serverConf.ucxServerPort))
-      .setConnectionHandler((ucpConnectionRequest: UcpConnectionRequest) => {
-        endpoints.add(globalWorker.newEndpoint(new UcpEndpointParams().setConnectionRequest(ucpConnectionRequest)
-          .setPeerErrorHandlingMode().setErrorHandler(errorHandler)
-          .setName(s"Endpoint to ${ucpConnectionRequest.getClientId}")))
-      }))
-    // Main RPC thread. Submit each RPC request to separate thread and send reply back from separate worker.
-    globalWorker.setAmRecvHandler(ExteranlAmId.FETCH_BLOCK,
-      (headerAddress: Long, headerSize: Long, amData: UcpAmData, _: UcpEndpoint) => {
-      val header = UnsafeUtils.getByteBufferView(headerAddress, headerSize.toInt)
-      val workerId = UcxWorkerId.deserialize(header)
-      val replyTag = header.getInt
-      val exeId = header.getInt
-      // 1. Deserialize blockIds from header
-      val buffer = UnsafeUtils.getByteBufferView(amData.getDataAddress,
-                                                 amData.getLength.toInt)
-      val blockNum = buffer.remaining() / UcxShuffleBlockId.serializedSize
-      val blockIds = (0 until blockNum).map(
-        _ =>UcxShuffleBlockId.deserialize(buffer))
-      handleFetchBlockRequest(workerId, exeId, replyTag, blockIds)
-      UcsConstants.STATUS.UCS_OK
-    }, UcpConstants.UCP_AM_FLAG_WHOLE_MSG )
-    // AM to get worker address for client worker and connect server workers to it
-    globalWorker.setAmRecvHandler(ExteranlAmId.CONNECT,
-      (headerAddress: Long, headerSize: Long, amData: UcpAmData, _: UcpEndpoint) => {
-      val header = UnsafeUtils.getByteBufferView(headerAddress, headerSize.toInt)
-      val workerId = UcxWorkerId.deserialize(header)
-      val workerAddress = UnsafeUtils.getByteBufferView(amData.getDataAddress, amData.getLength.toInt)
-      connectBack(workerId, workerAddress)
-      UcsConstants.STATUS.UCS_OK
-    }, UcpConstants.UCP_AM_FLAG_WHOLE_MSG)
-    globalWorker.setAmRecvHandler(ExteranlAmId.FETCH_STREAM,
-      (headerAddress: Long, headerSize: Long, amData: UcpAmData, _: UcpEndpoint) => {
-      val header = UnsafeUtils.getByteBufferView(headerAddress, headerSize.toInt)
-      val workerId = UcxWorkerId.deserialize(header)
-      val replyTag = header.getInt
-      val exeId = header.getInt
-      val blockId = UcxShuffleBlockId.deserialize(header)
-      handleFetchBlockStream(workerId, exeId, replyTag, blockId)
-      UcsConstants.STATUS.UCS_OK
-    }, UcpConstants.UCP_AM_FLAG_WHOLE_MSG )
-
-    initProgressPool(serverConf.numWorkers + 1)
+    initTaskPool(serverConf.numWorkers + 1)
 
     logInfo(s"Allocating ${serverConf.numWorkers} server workers")
 
@@ -105,13 +58,23 @@ class ExternalUcxServerTransport(
     for (i <- 0 until serverConf.numWorkers) {
       val worker = ucxContext.newWorker(ucpWorkerParams)
       val workerId = new UcxWorkerId("Server", 0, i)
+      if (i == 0) {
+        listener = worker.newListener(new UcpListenerParams().setSockAddr(
+          new InetSocketAddress("0.0.0.0", serverConf.ucxServerPort))
+          .setConnectionHandler((ucpConnectionRequest: UcpConnectionRequest) => {
+            val id = ucpConnectionRequest.getClientId()
+            val ep = worker.newEndpoint(
+              new UcpEndpointParams().setConnectionRequest(ucpConnectionRequest)
+                .setPeerErrorHandlingMode().setErrorHandler(errorHandler)
+                .setName(s"Endpoint to $id"))
+            endpoints.add(ep)
+          }))
+      }
       allocatedWorker(i) = new ExternalUcxServerWorker(worker, this, workerId)
-      progressExecutors.execute(new ProgressTask(worker))
     }
 
-    logInfo(s"Launching global workers")
-    // Submit throws no exception except Future.get
-    progressExecutors.execute(new ProgressTask(globalWorker))
+    logInfo(s"Launching ${serverConf.numWorkers} server workers")
+    allocatedWorker.foreach(_.start)
 
     initialized = true
     logInfo(s"Started listener on ${listener.getAddress}")
@@ -125,26 +88,23 @@ class ExternalUcxServerTransport(
     if (initialized) {
       running = false
 
-      endpoints.foreach(_.closeNonBlockingForce())
-      endpoints.clear()
+      allocatedWorker(0).close(() => {
+        if (listener != null) {          
+          endpoints.foreach(_.closeNonBlockingForce())
+          endpoints.clear()
 
-      if (listener != null) {
-        listener.close()
-        listener = null
-      }
-
-      if (globalWorker != null) {
-        globalWorker.close()
-        globalWorker = null
-      }
+          listener.close()
+          listener = null
+        }
+      })
 
       if (allocatedWorker != null) {
         allocatedWorker.foreach(_.close)
       }
 
-      replyExecutors.shutdown()
-
       super.close()
+
+      logInfo("UCX transport closed.")
     }
   }
 
@@ -166,23 +126,20 @@ class ExternalUcxServerTransport(
     })
   }
 
-  def connectBack(clientWorker: UcxWorkerId, workerAddress: ByteBuffer): Unit = {
-    // TODO: need support application remove
-    val copiedAddress = ByteBuffer.allocateDirect(workerAddress.remaining)
-    copiedAddress.put(workerAddress)
-    workerMap.getOrElseUpdate(clientWorker.appId, new TrieMap[Long, ByteBuffer])
-      .getOrElseUpdate(UcxWorkerId.makeExeWorkerId(clientWorker), copiedAddress)
-    replyExecutors.submit(new Runnable {
+  def handleConnect(clientWorker: UcxWorkerId, address: ByteBuffer): Unit = {
+    submit(new Runnable {
       override def run(): Unit = {
-        allocatedWorker.foreach(_.getConnectionBack(clientWorker))
+        allocatedWorker.foreach(_.connectBack(clientWorker, address))
+        workerMap.getOrElseUpdate(clientWorker.appId, new TrieMap[Long, ByteBuffer])
+          .getOrElseUpdate(UcxWorkerId.makeExeWorkerId(clientWorker), address)
       }
     })
   }
 
   def handleFetchBlockRequest(clientWorker: UcxWorkerId, exeId: Int,
-                              replyTag: Int, blockIds: Seq[UcxShuffleBlockId])
-                              : Unit = {
-    replyExecutors.submit(new Runnable {
+                              replyTag: Int, blockIds: Seq[UcxShuffleBlockId]):
+                              Unit = {
+    submit(new Runnable {
       override def run(): Unit = {
         val blockInfos = blockIds.map(bid => {
           val buf = blockManager.getBlockData(clientWorker.appId, exeId.toString,
@@ -197,7 +154,7 @@ class ExternalUcxServerTransport(
 
   def handleFetchBlockStream(clientWorker: UcxWorkerId, exeId: Int,
                              replyTag: Int, bid: UcxShuffleBlockId): Unit = {
-    replyExecutors.submit(new Runnable {
+    submit(new Runnable {
       override def run(): Unit = {
         val buf = blockManager.getBlockData(clientWorker.appId, exeId.toString,
                                             bid.shuffleId, bid.mapId,
@@ -206,11 +163,6 @@ class ExternalUcxServerTransport(
         selectWorker.handleFetchBlockStream(clientWorker, replyTag, blockInfo)
       }
     })
-  }
-
-  @inline
-  def submit(task: Runnable): Unit = {
-    replyExecutors.submit(task)
   }
 
   @inline

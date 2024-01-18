@@ -11,7 +11,7 @@ import org.openucx.jucx.ucp._
 import java.nio.ByteBuffer
 import java.util.concurrent.ExecutorService
 
-object ExteranlAmId {
+object ExternalAmId {
   // client -> server
   final val CONNECT = 1
   final val FETCH_BLOCK = 2
@@ -28,21 +28,7 @@ class ExternalUcxTransport(val ucxShuffleConf: ExternalUcxConf) extends UcxLoggi
   private[ucx] var ucxContext: UcpContext = _
   private[ucx] var hostBounceBufferMemoryPool: UcxLimitedMemPool = _
   private[ucx] val ucpWorkerParams = new UcpWorkerParams().requestThreadSafety()
-  private[ucx] var progressExecutors: ExecutorService = _
-
-  private[ucx] class ProgressTask(worker: UcpWorker) extends Runnable {
-    override def run(): Unit = {
-      val useWakeup = ucxShuffleConf.useWakeup
-      while (running) {
-        worker.synchronized {
-          while (worker.progress != 0) {}
-        }
-        if (useWakeup) {
-          worker.waitForEvents()
-        }
-      }
-    }
-  }
+  private[ucx] var taskExecutors: ExecutorService = _
 
   def estimateNumEps(): Int = 1
 
@@ -71,11 +57,16 @@ class ExternalUcxTransport(val ucxShuffleConf: ExternalUcxConf) extends UcxLoggi
                                     ucxShuffleConf.memoryLimit)
   }
 
-  def initProgressPool(threadNum: Int): Unit = {
-    progressExecutors = UcxThreadUtils.newFixedDaemonPool("UCX", threadNum)
+  def initTaskPool(threadNum: Int): Unit = {
+    taskExecutors = UcxThreadUtils.newFixedDaemonPool("UCX", threadNum)
   }
 
   def init(): ByteBuffer = ???
+
+  @`inline`
+  def submit(task: Runnable): Unit = {
+    taskExecutors.submit(task)
+  }
 
   def close(): Unit = {
     if (initialized) {
@@ -85,8 +76,8 @@ class ExternalUcxTransport(val ucxShuffleConf: ExternalUcxConf) extends UcxLoggi
       if (ucxContext != null) {
         ucxContext.close()
       }
-      if (progressExecutors != null) {
-        progressExecutors.shutdown()
+      if (taskExecutors != null) {
+        taskExecutors.shutdown()
       }
       initialized = false
     }
