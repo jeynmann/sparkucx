@@ -15,7 +15,7 @@ case class UcxShuffleBlockId(shuffleId: Int, mapId: Long, reduceId: Int) extends
 }
 
 object UcxShuffleBlockId {
-  final val serializedSize = 12
+  final val serializedSize = 16
 
   def deserialize(byteBuffer: ByteBuffer): UcxShuffleBlockId = {
     val shuffleId = byteBuffer.getInt
