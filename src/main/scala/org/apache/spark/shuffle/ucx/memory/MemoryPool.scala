@@ -24,6 +24,16 @@ class UcxBounceBufferMemoryBlock(private[ucx] val memory: UcpMemory, private[ucx
   }
 }
 
+class UcxSharedMemoryBlock(val closeCb: () => Unit, val refCount: AtomicInteger,
+                           override val address: Long, override val size: Long)
+  extends MemoryBlock(address, size, true) {
+
+  override def close(): Unit = {
+    if (refCount.decrementAndGet() == 0) {
+      closeCb()
+    }
+  }
+}
 
 /**
  * Base class to implement memory pool

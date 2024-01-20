@@ -54,7 +54,7 @@ abstract class ExternalBaseUcxShuffleManager(val conf: SparkConf, isDriver: Bool
         driverEndpoint = new ExternalUcxDriverRpcEndpoint(rpcEnv)
         rpcEnv.setupEndpoint(driverRpcName, driverEndpoint)
       } else {
-        while (SparkEnv.get.blockManager.blockManagerId == null) {
+        while (SparkEnv.get.blockManager.shuffleServerId == null) {
           Thread.sleep(5)
         }
         startUcxTransport()
@@ -76,7 +76,7 @@ abstract class ExternalBaseUcxShuffleManager(val conf: SparkConf, isDriver: Bool
    * Atomically starts UcxNode singleton - one for all shuffle threads.
    */
   def startUcxTransport(): Unit = if (ucxTransport == null) {
-    val blockManager = SparkEnv.get.blockManager.blockManagerId
+    val blockManager = SparkEnv.get.blockManager.shuffleServerId
     val transport = new ExternalUcxClientTransport(ucxShuffleConf, blockManager)
     val address = transport.init()
     ucxTransport = transport

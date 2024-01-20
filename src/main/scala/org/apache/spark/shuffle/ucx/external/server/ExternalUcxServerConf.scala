@@ -50,9 +50,11 @@ class ExternalUcxServerConf(val yarnConf: Configuration) extends ExternalUcxConf
     ExternalUcxConf.NUM_WORKERS_KEY,
     ExternalUcxConf.NUM_WORKERS_DEFAULT)
 
-  override lazy val numListenerThreads: Int = yarnConf.getInt(
-    ExternalUcxConf.NUM_LISTNER_THREADS_KEY,
-    ExternalUcxConf.NUM_LISTNER_THREADS_DEFAULT)
+  override lazy val numThreads: Int = yarnConf.getInt(
+    ExternalUcxConf.NUM_THREADS_KEY,
+    yarnConf.getInt(
+      ExternalUcxConf.NUM_THREADS_COMPAT_KEY,
+      ExternalUcxConf.NUM_THREADS_DEFAULT))
 
   override lazy val ucxServerPort: Int = yarnConf.getInt(
     ExternalUcxConf.SPARK_UCX_SHUFFLE_SERVICE_PORT_KEY,

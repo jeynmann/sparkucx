@@ -18,7 +18,7 @@ trait ExternalUcxConf {
   lazy val listenerAddress: String = ExternalUcxConf.SOCKADDR_DEFAULT
   lazy val useWakeup: Boolean = ExternalUcxConf.WAKEUP_FEATURE_DEFAULT
   lazy val numIoThreads: Int = ExternalUcxConf.NUM_IO_THREADS_DEFAULT
-  lazy val numListenerThreads: Int = ExternalUcxConf.NUM_LISTNER_THREADS_DEFAULT
+  lazy val numThreads: Int = ExternalUcxConf.NUM_THREADS_DEFAULT
   lazy val numWorkers: Int = ExternalUcxConf.NUM_WORKERS_DEFAULT
   lazy val maxBlocksPerRequest: Int = ExternalUcxConf.MAX_BLOCKS_IN_FLIGHT_DEFAULT
   lazy val ucxServerPort: Int = ExternalUcxConf.SPARK_UCX_SHUFFLE_SERVICE_PORT_DEFAULT
@@ -55,11 +55,13 @@ object ExternalUcxConf {
   lazy val NUM_IO_THREADS_KEY = getUcxConf("numIoThreads")
   lazy val NUM_IO_THREADS_DEFAULT = 1
 
-  lazy val NUM_LISTNER_THREADS_KEY = getUcxConf("numListenerThreads")
-  lazy val NUM_LISTNER_THREADS_DEFAULT = 4
+  lazy val NUM_THREADS_KEY = getUcxConf("numThreads")
+  lazy val NUM_THREADS_COMPAT_KEY = getUcxConf("numListenerThreads")
+  lazy val NUM_THREADS_DEFAULT = 4
 
-  lazy val NUM_WORKERS_KEY = getUcxConf("numClientWorkers")
-  lazy val NUM_WORKERS_DEFAULT = 2
+  lazy val NUM_WORKERS_KEY = getUcxConf("numWorkers")
+  lazy val NUM_WORKERS_COMPAT_KEY = getUcxConf("numClientWorkers")
+  lazy val NUM_WORKERS_DEFAULT = 1
 
   lazy val MAX_BLOCKS_IN_FLIGHT_KEY = getUcxConf("maxBlocksPerRequest")
   lazy val MAX_BLOCKS_IN_FLIGHT_DEFAULT = 50

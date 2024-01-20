@@ -1,5 +1,6 @@
 package org.apache.spark.shuffle.ucx
 
+import scala.collection.concurrent.TrieMap
 // import org.apache.spark.SparkEnv
 import org.apache.spark.network.util.TransportConf
 import org.apache.spark.network.netty.SparkTransportConf
@@ -17,15 +18,16 @@ import java.util.concurrent.atomic.AtomicInteger
 
 class ExternalUcxClientTransport(clientConf: ExternalUcxClientConf, blockManagerId: BlockManagerId)
 extends ExternalUcxTransport(clientConf) with UcxLogging {
-  private[spark] val serverPort = clientConf.ucxServerPort
+  private[spark] val tcpServerPort = blockManagerId.port
+  private[spark] val ucxServerPort = clientConf.ucxServerPort
   private[spark] lazy val sparkTransportConf = SparkTransportConf.fromSparkConf(
-    clientConf.getSparkConf, "shuffle", clientConf.numWorkers)
-  private[spark] lazy val maxBlocksPerRequest = maxBlocksInAmHeader.min(
-    clientConf.maxBlocksPerRequest).toInt
+    clientConf.getSparkConf, "ucx-shuffle", clientConf.numWorkers)
 
   private[ucx] lazy val currentWorkerId = new AtomicInteger()
   private[ucx] lazy val workerLocal = new ThreadLocal[ExternalUcxClientWorker]
   private[ucx] var allocatedWorker: Array[ExternalUcxClientWorker] = _
+
+  private var maxBlocksPerRequest = 0
 
   override def estimateNumEps(): Int = clientConf.numWorkers *
       clientConf.sparkConf.getInt("spark.executor.instances", 1)
@@ -38,7 +40,7 @@ extends ExternalUcxTransport(clientConf) with UcxLogging {
       ucpWorkerParams.requestWakeupRX().requestWakeupTX().requestWakeupEdge()
     }
 
-    initProgressPool(clientConf.numWorkers)
+    initTaskPool(clientConf.numThreads)
 
     logInfo(s"Allocating ${clientConf.numWorkers} client workers")
     val appId = clientConf.sparkConf.getAppId
@@ -49,11 +51,17 @@ extends ExternalUcxTransport(clientConf) with UcxLogging {
       val worker = ucxContext.newWorker(ucpWorkerParams)
       val workerId = new UcxWorkerId(appId, exeId.toInt, i)
       allocatedWorker(i) = new ExternalUcxClientWorker(worker, this, workerId)
-      progressExecutors.execute(new ProgressTask(worker))
     }
 
+    logInfo(s"Launching ${clientConf.numWorkers} client workers")
+    allocatedWorker.foreach(_.start)
+
+    maxBlocksPerRequest = clientConf.maxBlocksPerRequest.min(
+      (allocatedWorker(0).worker.getMaxAmHeaderSize - 2).toInt /
+      UnsafeUtils.INT_SIZE)
+
     initialized = true
-    val shuffleServer = new InetSocketAddress(blockManagerId.host, serverPort)
+    val shuffleServer = new InetSocketAddress(blockManagerId.host, ucxServerPort)
     logInfo(s"Shuffle server ${shuffleServer}")
     SerializationUtils.serializeInetAddress(shuffleServer)
   }
@@ -70,6 +78,7 @@ extends ExternalUcxTransport(clientConf) with UcxLogging {
     }
   }
 
+  def getMaxBlocksPerRequest: Int = maxBlocksPerRequest
   // @inline
   // def selectWorker(): ExternalUcxClientWorker = {
   //   allocatedWorker(
@@ -89,20 +98,16 @@ extends ExternalUcxTransport(clientConf) with UcxLogging {
     }
   }
 
-  def maxBlocksInAmHeader(): Long = {
-    (allocatedWorker(0).worker.getMaxAmHeaderSize - 2) / UnsafeUtils.INT_SIZE
-  }
-
   def connect(shuffleServer: SerializableDirectBuffer): Unit = {
     val addressBuffer = shuffleServer.value
     val address = SerializationUtils.deserializeInetAddress(addressBuffer)
-    allocatedWorker.foreach(_.getConnection(address))
+    allocatedWorker.foreach(_.connect(address))
   }
 
   def connectAll(shuffleServerSet: Set[SerializableDirectBuffer]): Unit = {
     val addressSet = shuffleServerSet.map(addressBuffer =>
       SerializationUtils.deserializeInetAddress(addressBuffer.value))
-    allocatedWorker.foreach(w => addressSet.foreach(w.getConnection(_)))
+    allocatedWorker.foreach(w => addressSet.foreach(w.connect(_)))
   }
 
   /**
@@ -111,14 +116,12 @@ extends ExternalUcxTransport(clientConf) with UcxLogging {
   def fetchBlocksByBlockIds(host: String, exeId: Int,
                             blockIds: Seq[BlockId],
                             callbacks: Seq[OperationCallback]): Unit = {
-    selectWorker.fetchBlocksByBlockIds(
-      new InetSocketAddress(host, serverPort), exeId, blockIds, callbacks)
+    selectWorker.fetchBlocksByBlockIds(host, exeId, blockIds, callbacks)
   }
 
   def fetchBlockByStream(host: String, exeId: Int, blockId: BlockId,
                          callback: OperationCallback): Unit = {
-    selectWorker.fetchBlockByStream(
-      new InetSocketAddress(host, serverPort), exeId, blockId, callback)
+    selectWorker.fetchBlockByStream(host, exeId, blockId, callback)
   }
 }
 
