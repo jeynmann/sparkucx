@@ -22,7 +22,7 @@ class UcxWorkerThread(worker: UcpWorker, useWakeup: Boolean) extends Thread {
 
   @`inline`
   def await() = {
-    if (waiting.compareAndSet(false, true) && taskQueue.isEmpty) {
+    if (taskQueue.isEmpty && waiting.compareAndSet(false, true) && taskQueue.isEmpty) {
       worker.waitForEvents()
     }
   }

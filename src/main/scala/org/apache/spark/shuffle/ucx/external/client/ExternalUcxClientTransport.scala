@@ -40,8 +40,6 @@ extends ExternalUcxTransport(clientConf) with UcxLogging {
       ucpWorkerParams.requestWakeupRX().requestWakeupTX().requestWakeupEdge()
     }
 
-    initTaskPool(clientConf.numThreads)
-
     logInfo(s"Allocating ${clientConf.numWorkers} client workers")
     val appId = clientConf.sparkConf.getAppId
     val exeId = blockManagerId.executorId.toLong
