@@ -20,7 +20,7 @@ class ExternalUcxServerTransport(
   serverConf: ExternalUcxServerConf, blockManager: ExternalUcxShuffleBlockResolver)
   extends ExternalUcxTransport(serverConf)
   with UcxLogging {
-  private[ucx] val workerMap = new TrieMap[String, TrieMap[Long, ByteBuffer]]
+  private[ucx] val workerMap = new TrieMap[String, TrieMap[Int, UcxWorkerId]]
   private val errorHandler = new UcpEndpointErrorHandler {
     override def onError(ucpEndpoint: UcpEndpoint, errorCode: Int, errorString: String): Unit = {
       if (errorCode == UcsConstants.STATUS.UCS_ERR_CONNECTION_RESET) {
@@ -109,20 +109,18 @@ class ExternalUcxServerTransport(
   }
 
   def applicationRemoved(appId: String): Unit = {
-    workerMap.remove(appId).map(clientAddress => {
-      val shuffleClients = clientAddress.map(x => UcxWorkerId(appId, x._1))
-      allocatedWorker.foreach(_.disconnect(shuffleClients.toSeq))
+    workerMap.remove(appId).map(clients => {
+      val clientIds = clients.values.toSeq
+      allocatedWorker.foreach(_.disconnect(clientIds))
     })
     // allocatedWorker.foreach(_.debugClients())
   }
 
   def executorRemoved(executorId: String, appId: String): Unit = {
     val exeId = executorId.toInt
-    workerMap.get(appId).map(clientAddress => {
-      val filteredAddress = clientAddress.filterKeys(
-        id => UcxWorkerId.extractExeId(id) == exeId)
-      val shuffleClients = filteredAddress.map(x => UcxWorkerId(appId, x._1))
-      allocatedWorker.foreach(_.disconnect(shuffleClients.toSeq))
+    workerMap.get(appId).map(clients => {
+      val clientIds = clients.filterKeys(_ == exeId).values.toSeq
+      allocatedWorker.foreach(_.disconnect(clientIds))
     })
   }
 
@@ -130,8 +128,9 @@ class ExternalUcxServerTransport(
     submit(new Runnable {
       override def run(): Unit = {
         allocatedWorker.foreach(_.connectBack(clientWorker, address))
-        workerMap.getOrElseUpdate(clientWorker.appId, new TrieMap[Long, ByteBuffer])
-          .getOrElseUpdate(UcxWorkerId.makeExeWorkerId(clientWorker), address)
+        workerMap.getOrElseUpdate(clientWorker.appId, {
+          new TrieMap[Int, UcxWorkerId]
+        }).getOrElseUpdate(clientWorker.exeId, clientWorker)
       }
     })
   }

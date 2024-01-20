@@ -10,7 +10,7 @@ import java.nio.ByteBuffer
 import java.nio.channels.Channels
 import java.nio.charset.StandardCharsets
 
-import org.apache.spark.shuffle.utils.{UcxUtils, UcxLogging}
+import org.apache.spark.shuffle.utils.{SparkucxUtils, UcxLogging}
 
 /**
  * A wrapper around a java.nio.ByteBuffer that is serializable through Java serialization, to make
@@ -21,7 +21,7 @@ class SerializableDirectBuffer(@transient var buffer: ByteBuffer) extends Serial
 
   def value: ByteBuffer = buffer
 
-  private def readObject(in: ObjectInputStream): Unit = UcxUtils.tryOrIOException {
+  private def readObject(in: ObjectInputStream): Unit = SparkucxUtils.tryOrIOException {
     val length = in.readInt()
     buffer = ByteBuffer.allocateDirect(length)
     var amountRead = 0
@@ -36,7 +36,7 @@ class SerializableDirectBuffer(@transient var buffer: ByteBuffer) extends Serial
     buffer.rewind() // Allow us to read it later
   }
 
-  private def writeObject(out: ObjectOutputStream): Unit = UcxUtils.tryOrIOException {
+  private def writeObject(out: ObjectOutputStream): Unit = SparkucxUtils.tryOrIOException {
     out.writeInt(buffer.limit())
     buffer.rewind()
     while (buffer.position() < buffer.limit()) {
@@ -51,7 +51,7 @@ class DeserializableToExternalMemoryBuffer(@transient var buffer: ByteBuffer)() 
 
   def value: ByteBuffer = buffer
 
-  private def readObject(in: ObjectInputStream): Unit = UcxUtils.tryOrIOException {
+  private def readObject(in: ObjectInputStream): Unit = SparkucxUtils.tryOrIOException {
     val length = in.readInt()
     var amountRead = 0
     val channel = Channels.newChannel(in)

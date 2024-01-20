@@ -10,7 +10,7 @@ import java.util.Locale
 import java.util.concurrent.ThreadFactory
 import scala.util.control.NonFatal
 
-object UcxUtils extends UcxLogging {
+object SparkucxUtils extends UcxLogging {
   def tryOrIOException[T](block: => T): T = {
     try {
       block
