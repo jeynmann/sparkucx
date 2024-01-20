@@ -546,13 +546,14 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
 
     def send(workerWrapper: UcxWorkerWrapper, currentId: Int,
              sendLatch: CountDownLatch): Unit = try {
-      val mem = memPool.get(maxReplySize).asInstanceOf[UcxLinkedMemBlock]
+      val currentOffset = blockSlice(currentId)
+      val currentSize = (blockSize - currentOffset).min(maxBodySize)
+      val msgSize = headerSize + currentSize.toInt
+      val mem = memPool.get(msgSize).asInstanceOf[UcxLinkedMemBlock]
       val buffer = mem.toByteBuffer()
 
       val remaining = blockSlice.length - currentId - 1
-      val currentOffset = blockSlice(currentId)
-      val currentSize = (blockSize - currentOffset).min(maxBodySize)
-      buffer.limit(headerSize + currentSize.toInt)
+      buffer.limit(msgSize)
       buffer.putInt(replyTag)
       buffer.putInt(remaining)
       block.getBlock(buffer, currentOffset)

@@ -201,19 +201,25 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
 
     def send(workerWrapper: ExternalUcxServerWorker, currentId: Int,
              sendLatch: CountDownLatch): Unit = try {
-      val mem = memPool.get(maxReplySize).asInstanceOf[UcxLinkedMemBlock]
+      val currentOffset = blockSlice(currentId)
+      val currentSize = (blockInfo._1 - currentOffset).min(maxBodySize)
+      val msgSize = headerSize + currentSize.toInt
+
+      val mem = memPool.get(msgSize).asInstanceOf[UcxLinkedMemBlock]
       val buffer = mem.toByteBuffer()
 
       val remaining = blockSlice.length - currentId - 1
-      val currentOffset = blockSlice(currentId)
-      val currentSize = (blockInfo._1 - currentOffset).min(maxBodySize)
 
-      buffer.limit(headerSize + currentSize.toInt)
+      buffer.limit(msgSize)
       buffer.putInt(replyTag)
       buffer.putInt(remaining)
       blockCh.read(buffer)
 
       val nextLatch = new CountDownLatch(1)
+      if (remaining > 0) {
+        transport.submit(() => send(transport.selectWorker, currentId + 1,
+                                    nextLatch))
+      }
       sendLatch.await()
 
       val startTime = System.nanoTime()
@@ -237,10 +243,7 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
             .setMemoryHandle(mem.memory))
       })
 
-      if (remaining > 0) {
-        transport.submit(() => send(transport.selectWorker, currentId + 1,
-                                    nextLatch))
-      } else {
+      if (remaining == 0) {
         blockCh.close()
       }
     } catch {
