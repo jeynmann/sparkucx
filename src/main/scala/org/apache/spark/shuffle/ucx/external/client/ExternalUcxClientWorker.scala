@@ -276,7 +276,7 @@ case class ExternalUcxClientWorker(val worker: UcpWorker,
     worker.progress()
   }
 
-  def connect(shuffleServer: InetSocketAddress): UcpEndpoint = {
+  def connect(shuffleServer: InetSocketAddress): Future[UcpEndpoint] = {
     val endpointParams = new UcpEndpointParams().setPeerErrorHandlingMode()
       .setSocketAddress(shuffleServer).sendClientId()
       .setErrorHandler(new UcpEndpointErrorHandler() {
@@ -295,33 +295,32 @@ case class ExternalUcxClientWorker(val worker: UcpWorker,
 
     val f = new FutureTask(new Callable[UcpEndpoint] {
       override def call = {
-        val ep = worker.newEndpoint(endpointParams)
-        ep.sendAmNonBlocking(
-          ExternalAmId.CONNECT, UcxUtils.getAddress(header),
-          header.remaining(), UcxUtils.getAddress(workerAddress),
-          workerAddress.remaining(),
-          UcpConstants.UCP_AM_SEND_FLAG_EAGER, new UcxCallback() {
-            override def onSuccess(request: UcpRequest): Unit = {
-              header.clear()
-              workerAddress.clear()
-            }
-            override def onError(ucsStatus: Int, errorMsg: String): Unit = {}
-          }, MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
-        ep
+        shuffleServers.getOrElseUpdate(shuffleServer.getHostName(), {
+          val ep = worker.newEndpoint(endpointParams)
+          ep.sendAmNonBlocking(
+            ExternalAmId.CONNECT, UcxUtils.getAddress(header),
+            header.remaining(), UcxUtils.getAddress(workerAddress),
+            workerAddress.remaining(),
+            UcpConstants.UCP_AM_SEND_FLAG_EAGER, new UcxCallback() {
+              override def onSuccess(request: UcpRequest): Unit = {
+                header.clear()
+                workerAddress.clear()
+              }
+              override def onError(ucsStatus: Int, errorMsg: String): Unit = {}
+            }, MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
+          ep
+        })
       }
     })
-
-    shuffleServers.getOrElseUpdate(shuffleServer.getHostName(), {
-      executor.post(f)
-      f.get()
-    })
+    executor.post(f)
+    f
   }
 
   def getConnection(host: String): UcpEndpoint = {
     if (shuffleServers.contains(host)) {
       shuffleServers(host)
     } else {
-      connect(new InetSocketAddress(host, transport.ucxServerPort))
+      connect(new InetSocketAddress(host, transport.ucxServerPort)).get()
     }
   }
 

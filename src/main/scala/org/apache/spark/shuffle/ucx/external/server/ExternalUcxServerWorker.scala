@@ -98,19 +98,19 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
     executor.post(() => workerIds.foreach(doDisconnect(_)))
   }
 
-  def connectBack(shuffleClient: UcxWorkerId, workerAddress: ByteBuffer): UcpEndpoint = {
+  def connectBack(shuffleClient: UcxWorkerId, workerAddress: ByteBuffer): Future[UcpEndpoint] = {
     logDebug(s"$workerId connecting back to $shuffleClient by worker address")
     val f = new FutureTask(new Callable[UcpEndpoint] {
       override def call = {
-        worker.newEndpoint(new UcpEndpointParams()
-          .setName(s"Server to $UcxWorkerId")
-          .setUcpAddress(workerAddress))
+        shuffleClients.getOrElseUpdate(shuffleClient, {
+          worker.newEndpoint(new UcpEndpointParams()
+            .setName(s"Server to $UcxWorkerId")
+            .setUcpAddress(workerAddress))
+        })
       }
     })
-    shuffleClients.getOrElseUpdate(shuffleClient, {
-      executor.post(f)
-      f.get()
-    })
+    executor.post(f)
+    f
   }
 
   def getConnectionBack(shuffleClient: UcxWorkerId): UcpEndpoint = {
@@ -139,7 +139,7 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
           Thread.`yield`
         }
       }
-      connectBack(shuffleClient, appMap(exeWorkerId))
+      connectBack(shuffleClient, appMap(exeWorkerId)).get()
     }
   }
 
