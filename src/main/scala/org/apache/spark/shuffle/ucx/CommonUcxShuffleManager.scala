@@ -89,14 +89,9 @@ abstract class CommonUcxShuffleManager(val conf: SparkConf, isDriver: Boolean) e
     var driverCost = 0
     var driverEndpoint: RpcEndpointRef = null
     while (driverEndpoint == null) {
-      try {
-        driverEndpoint = RpcUtils.makeDriverRef(driverRpcName, conf, rpcEnv)
-      } catch {
-        case e: SparkException => {
-          Thread.sleep(5)
-          driverCost += 5
-        }
-      }
+      Thread.sleep(10)
+      driverCost += 10
+      driverEndpoint = RpcUtils.makeDriverRef(driverRpcName, conf, rpcEnv)
     }
     driverEndpoint.ask[IntroduceAllExecutors](ExecutorAdded(blockManager.executorId.toLong, endpoint,
       new SerializableDirectBuffer(address)))

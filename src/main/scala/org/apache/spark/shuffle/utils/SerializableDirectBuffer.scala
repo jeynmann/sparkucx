@@ -21,12 +21,6 @@ class SerializableDirectBuffer(@transient var buffer: ByteBuffer) extends Serial
 
   def value: ByteBuffer = buffer
 
-  override def equals(x: Any): Boolean = buffer.equals(x)
-
-  override def hashCode(): Int = buffer.hashCode()
-
-  override def toString(): String = buffer.toString()
-
   private def readObject(in: ObjectInputStream): Unit = UcxUtils.tryOrIOException {
     val length = in.readInt()
     buffer = ByteBuffer.allocateDirect(length)
