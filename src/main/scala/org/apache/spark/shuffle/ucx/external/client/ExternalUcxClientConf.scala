@@ -92,6 +92,14 @@ class ExternalUcxClientConf(val sparkConf: SparkConf) extends SparkConf with Ext
   override lazy val numWorkers: Int = sparkConf.getInt(NUM_WORKERS.key, sparkConf.getInt("spark.executor.cores",
     NUM_WORKERS.defaultValue.get))
 
+  private lazy val NUM_THREADS= ConfigBuilder(ExternalUcxConf.NUM_THREADS_KEY)
+    .doc("Number of threads in thread pool")
+    .intConf
+    .createWithDefault(ExternalUcxConf.NUM_THREADS_DEFAULT)
+
+  override lazy val numThreads: Int = sparkConf.getInt(NUM_THREADS.key,
+    sparkConf.getInt(ExternalUcxConf.NUM_THREADS_COMPAT_KEY, NUM_THREADS.defaultValue.get))
+
   private lazy val MAX_BLOCKS_IN_FLIGHT = ConfigBuilder(ExternalUcxConf.MAX_BLOCKS_IN_FLIGHT_KEY)
     .doc("Maximum number blocks per request")
     .intConf

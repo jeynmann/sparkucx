@@ -50,7 +50,7 @@ class ExternalUcxServerTransport(
       ucpWorkerParams.requestWakeupRX().requestWakeupTX().requestWakeupEdge()
     }
 
-    initTaskPool(serverConf.numWorkers + 1)
+    initTaskPool(serverConf.numThreads)
 
     logInfo(s"Allocating ${serverConf.numWorkers} server workers")
 
