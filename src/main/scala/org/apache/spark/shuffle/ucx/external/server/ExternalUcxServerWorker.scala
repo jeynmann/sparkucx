@@ -77,7 +77,7 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
   }
 
   override def close(): Unit = {
-    debugClients
+    reportClients()
     executor.close()
   }
 
@@ -86,8 +86,10 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
     executor.close()
   }
 
-  def debugClients(): Unit = {
-    logDebug(s"$workerId clients ${shuffleClients.size}")
+  def reportClients(): Unit = {
+    if (!shuffleClients.isEmpty) {
+      logInfo(s"$workerId clients ${shuffleClients.size}")
+    }
   }
 
   def doDisconnect(workerId: UcxWorkerId): Unit = {
