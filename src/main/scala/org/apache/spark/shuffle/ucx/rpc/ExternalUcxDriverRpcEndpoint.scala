@@ -25,19 +25,19 @@ class ExternalUcxDriverRpcEndpoint(override val rpcEnv: RpcEnv) extends ThreadSa
       // Driver receives a message from executor with it's workerAddress
       val shuffleServer = SerializationUtils.deserializeInetAddress(addressBuffer.value)
       logInfo(s"Received message $shuffleServer from ${context.senderAddress}")
-      // 1. For each existing member introduce newly joined executor.
+      // 1. Introduce existing members of a cluster
+      if (shuffleServerMap.nonEmpty) {
+        val msg = PushAllServiceAddress(shuffleServerMap.values.toSet)
+        logDebug(s"Replying $msg to $endpoint")
+        context.reply(msg)
+      }
+      // 2. For each existing member introduce newly joined executor.
       if (!shuffleServerMap.contains(shuffleServer)) {
         shuffleServerMap += shuffleServer -> addressBuffer
         endpoints.foreach(ep => {
           logDebug(s"Sending message $shuffleServer to $ep")
           ep.send(message)
         })
-      }
-      // 2. Introduce existing members of a cluster
-      if (shuffleServerMap.nonEmpty) {
-        val msg = PushAllServiceAddress(shuffleServerMap.values.toSet)
-        logDebug(s"Replying $msg to $endpoint")
-        context.reply(msg)
       }
       // 3. Add ep to registered eps.
       endpoints.add(endpoint)

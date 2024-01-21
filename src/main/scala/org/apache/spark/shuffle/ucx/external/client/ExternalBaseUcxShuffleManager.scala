@@ -96,7 +96,7 @@ abstract class ExternalBaseUcxShuffleManager(val conf: SparkConf, isDriver: Bool
       PushServiceAddress(new SerializableDirectBuffer(address), endpoint))
       .andThen {
         case Success(msg) =>
-          logInfo(s"Driver take $driverCost ms. Receive reply $msg")
+          logInfo(s"Driver take $driverCost ms.")
           executorEndpoint.receive(msg)
       }
   }

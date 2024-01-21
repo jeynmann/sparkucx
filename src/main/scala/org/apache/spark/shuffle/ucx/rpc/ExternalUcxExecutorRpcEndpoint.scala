@@ -14,18 +14,12 @@ import java.util.concurrent.ExecutorService
 
 class ExternalUcxExecutorRpcEndpoint(override val rpcEnv: RpcEnv, transport: ExternalUcxClientTransport,
                              executorService: ExecutorService)
-  extends RpcEndpoint with Logging {
+  extends RpcEndpoint {
 
   override def receive: PartialFunction[Any, Unit] = {
     case PushServiceAddress(shuffleServer: SerializableDirectBuffer, endpoint: RpcEndpointRef) =>
-      logDebug(s"Received PushServiceAddress($shuffleServer)")
-      executorService.submit(new Runnable {
-        override def run(): Unit = transport.connect(shuffleServer)
-      })
+      transport.connect(shuffleServer)
     case PushAllServiceAddress(shuffleServerSet: Set[SerializableDirectBuffer]) =>
-      logDebug(s"Received PushAllServiceAddress(${shuffleServerSet}")
-      executorService.submit(new Runnable {
-        override def run(): Unit = transport.connectAll(shuffleServerSet)
-      })
+      transport.connectAll(shuffleServerSet)
   }
 }

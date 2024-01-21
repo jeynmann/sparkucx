@@ -92,7 +92,7 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
     }
   }
 
-  def doDisconnect(workerId: UcxWorkerId): Unit = {
+  private def doDisconnect(workerId: UcxWorkerId): Unit = {
     shuffleClients.remove(workerId).map(_.close)
   }
 
@@ -100,49 +100,31 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
     executor.post(() => workerIds.foreach(doDisconnect(_)))
   }
 
-  def connectBack(shuffleClient: UcxWorkerId, workerAddress: ByteBuffer): Future[UcpEndpoint] = {
-    logDebug(s"$workerId connecting back to $shuffleClient by worker address")
-    val f = new FutureTask(new Callable[UcpEndpoint] {
-      override def call = {
-        shuffleClients.getOrElseUpdate(shuffleClient, {
-          worker.newEndpoint(new UcpEndpointParams()
-            .setName(s"Server to $UcxWorkerId")
-            .setUcpAddress(workerAddress))
-        })
-      }
-    })
-    executor.post(f)
-    f
+  def connectBack(shuffleClient: UcxWorkerId, workerAddress: ByteBuffer): Unit = {
+    executor.post(() => doConnectBack(shuffleClient, workerAddress))
   }
 
-  def getConnectionBack(shuffleClient: UcxWorkerId): UcpEndpoint = {
-    if (shuffleClients.contains(shuffleClient)) {
-      shuffleClients(shuffleClient)
-    } else {
+  private def doConnectBack(shuffleClient: UcxWorkerId, workerAddress: ByteBuffer): UcpEndpoint = {
+    shuffleClients.getOrElseUpdate(shuffleClient, {
+      logDebug(s"$workerId connecting back to $shuffleClient by worker address")
+      worker.newEndpoint(new UcpEndpointParams()
+        .setName(s"Server to $UcxWorkerId")
+        .setUcpAddress(workerAddress))
+    })
+  }
+
+  def awaitConnection(shuffleClient: UcxWorkerId): UcpEndpoint = {
+    if (!shuffleClients.contains(shuffleClient)) {
       // wait until transport handleConnect finished
-      val exeWorkerId = UcxWorkerId.makeExeWorkerId(shuffleClient)
-      val workerMap = transport.workerMap
-      if (!workerMap.contains(shuffleClient.appId)) {
-        val startTime = System.currentTimeMillis()
-        while (!workerMap.contains(shuffleClient.appId)) {
-          if  (System.currentTimeMillis() - startTime > 10000) {
-            throw new UcxException(s"Don't get a worker address for $UcxWorkerId")
-          }
-          Thread.`yield`
+      val startTime = System.currentTimeMillis()
+      while (!shuffleClients.contains(shuffleClient)) {
+        if  (System.currentTimeMillis() - startTime > 10000) {
+          throw new UcxException(s"Don't get a worker address for $UcxWorkerId")
         }
+        Thread.`yield`
       }
-      val appMap = workerMap(shuffleClient.appId)
-      if (!appMap.contains(exeWorkerId)) {
-        val startTime = System.currentTimeMillis()
-        while (!appMap.contains(exeWorkerId)) {
-          if  (System.currentTimeMillis() - startTime > 10000) {
-            throw new UcxException(s"Don't get a worker address for $UcxWorkerId")
-          }
-          Thread.`yield`
-        }
-      }
-      connectBack(shuffleClient, appMap(exeWorkerId)).get()
     }
+    shuffleClients(shuffleClient)
   }
 
   def handleFetchBlockRequest(clientWorker: UcxWorkerId, replyTag: Int,
@@ -169,7 +151,7 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
     }
 
     val startTime = System.nanoTime()
-    val ep = getConnectionBack(clientWorker)
+    val ep = awaitConnection(clientWorker)
     executor.post(() => {
       ep.sendAmNonBlocking(ExternalAmId.REPLY_BLOCK, resultMemory.address, tagAndSizes,
       resultMemory.address + tagAndSizes, msgSize - tagAndSizes, 0, new UcxCallback {
@@ -225,7 +207,7 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
       sendLatch.await()
 
       val startTime = System.nanoTime()
-      val ep = workerWrapper.getConnectionBack(clientWorker)
+      val ep = workerWrapper.awaitConnection(clientWorker)
       workerWrapper.executor.post(() => {
         ep.sendAmNonBlocking(amId, mem.address, headerSize,
           mem.address + headerSize, currentSize, 0, new UcxCallback {

@@ -63,6 +63,7 @@ extends ExternalUcxTransport(clientConf) with UcxLogging {
     initialized = true
     val shuffleServer = new InetSocketAddress(blockManagerId.host, ucxServerPort)
     logInfo(s"Shuffle server ${shuffleServer}")
+    allocatedWorker.foreach(_.connect(shuffleServer))
     SerializationUtils.serializeInetAddress(shuffleServer)
   }
 
@@ -101,13 +102,15 @@ extends ExternalUcxTransport(clientConf) with UcxLogging {
   def connect(shuffleServer: SerializableDirectBuffer): Unit = {
     val addressBuffer = shuffleServer.value
     val address = SerializationUtils.deserializeInetAddress(addressBuffer)
+    logDebug(s"connect $address")
     allocatedWorker.foreach(_.connect(address))
   }
 
   def connectAll(shuffleServerSet: Set[SerializableDirectBuffer]): Unit = {
     val addressSet = shuffleServerSet.map(addressBuffer =>
       SerializationUtils.deserializeInetAddress(addressBuffer.value))
-    allocatedWorker.foreach(w => addressSet.foreach(w.connect(_)))
+    logDebug(s"connectAll $addressSet")
+    allocatedWorker.foreach(_.connectAll(addressSet))
   }
 
   /**
