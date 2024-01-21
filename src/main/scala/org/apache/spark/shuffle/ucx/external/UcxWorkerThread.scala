@@ -29,7 +29,6 @@ class UcxWorkerThread(worker: UcpWorker, useWakeup: Boolean) extends Thread {
 
   def close(): Unit = {
     if (running.compareAndSet(true, false)) {
-      worker.signal()
       worker.close()
     }
   }
