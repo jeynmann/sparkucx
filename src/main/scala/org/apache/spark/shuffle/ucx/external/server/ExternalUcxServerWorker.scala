@@ -92,19 +92,22 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
     }
   }
 
+  @`inline`
   private def doDisconnect(workerId: UcxWorkerId): Unit = {
     shuffleClients.remove(workerId).map(_.close)
   }
 
+  @`inline`
   def disconnect(workerIds: Seq[UcxWorkerId]): Unit = {
     executor.post(() => workerIds.foreach(doDisconnect(_)))
   }
 
+  @`inline`
   def connectBack(shuffleClient: UcxWorkerId, workerAddress: ByteBuffer): Unit = {
-    executor.post(() => doConnectBack(shuffleClient, workerAddress))
+    executor.post(() => getConnection(shuffleClient, workerAddress))
   }
 
-  private def doConnectBack(shuffleClient: UcxWorkerId, workerAddress: ByteBuffer): UcpEndpoint = {
+  private def getConnection(shuffleClient: UcxWorkerId, workerAddress: ByteBuffer): UcpEndpoint = {
     shuffleClients.getOrElseUpdate(shuffleClient, {
       logDebug(s"$workerId connecting back to $shuffleClient by worker address")
       worker.newEndpoint(new UcpEndpointParams()
@@ -114,7 +117,7 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
   }
 
   def awaitConnection(shuffleClient: UcxWorkerId): UcpEndpoint = {
-    if (!shuffleClients.contains(shuffleClient)) {
+    shuffleClients.getOrElse(shuffleClient, {
       // wait until transport handleConnect finished
       val startTime = System.currentTimeMillis()
       while (!shuffleClients.contains(shuffleClient)) {
@@ -123,8 +126,8 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
         }
         Thread.`yield`
       }
-    }
-    shuffleClients(shuffleClient)
+      shuffleClients(shuffleClient)
+    })
   }
 
   def handleFetchBlockRequest(clientWorker: UcxWorkerId, replyTag: Int,

@@ -277,63 +277,68 @@ case class ExternalUcxClientWorker(val worker: UcpWorker,
     worker.progress()
   }
 
+  @`inline`
   def connect(shuffleServer: InetSocketAddress): Unit = {
     connectQueue.add(shuffleServer)
   }
 
+  @`inline`
   def connectAll(addressSet: Set[InetSocketAddress]): Unit = {
     addressSet.foreach(connectQueue.add(_))
   }
 
+  @`inline`
   private def doConnectNext(): Unit = {
     if (!connectQueue.isEmpty) {
-      doConnect(connectQueue.poll())
+      getConnection(connectQueue.poll())
     }
   }
 
   private def doConnect(shuffleServer: InetSocketAddress): UcpEndpoint = {
-    shuffleServers.getOrElseUpdate(shuffleServer.getHostName(), {
-      val endpointParams = new UcpEndpointParams().setPeerErrorHandlingMode()
-        .setSocketAddress(shuffleServer).sendClientId()
-        .setErrorHandler(new UcpEndpointErrorHandler() {
-          override def onError(ep: UcpEndpoint, status: Int, errorMsg: String): Unit = {
-            logError(s"Endpoint to $shuffleServer got an error: $errorMsg")
-            shuffleServers.remove(shuffleServer.getHostName())
-          }
-        }).setName(s"Client to $shuffleServer")
+    val endpointParams = new UcpEndpointParams().setPeerErrorHandlingMode()
+      .setSocketAddress(shuffleServer).sendClientId()
+      .setErrorHandler(new UcpEndpointErrorHandler() {
+        override def onError(ep: UcpEndpoint, status: Int, errorMsg: String): Unit = {
+          logError(s"Endpoint to $shuffleServer got an error: $errorMsg")
+          shuffleServers.remove(shuffleServer.getHostName())
+        }
+      }).setName(s"Client to $shuffleServer")
 
-      logDebug(s"$workerId connecting to external service $shuffleServer")
+    logDebug(s"$workerId connecting to external service $shuffleServer")
 
-      val header = Platform.allocateDirectBuffer(workerId.serializedSize)
-      workerId.serialize(header)
-      header.rewind()
-      val workerAddress = worker.getAddress
+    val header = Platform.allocateDirectBuffer(workerId.serializedSize)
+    workerId.serialize(header)
+    header.rewind()
+    val workerAddress = worker.getAddress
 
-      val ep = worker.newEndpoint(endpointParams)
-      ep.sendAmNonBlocking(
-        ExternalAmId.CONNECT, UcxUtils.getAddress(header),
-        header.remaining(), UcxUtils.getAddress(workerAddress),
-        workerAddress.remaining(),
-        UcpConstants.UCP_AM_SEND_FLAG_EAGER, new UcxCallback() {
-          override def onSuccess(request: UcpRequest): Unit = {
-            header.clear()
-            workerAddress.clear()
-            doConnectNext()
-          }
-          override def onError(ucsStatus: Int, errorMsg: String): Unit = {
-            doConnectNext()
-          }
-        }, MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
-      ep
-    })
+    val ep = worker.newEndpoint(endpointParams)
+    ep.sendAmNonBlocking(
+      ExternalAmId.CONNECT, UcxUtils.getAddress(header),
+      header.remaining(), UcxUtils.getAddress(workerAddress),
+      workerAddress.remaining(),
+      UcpConstants.UCP_AM_SEND_FLAG_EAGER, new UcxCallback() {
+        override def onSuccess(request: UcpRequest): Unit = {
+          header.clear()
+          workerAddress.clear()
+          doConnectNext()
+        }
+        override def onError(ucsStatus: Int, errorMsg: String): Unit = {
+          doConnectNext()
+        }
+      }, MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
+    ep
   }
 
   private def getConnection(host: String): UcpEndpoint = {
-    if (shuffleServers.contains(host)) {
-      shuffleServers(host)
-    } else {
+    shuffleServers.getOrElseUpdate(host, {
       doConnect(new InetSocketAddress(host, transport.ucxServerPort))
-    }
+    })
+  }
+
+  def getConnection(shuffleServer: InetSocketAddress): UcpEndpoint = {
+    shuffleServers.getOrElseUpdate(shuffleServer.getHostName(), {
+      doConnect(shuffleServer)
+    })
   }
 
   def fetchBlocksByBlockIds(host: String, execId: Int, blockIds: Seq[BlockId],

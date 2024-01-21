@@ -102,15 +102,15 @@ extends ExternalUcxTransport(clientConf) with UcxLogging {
   def connect(shuffleServer: SerializableDirectBuffer): Unit = {
     val addressBuffer = shuffleServer.value
     val address = SerializationUtils.deserializeInetAddress(addressBuffer)
-    logDebug(s"connect $address")
     allocatedWorker.foreach(_.connect(address))
+    logDebug(s"connect $address")
   }
 
   def connectAll(shuffleServerSet: Set[SerializableDirectBuffer]): Unit = {
     val addressSet = shuffleServerSet.map(addressBuffer =>
       SerializationUtils.deserializeInetAddress(addressBuffer.value))
-    logDebug(s"connectAll $addressSet")
     allocatedWorker.foreach(_.connectAll(addressSet))
+    logDebug(s"connectAll $addressSet")
   }
 
   /**
