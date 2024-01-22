@@ -5,6 +5,8 @@ import java.nio.ByteBuffer
 import java.util.concurrent.{Executors, ExecutorService}
 import scala.concurrent.forkjoin.{ForkJoinPool => SForkJoinPool, ForkJoinWorkerThread => SForkJoinWorkerThread}
 
+case class UcxShuffleMapId(shuffleId: Int, mapId: Int) {}
+
 case class UcxShuffleBlockId(shuffleId: Int, mapId: Int, reduceId: Int) extends BlockId {
   override def serializedSize: Int = UcxShuffleBlockId.serializedSize
 
