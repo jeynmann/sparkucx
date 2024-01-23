@@ -13,14 +13,11 @@ import org.openucx.jucx.{UcxCallback, UcxException, UcxUtils}
 import java.net.InetSocketAddress
 import java.nio.ByteBuffer
 import java.util.concurrent.atomic.AtomicInteger
-import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.ConcurrentHashMap
 import java.nio.channels.FileChannel
-import java.nio.file.Path
 import java.nio.file.StandardOpenOption
 import scala.collection.concurrent.TrieMap
 import scala.collection.mutable
-import collection.JavaConverters._
 
 class ExternalUcxServerTransport(
   serverConf: ExternalUcxServerConf, blockManager: ExternalUcxShuffleBlockResolver)
