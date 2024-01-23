@@ -17,9 +17,9 @@ class ExternalUcxExecutorRpcEndpoint(override val rpcEnv: RpcEnv, transport: Ext
   extends RpcEndpoint {
 
   override def receive: PartialFunction[Any, Unit] = {
-    case PushServiceAddress(shuffleServer: SerializableDirectBuffer, endpoint: RpcEndpointRef) =>
-      transport.connect(shuffleServer)
-    case PushAllServiceAddress(shuffleServerSet: Set[SerializableDirectBuffer]) =>
-      transport.connectAll(shuffleServerSet)
+    case PushServiceAddress(host: String, ports: Seq[Int], _: RpcEndpointRef) =>
+      transport.connect(host, ports)
+    case PushAllServiceAddress(shuffleServerMap: Map[String, Seq[Int]]) =>
+      transport.connectAll(shuffleServerMap)
   }
 }

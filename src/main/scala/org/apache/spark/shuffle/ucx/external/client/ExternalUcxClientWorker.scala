@@ -76,6 +76,18 @@ case class ExternalUcxClientWorker(val worker: UcpWorker,
       UcsConstants.STATUS.UCS_INPROGRESS
     }, UcpConstants.UCP_AM_FLAG_PERSISTENT_DATA | UcpConstants.UCP_AM_FLAG_WHOLE_MSG)
 
+  worker.setAmRecvHandler(ExternalAmId.REPLY_ADDRESS,
+    (headerAddress: Long, headerSize: Long, _: UcpAmData, _: UcpEndpoint) => {
+      val headerBuffer = UnsafeUtils.getByteBufferView(headerAddress, headerSize.toInt)
+      val copiedBuffer = ByteBuffer.allocateDirect(headerBuffer.remaining())
+
+      copiedBuffer.put(headerBuffer)
+      copiedBuffer.rewind()
+
+      transport.handleReplyAddress(copiedBuffer)
+      UcsConstants.STATUS.UCS_OK
+    }, UcpConstants.UCP_AM_FLAG_WHOLE_MSG)
+
   private def handleReplySlice(
     i: Int, remaining: Int, ucpAmData: UcpAmData): Unit = {
       val sliceState = sliceData.getOrElseUpdate(i, {
@@ -278,12 +290,20 @@ case class ExternalUcxClientWorker(val worker: UcpWorker,
   }
 
   @`inline`
+  def requestAddress(localServer: InetSocketAddress): Unit = {
+    executor.post(() => shuffleServers.getOrElseUpdate("0.0.0.0", {
+      doConnect(localServer, ExternalAmId.ADDRESS,
+                UcpConstants.UCP_AM_SEND_FLAG_REPLY)
+    }))
+  }
+
+  @`inline`
   def connect(shuffleServer: InetSocketAddress): Unit = {
     connectQueue.add(shuffleServer)
   }
 
   @`inline`
-  def connectAll(addressSet: Set[InetSocketAddress]): Unit = {
+  def connectAll(addressSet: Seq[InetSocketAddress]): Unit = {
     addressSet.foreach(connectQueue.add(_))
   }
 
@@ -294,7 +314,9 @@ case class ExternalUcxClientWorker(val worker: UcpWorker,
     }
   }
 
-  private def doConnect(shuffleServer: InetSocketAddress): UcpEndpoint = {
+  private def doConnect(shuffleServer: InetSocketAddress,
+                        amId: Int = ExternalAmId.CONNECT,
+                        flag: Long = 0): UcpEndpoint = {
     val endpointParams = new UcpEndpointParams().setPeerErrorHandlingMode()
       .setSocketAddress(shuffleServer).sendClientId()
       .setErrorHandler(new UcpEndpointErrorHandler() {
@@ -313,10 +335,9 @@ case class ExternalUcxClientWorker(val worker: UcpWorker,
 
     val ep = worker.newEndpoint(endpointParams)
     ep.sendAmNonBlocking(
-      ExternalAmId.CONNECT, UcxUtils.getAddress(header),
-      header.remaining(), UcxUtils.getAddress(workerAddress),
-      workerAddress.remaining(),
-      UcpConstants.UCP_AM_SEND_FLAG_EAGER, new UcxCallback() {
+      amId, UcxUtils.getAddress(header), header.remaining(),
+      UcxUtils.getAddress(workerAddress), workerAddress.remaining(),
+      UcpConstants.UCP_AM_SEND_FLAG_EAGER | flag, new UcxCallback() {
         override def onSuccess(request: UcpRequest): Unit = {
           header.clear()
           workerAddress.clear()
@@ -329,14 +350,17 @@ case class ExternalUcxClientWorker(val worker: UcpWorker,
     ep
   }
 
-  private def getConnection(host: String): UcpEndpoint = {
-    shuffleServers.getOrElseUpdate(host, {
-      doConnect(new InetSocketAddress(host, transport.ucxServerPort))
+  private def getConnection(shuffleServer: InetSocketAddress): UcpEndpoint = {
+    shuffleServers.getOrElseUpdate(shuffleServer.getHostName(), {
+      doConnect(shuffleServer)
     })
   }
 
-  def getConnection(shuffleServer: InetSocketAddress): UcpEndpoint = {
-    shuffleServers.getOrElseUpdate(shuffleServer.getHostName(), {
+  private def getConnection(host: String): UcpEndpoint = {
+    shuffleServers.getOrElseUpdate(host, {
+      val shuffleServer = transport.ucxServers.getOrElseUpdate(host, {
+        new InetSocketAddress(host, transport.ucxServerPort)
+      })
       doConnect(shuffleServer)
     })
   }

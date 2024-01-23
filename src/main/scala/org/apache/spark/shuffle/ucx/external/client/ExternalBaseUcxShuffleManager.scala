@@ -78,7 +78,7 @@ abstract class ExternalBaseUcxShuffleManager(val conf: SparkConf, isDriver: Bool
   def startUcxTransport(): Unit = if (ucxTransport == null) {
     val blockManager = SparkEnv.get.blockManager.shuffleServerId
     val transport = new ExternalUcxClientTransport(ucxShuffleConf, blockManager)
-    val address = transport.init()
+    transport.init()
     ucxTransport = transport
     val rpcEnv = SparkEnv.get.rpcEnv
     executorEndpoint = new ExternalUcxExecutorRpcEndpoint(rpcEnv, ucxTransport, setupThread)
@@ -93,7 +93,7 @@ abstract class ExternalBaseUcxShuffleManager(val conf: SparkConf, isDriver: Bool
       driverEndpoint = RpcUtils.makeDriverRef(driverRpcName, conf, rpcEnv)
     }
     driverEndpoint.ask[PushAllServiceAddress](
-      PushServiceAddress(new SerializableDirectBuffer(address), endpoint))
+      PushServiceAddress(blockManager.host, transport.localServerPorts, endpoint))
       .andThen {
         case Success(msg) =>
           logInfo(s"Driver take $driverCost ms.")

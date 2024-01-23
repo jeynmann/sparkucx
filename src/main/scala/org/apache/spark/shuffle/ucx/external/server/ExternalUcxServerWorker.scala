@@ -9,25 +9,53 @@ import java.nio.ByteBuffer
 import java.nio.channels.FileChannel
 import java.util.concurrent.{ConcurrentLinkedQueue, CountDownLatch, Callable, Future, FutureTask}
 import scala.collection.concurrent.TrieMap
+import scala.collection.mutable
 import org.openucx.jucx.ucp._
 import org.openucx.jucx.ucs.UcsConstants
 import org.openucx.jucx.ucs.UcsConstants.MEMORY_TYPE
 import org.openucx.jucx.{UcxCallback, UcxException, UcxUtils}
 import org.apache.spark.shuffle.ucx.memory.UcxLinkedMemBlock
 import org.apache.spark.shuffle.utils.{UnsafeUtils, UcxLogging}
+import java.net.InetSocketAddress
 
 /**
  * Worker per thread wrapper, that maintains connection and progress logic.
  */
 case class ExternalUcxServerWorker(val worker: UcpWorker,
                                    transport: ExternalUcxServerTransport,
-                                   workerId: UcxWorkerId)
+                                   workerId: UcxWorkerId,
+                                   port: Int)
   extends Closeable with UcxLogging {
   private[this] val memPool = transport.hostBounceBufferMemoryPool
   private[this] val maxReplySize = transport.ucxShuffleConf.maxReplySize
   private[this] val shuffleClients = new TrieMap[UcxWorkerId, UcpEndpoint]
   private[ucx] val executor = new UcxWorkerThread(
     worker, transport.ucxShuffleConf.useWakeup)
+
+  private val endpoints = mutable.Set.empty[UcpEndpoint]
+  private val listener = worker.newListener(
+    new UcpListenerParams().setSockAddr(new InetSocketAddress("0.0.0.0", port))
+    .setConnectionHandler((ucpConnectionRequest: UcpConnectionRequest) => {
+      val id = ucpConnectionRequest.getClientId()
+      val ep = worker.newEndpoint(
+        new UcpEndpointParams().setConnectionRequest(ucpConnectionRequest)
+          .setPeerErrorHandlingMode().setErrorHandler(errorHandler)
+          .setName(s"Endpoint to $id"))
+      endpoints.add(ep)
+    }))
+
+  private val listenerAddress = listener.getAddress
+  private val errorHandler = new UcpEndpointErrorHandler {
+    override def onError(ucpEndpoint: UcpEndpoint, errorCode: Int, errorString: String): Unit = {
+      if (errorCode == UcsConstants.STATUS.UCS_ERR_CONNECTION_RESET) {
+        logWarning(s"Connection closed on ep: $ucpEndpoint")
+      } else {
+        logError(s"Ep $ucpEndpoint got an error: $errorString")
+      }
+      endpoints.remove(ucpEndpoint)
+      ucpEndpoint.close()
+    }
+  }
 
   // Main RPC thread. Submit each RPC request to separate thread and send reply back from separate worker.
   worker.setAmRecvHandler(ExternalAmId.FETCH_BLOCK,
@@ -71,18 +99,38 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
   }, UcpConstants.UCP_AM_FLAG_WHOLE_MSG )
   // Main RPC thread. reply with ucpAddress.
 
+  // AM to get worker address for client worker and connect server workers to it
+  worker.setAmRecvHandler(ExternalAmId.ADDRESS,
+    (headerAddress: Long, headerSize: Long, amData: UcpAmData, ep: UcpEndpoint) => {
+    handleAddress(ep)
+    UcsConstants.STATUS.UCS_OK
+  }, UcpConstants.UCP_AM_FLAG_WHOLE_MSG )
+  // Main RPC thread. reply with ucpAddress.
+
   def start(): Unit = {
     executor.start()
   }
 
   override def close(): Unit = {
     reportClients()
+    executor.post(() => {
+      endpoints.foreach(_.closeNonBlockingForce())
+      listener.close()
+    })
     executor.close()
   }
 
   def close(closeCb: Runnable): Unit = {
     executor.post(closeCb)
     executor.close()
+  }
+
+  def getPort(): Int = {
+    listenerAddress.getPort()
+  }
+
+  def getAddress(): InetSocketAddress = {
+    listenerAddress
   }
 
   def reportClients(): Unit = {
@@ -127,6 +175,23 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
       }
       shuffleClients(shuffleClient)
     })
+  }
+
+  def handleAddress(ep: UcpEndpoint) = {
+    val msg = transport.getServerPortsBuffer()
+    val header = UnsafeUtils.getAdress(msg)
+    ep.sendAmNonBlocking(
+      ExternalAmId.REPLY_ADDRESS, header, msg.remaining(), header, 0,
+      UcpConstants.UCP_AM_SEND_FLAG_EAGER, new UcxCallback {
+        override def onSuccess(request: UcpRequest): Unit = {
+          logTrace(s"$workerId sent to REPLY_ADDRESS to $ep")
+          msg.clear()
+        }
+
+        override def onError(ucsStatus: Int, errorMsg: String): Unit = {
+          logWarning(s"$workerId sent to REPLY_ADDRESS to $ep: $errorMsg")
+        }
+      }, MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
   }
 
   def handleFetchBlockRequest(

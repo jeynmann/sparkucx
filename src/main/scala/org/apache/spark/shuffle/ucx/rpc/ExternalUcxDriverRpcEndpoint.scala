@@ -17,25 +17,24 @@ import org.apache.spark.shuffle.ucx.utils.{SerializableDirectBuffer, Serializati
 class ExternalUcxDriverRpcEndpoint(override val rpcEnv: RpcEnv) extends ThreadSafeRpcEndpoint with Logging {
 
   private val endpoints = mutable.HashSet.empty[RpcEndpointRef]
-  private var shuffleServerMap = mutable.HashMap.empty[InetSocketAddress, SerializableDirectBuffer]
+  private var shuffleServerMap = mutable.HashMap.empty[String, Seq[Int]]
 
 
   override def receiveAndReply(context: RpcCallContext): PartialFunction[Any, Unit] = {
-    case message@PushServiceAddress(addressBuffer: SerializableDirectBuffer, endpoint: RpcEndpointRef) => {
+    case message@PushServiceAddress(host: String, ports: Seq[Int], endpoint: RpcEndpointRef) => {
       // Driver receives a message from executor with it's workerAddress
-      val shuffleServer = SerializationUtils.deserializeInetAddress(addressBuffer.value)
-      logInfo(s"Received message $shuffleServer from ${context.senderAddress}")
+      logInfo(s"Received message $ports from ${context.senderAddress}")
       // 1. Introduce existing members of a cluster
       if (shuffleServerMap.nonEmpty) {
-        val msg = PushAllServiceAddress(shuffleServerMap.values.toSet)
+        val msg = PushAllServiceAddress(shuffleServerMap.toMap)
         logDebug(s"Replying $msg to $endpoint")
         context.reply(msg)
       }
       // 2. For each existing member introduce newly joined executor.
-      if (!shuffleServerMap.contains(shuffleServer)) {
-        shuffleServerMap += shuffleServer -> addressBuffer
+      if (!shuffleServerMap.contains(host)) {
+        shuffleServerMap += host -> ports
         endpoints.foreach(ep => {
-          logDebug(s"Sending message $shuffleServer to $ep")
+          logDebug(s"Sending message $ports to $ep")
           ep.send(message)
         })
       }

@@ -17,7 +17,6 @@ import java.util.concurrent.ConcurrentHashMap
 import java.nio.channels.FileChannel
 import java.nio.file.StandardOpenOption
 import scala.collection.concurrent.TrieMap
-import scala.collection.mutable
 
 class ExternalUcxServerTransport(
   serverConf: ExternalUcxServerConf, blockManager: ExternalUcxShuffleBlockResolver)
@@ -25,24 +24,13 @@ class ExternalUcxServerTransport(
   with UcxLogging {
   private[ucx] val workerMap = new TrieMap[String, TrieMap[UcxWorkerId, Unit]]
   private[ucx] val fileMap = new TrieMap[String, ConcurrentHashMap[UcxShuffleMapId, FileChannel]]
-  private val errorHandler = new UcpEndpointErrorHandler {
-    override def onError(ucpEndpoint: UcpEndpoint, errorCode: Int, errorString: String): Unit = {
-      if (errorCode == UcsConstants.STATUS.UCS_ERR_CONNECTION_RESET) {
-        logWarning(s"Connection closed on ep: $ucpEndpoint")
-      } else {
-        logError(s"Ep $ucpEndpoint got an error: $errorString")
-      }
-      endpoints.remove(ucpEndpoint)
-      ucpEndpoint.close()
-    }
-  }
-
-  private val endpoints = mutable.Set.empty[UcpEndpoint]
-  private var listener: UcpListener = _
 
   private[ucx] lazy val currentWorkerId = new AtomicInteger()
   private[ucx] lazy val workerLocal = new ThreadLocal[ExternalUcxServerWorker]
   private[ucx] var allocatedWorker: Array[ExternalUcxServerWorker] = _
+  private[ucx] var globalWorker: ExternalUcxServerWorker = _
+  private[ucx] var serverPorts: Seq[Int] = _
+  private var serverPortsBuffer: ByteBuffer = _
 
   override def estimateNumEps(): Int = serverConf.ucxEpsNum
 
@@ -62,27 +50,28 @@ class ExternalUcxServerTransport(
     for (i <- 0 until serverConf.numWorkers) {
       val worker = ucxContext.newWorker(ucpWorkerParams)
       val workerId = new UcxWorkerId("Server", 0, i)
-      if (i == 0) {
-        listener = worker.newListener(new UcpListenerParams().setSockAddr(
-          new InetSocketAddress("0.0.0.0", serverConf.ucxServerPort))
-          .setConnectionHandler((ucpConnectionRequest: UcpConnectionRequest) => {
-            val id = ucpConnectionRequest.getClientId()
-            val ep = worker.newEndpoint(
-              new UcpEndpointParams().setConnectionRequest(ucpConnectionRequest)
-                .setPeerErrorHandlingMode().setErrorHandler(errorHandler)
-                .setName(s"Endpoint to $id"))
-            endpoints.add(ep)
-          }))
-      }
-      allocatedWorker(i) = new ExternalUcxServerWorker(worker, this, workerId)
+      allocatedWorker(i) = new ExternalUcxServerWorker(worker, this, workerId, 0)
     }
+    serverPorts = allocatedWorker.map(_.getPort)
+
+    serverPortsBuffer = ByteBuffer.allocateDirect(
+      serverPorts.length * UnsafeUtils.INT_SIZE)
+    serverPorts.foreach(serverPortsBuffer.putInt(_))
+    serverPortsBuffer.rewind()
 
     logInfo(s"Launching ${serverConf.numWorkers} server workers")
     allocatedWorker.foreach(_.start)
 
+    logInfo(s"Allocating global worker")
+
+    val worker = ucxContext.newWorker(ucpWorkerParams)
+    globalWorker = new ExternalUcxServerWorker(
+      worker, this, new UcxWorkerId("Listener", 0, 0), serverConf.ucxServerPort)
+    globalWorker.start
+
     initialized = true
-    logInfo(s"Started listener on ${listener.getAddress}")
-    SerializationUtils.serializeInetAddress(listener.getAddress)
+    logInfo(s"Started listener on ${globalWorker.getAddress} ${serverPorts}")
+    SerializationUtils.serializeInetAddress(globalWorker.getAddress)
   }
 
   /**
@@ -92,15 +81,9 @@ class ExternalUcxServerTransport(
     if (initialized) {
       running = false
 
-      allocatedWorker(0).close(() => {
-        if (listener != null) {          
-          endpoints.foreach(_.closeNonBlockingForce())
-          endpoints.clear()
-
-          listener.close()
-          listener = null
-        }
-      })
+      if (globalWorker != null) {
+        globalWorker.close()
+      }
 
       if (allocatedWorker != null) {
         allocatedWorker.foreach(_.close)
@@ -127,6 +110,10 @@ class ExternalUcxServerTransport(
       val clientIds = clients.filterKeys(_.exeId == exeId).keys.toSeq
       allocatedWorker.foreach(_.disconnect(clientIds))
     })
+  }
+
+  def getServerPortsBuffer(): ByteBuffer = {
+    serverPortsBuffer.duplicate()
   }
 
   def handleConnect(clientWorker: UcxWorkerId, address: ByteBuffer): Unit = {

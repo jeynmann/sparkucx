@@ -20,7 +20,7 @@ object UcxRpcMessages {
    */
   case class IntroduceAllExecutors(executorIdToAddress: Map[Long, SerializableDirectBuffer])
 
-  case class PushServiceAddress(shuffleServer: SerializableDirectBuffer, endpoint: RpcEndpointRef)
+  case class PushServiceAddress(host: String, ports: Seq[Int], endpoint: RpcEndpointRef)
 
-  case class PushAllServiceAddress(shuffleServerSet: Set[SerializableDirectBuffer])
+  case class PushAllServiceAddress(shuffleServerMap: Map[String, Seq[Int]])
 }
