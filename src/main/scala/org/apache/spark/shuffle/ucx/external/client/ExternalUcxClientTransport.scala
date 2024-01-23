@@ -15,13 +15,20 @@ import org.openucx.jucx.ucp._
 import java.net.InetSocketAddress
 import java.nio.ByteBuffer
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.CountDownLatch
 
 class ExternalUcxClientTransport(clientConf: ExternalUcxClientConf, blockManagerId: BlockManagerId)
 extends ExternalUcxTransport(clientConf) with UcxLogging {
+  private[spark] val executorId = blockManagerId.executorId.toLong
   private[spark] val tcpServerPort = blockManagerId.port
   private[spark] val ucxServerPort = clientConf.ucxServerPort
   private[spark] lazy val sparkTransportConf = SparkTransportConf.fromSparkConf(
     clientConf.getSparkConf, "ucx-shuffle", clientConf.numWorkers)
+
+  private[ucx] val ucxServers = new TrieMap[String, InetSocketAddress]
+  private[ucx] val localServerPortsDone = new CountDownLatch(1)
+  private[ucx] var localServerPortsBuffer: ByteBuffer = _
+  private[ucx] var localServerPorts: Seq[Int] = _
 
   private[ucx] lazy val currentWorkerId = new AtomicInteger()
   private[ucx] lazy val workerLocal = new ThreadLocal[ExternalUcxClientWorker]
@@ -44,12 +51,11 @@ extends ExternalUcxTransport(clientConf) with UcxLogging {
 
     logInfo(s"Allocating ${clientConf.numWorkers} client workers")
     val appId = clientConf.sparkConf.getAppId
-    val exeId = blockManagerId.executorId.toLong
     allocatedWorker = new Array[ExternalUcxClientWorker](clientConf.numWorkers)
     for (i <- 0 until clientConf.numWorkers) {
-      ucpWorkerParams.setClientId((exeId << 32) | i.toLong)
+      ucpWorkerParams.setClientId((executorId << 32) | i.toLong)
       val worker = ucxContext.newWorker(ucpWorkerParams)
-      val workerId = new UcxWorkerId(appId, exeId.toInt, i)
+      val workerId = new UcxWorkerId(appId, executorId.toInt, i)
       allocatedWorker(i) = new ExternalUcxClientWorker(worker, this, workerId)
     }
 
@@ -60,11 +66,16 @@ extends ExternalUcxTransport(clientConf) with UcxLogging {
       (allocatedWorker(0).worker.getMaxAmHeaderSize - 2).toInt /
       UnsafeUtils.INT_SIZE)
 
-    initialized = true
+    logInfo(s"Connecting server.")
+
     val shuffleServer = new InetSocketAddress(blockManagerId.host, ucxServerPort)
-    logInfo(s"Shuffle server ${shuffleServer}")
-    allocatedWorker.foreach(_.connect(shuffleServer))
-    SerializationUtils.serializeInetAddress(shuffleServer)
+    allocatedWorker(0).requestAddress(shuffleServer)
+    localServerPortsDone.await()
+
+    logInfo(s"Connected server $shuffleServer")
+
+    initialized = true
+    localServerPortsBuffer
   }
 
   override def close(): Unit = {
@@ -80,6 +91,7 @@ extends ExternalUcxTransport(clientConf) with UcxLogging {
   }
 
   def getMaxBlocksPerRequest: Int = maxBlocksPerRequest
+
   // @inline
   // def selectWorker(): ExternalUcxClientWorker = {
   //   allocatedWorker(
@@ -99,18 +111,34 @@ extends ExternalUcxTransport(clientConf) with UcxLogging {
     }
   }
 
-  def connect(shuffleServer: SerializableDirectBuffer): Unit = {
-    val addressBuffer = shuffleServer.value
-    val address = SerializationUtils.deserializeInetAddress(addressBuffer)
-    allocatedWorker.foreach(_.connect(address))
-    logDebug(s"connect $address")
+  def connect(host: String, ports: Seq[Int]): Unit = {
+    val server = ucxServers.getOrElseUpdate(host, {
+      val id = executorId.toInt.abs % ports.length
+      new InetSocketAddress(host, ports(id))
+    })
+    allocatedWorker.foreach(_.connect(server))
+    logDebug(s"connect $host $server")
   }
 
-  def connectAll(shuffleServerSet: Set[SerializableDirectBuffer]): Unit = {
-    val addressSet = shuffleServerSet.map(addressBuffer =>
-      SerializationUtils.deserializeInetAddress(addressBuffer.value))
+  def connectAll(shuffleServerMap: Map[String, Seq[Int]]): Unit = {
+    val addressSet = shuffleServerMap.map(hostPorts => {
+      ucxServers.getOrElseUpdate(hostPorts._1, {
+        val id = executorId.toInt.abs % hostPorts._2.length
+        new InetSocketAddress(hostPorts._1, hostPorts._2(id))
+      })
+    }).toSeq
     allocatedWorker.foreach(_.connectAll(addressSet))
     logDebug(s"connectAll $addressSet")
+  }
+
+  def handleReplyAddress(msg: ByteBuffer): Unit = {
+    val num = msg.remaining() / UnsafeUtils.INT_SIZE
+    localServerPorts = (0 until num).map(_ => msg.getInt())
+    localServerPortsBuffer = msg
+
+    localServerPortsDone.countDown()
+
+    connect(blockManagerId.host, localServerPorts)
   }
 
   /**
