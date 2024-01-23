@@ -48,7 +48,9 @@ class ExternalUcxServerConf(val yarnConf: Configuration) extends ExternalUcxConf
 
   override lazy val numWorkers: Int = yarnConf.getInt(
     ExternalUcxConf.NUM_WORKERS_KEY,
-    ExternalUcxConf.NUM_WORKERS_DEFAULT)
+    yarnConf.getInt(
+      ExternalUcxConf.NUM_WORKERS_COMPAT_KEY,
+      ExternalUcxConf.NUM_WORKERS_DEFAULT))
 
   override lazy val numThreads: Int = yarnConf.getInt(
     ExternalUcxConf.NUM_THREADS_KEY,

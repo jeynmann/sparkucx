@@ -6,7 +6,6 @@ import org.openucx.jucx.ucp.UcpWorker
 
 class UcxWorkerThread(worker: UcpWorker, useWakeup: Boolean) extends Thread {
   private val taskQueue = new ConcurrentLinkedQueue[Runnable]
-  private val waiting = new AtomicBoolean(false)
   private val running = new AtomicBoolean(true)
 
   setDaemon(true)
@@ -15,14 +14,12 @@ class UcxWorkerThread(worker: UcpWorker, useWakeup: Boolean) extends Thread {
   @`inline`
   def post(task: Runnable): Unit = {
     taskQueue.add(task)
-    if (waiting.compareAndSet(true, false)) {
-      worker.signal()
-    }
+    worker.signal()
   }
 
   @`inline`
   def await() = {
-    if (waiting.compareAndSet(false, true) && taskQueue.isEmpty) {
+    if (taskQueue.isEmpty) {
       worker.waitForEvents()
     }
   }

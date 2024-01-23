@@ -10,7 +10,7 @@ import java.util.concurrent.{ConcurrentHashMap, ConcurrentLinkedDeque}
 
 import org.openucx.jucx.ucp.{UcpContext, UcpMemMapParams, UcpMemory}
 import org.openucx.jucx.ucs.UcsConstants
-import org.apache.spark.shuffle.utils.{UcxUtils, UcxLogging, UnsafeUtils}
+import org.apache.spark.shuffle.utils.{SparkucxUtils, UcxLogging, UnsafeUtils}
 import org.apache.spark.shuffle.ucx.MemoryBlock
 import java.util.concurrent.Semaphore
 
@@ -95,7 +95,7 @@ case class MemoryPool(ucxContext: UcpContext, memoryType: Int)
 
     private[memory] def preallocate(numBuffers: Int): Unit = {
       logTrace(s"PreAllocating $numBuffers of size $length, " +
-        s"totalSize: ${UcxUtils.bytesToString(length * numBuffers)}.")
+        s"totalSize: ${SparkucxUtils.bytesToString(length * numBuffers)}.")
       val memory = ucxContext.memoryMap(
         new UcpMemMapParams().allocate().setMemoryType(memType).setLength(length * numBuffers))
       val refCount = new AtomicInteger(numBuffers)
@@ -116,7 +116,7 @@ case class MemoryPool(ucxContext: UcpContext, memoryType: Int)
         numBuffers += 1
       })
       logInfo(s"Closing $numBuffers buffers of size $length." +
-        s"Number of allocations: ${numAllocs.get()}. Total size: ${UcxUtils.bytesToString(length * numBuffers)}")
+        s"Number of allocations: ${numAllocs.get()}. Total size: ${SparkucxUtils.bytesToString(length * numBuffers)}")
       stack.clear()
     }
   }
@@ -213,7 +213,7 @@ class UcxBaseMemAllocator extends UcxMemoryAllocator with UcxLogging {
     })
     if (numBuffers != 0) {
       logInfo(s"Closing $numBuffers buffers size $length allocations " +
-        s"${numAllocs.get()}. Total ${UcxUtils.bytesToString(length * numBuffers)}")
+        s"${numAllocs.get()}. Total ${SparkucxUtils.bytesToString(length * numBuffers)}")
       stack.clear()
     }
   }

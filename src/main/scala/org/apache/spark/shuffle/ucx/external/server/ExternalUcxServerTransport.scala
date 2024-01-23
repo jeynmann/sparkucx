@@ -3,7 +3,7 @@ package org.apache.spark.shuffle.ucx
 // import org.apache.spark.SparkEnv
 import org.apache.spark.shuffle.utils.{UcxLogging, UnsafeUtils}
 import org.apache.spark.shuffle.ucx.utils.SerializationUtils
-import org.apache.spark.network.buffer.ManagedBuffer
+import org.apache.spark.network.buffer.FileSegmentManagedBuffer
 import org.apache.spark.network.shuffle.ExternalUcxShuffleBlockResolver
 import org.openucx.jucx.ucp._
 import org.openucx.jucx.ucs.UcsConstants
@@ -13,6 +13,9 @@ import org.openucx.jucx.{UcxCallback, UcxException, UcxUtils}
 import java.net.InetSocketAddress
 import java.nio.ByteBuffer
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.ConcurrentHashMap
+import java.nio.channels.FileChannel
+import java.nio.file.StandardOpenOption
 import scala.collection.concurrent.TrieMap
 import scala.collection.mutable
 
@@ -20,7 +23,8 @@ class ExternalUcxServerTransport(
   serverConf: ExternalUcxServerConf, blockManager: ExternalUcxShuffleBlockResolver)
   extends ExternalUcxTransport(serverConf)
   with UcxLogging {
-  private[ucx] val workerMap = new TrieMap[String, TrieMap[Long, ByteBuffer]]
+  private[ucx] val workerMap = new TrieMap[String, TrieMap[UcxWorkerId, Unit]]
+  private[ucx] val fileMap = new TrieMap[String, ConcurrentHashMap[UcxShuffleMapId, FileChannel]]
   private val errorHandler = new UcpEndpointErrorHandler {
     override def onError(ucpEndpoint: UcpEndpoint, errorCode: Int, errorString: String): Unit = {
       if (errorCode == UcsConstants.STATUS.UCS_ERR_CONNECTION_RESET) {
@@ -109,20 +113,19 @@ class ExternalUcxServerTransport(
   }
 
   def applicationRemoved(appId: String): Unit = {
-    workerMap.remove(appId).map(clientAddress => {
-      val shuffleClients = clientAddress.map(x => UcxWorkerId(appId, x._1))
-      allocatedWorker.foreach(_.disconnect(shuffleClients.toSeq))
+    workerMap.remove(appId).foreach(clients => {
+      val clientIds = clients.keys.toSeq
+      allocatedWorker.foreach(_.disconnect(clientIds))
     })
+    fileMap.remove(appId).foreach(files => files.values.forEach(_.close))
     // allocatedWorker.foreach(_.debugClients())
   }
 
   def executorRemoved(executorId: String, appId: String): Unit = {
     val exeId = executorId.toInt
-    workerMap.get(appId).map(clientAddress => {
-      val filteredAddress = clientAddress.filterKeys(
-        id => UcxWorkerId.extractExeId(id) == exeId)
-      val shuffleClients = filteredAddress.map(x => UcxWorkerId(appId, x._1))
-      allocatedWorker.foreach(_.disconnect(shuffleClients.toSeq))
+    workerMap.get(appId).map(clients => {
+      val clientIds = clients.filterKeys(_.exeId == exeId).keys.toSeq
+      allocatedWorker.foreach(_.disconnect(clientIds))
     })
   }
 
@@ -130,8 +133,9 @@ class ExternalUcxServerTransport(
     submit(new Runnable {
       override def run(): Unit = {
         allocatedWorker.foreach(_.connectBack(clientWorker, address))
-        workerMap.getOrElseUpdate(clientWorker.appId, new TrieMap[Long, ByteBuffer])
-          .getOrElseUpdate(UcxWorkerId.makeExeWorkerId(clientWorker), address)
+        workerMap.getOrElseUpdate(clientWorker.appId, {
+          new TrieMap[UcxWorkerId, Unit]
+        }).getOrElseUpdate(clientWorker, Unit)
       }
     })
   }
@@ -142,10 +146,11 @@ class ExternalUcxServerTransport(
     submit(new Runnable {
       override def run(): Unit = {
         val blockInfos = blockIds.map(bid => {
-          val buf = blockManager.getBlockData(clientWorker.appId, exeId.toString,
-                                              bid.shuffleId, bid.mapId,
-                                              bid.reduceId)
-          buf.size() -> buf
+          val block = blockManager.getBlockData(clientWorker.appId, exeId.toString,
+                                                bid.shuffleId, bid.mapId,
+                                                bid.reduceId).asInstanceOf[
+                                                  FileSegmentManagedBuffer]
+          (openBlock(clientWorker.appId, bid, block), block.getOffset, block.size)
         })
         selectWorker.handleFetchBlockRequest(clientWorker, replyTag, blockInfos)
       }
@@ -156,13 +161,25 @@ class ExternalUcxServerTransport(
                              replyTag: Int, bid: UcxShuffleBlockId): Unit = {
     submit(new Runnable {
       override def run(): Unit = {
-        val buf = blockManager.getBlockData(clientWorker.appId, exeId.toString,
-                                            bid.shuffleId, bid.mapId,
-                                            bid.reduceId)
-        val blockInfo = buf.size() -> buf
+        val block = blockManager.getBlockData(clientWorker.appId, exeId.toString,
+                                              bid.shuffleId, bid.mapId,
+                                              bid.reduceId).asInstanceOf[
+                                                FileSegmentManagedBuffer]
+        val blockInfo = (
+          openBlock(clientWorker.appId, bid, block), block.getOffset, block.size)
         selectWorker.handleFetchBlockStream(clientWorker, replyTag, blockInfo)
       }
     })
+  }
+
+  def openBlock(appId: String, bid: UcxShuffleBlockId,
+                blockData: FileSegmentManagedBuffer): FileChannel = {
+    fileMap.getOrElseUpdate(appId, {
+      new ConcurrentHashMap[UcxShuffleMapId, FileChannel]
+    }).computeIfAbsent(
+      UcxShuffleMapId(bid.shuffleId, bid.mapId),
+      _ => FileChannel.open(blockData.getFile().toPath(), StandardOpenOption.READ)
+    )
   }
 
   @inline
