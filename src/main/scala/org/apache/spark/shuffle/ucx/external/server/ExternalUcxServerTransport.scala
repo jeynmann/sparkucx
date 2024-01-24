@@ -13,7 +13,7 @@ import org.openucx.jucx.{UcxCallback, UcxException, UcxUtils}
 import java.net.InetSocketAddress
 import java.nio.ByteBuffer
 import java.util.concurrent.atomic.AtomicInteger
-import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.{ConcurrentHashMap, TimeUnit}
 import java.nio.channels.FileChannel
 import java.nio.file.StandardOpenOption
 import scala.collection.concurrent.TrieMap
@@ -80,11 +80,11 @@ class ExternalUcxServerTransport(
       running = false
 
       if (globalWorker != null) {
-        globalWorker.close()
+        globalWorker.closing().get(1, TimeUnit.MILLISECONDS)
       }
 
       if (allocatedWorker != null) {
-        allocatedWorker.foreach(_.close)
+        allocatedWorker.map(_.closing).foreach(_.get(5, TimeUnit.MILLISECONDS))
       }
 
       super.close()
@@ -97,6 +97,7 @@ class ExternalUcxServerTransport(
     workerMap.remove(appId).foreach(clients => {
       val clientIds = clients.keys.toSeq
       allocatedWorker.foreach(_.disconnect(clientIds))
+      globalWorker.disconnect(clientIds)
     })
     fileMap.remove(appId).foreach(files => files.values.forEach(_.close))
     // allocatedWorker.foreach(_.debugClients())
@@ -107,6 +108,7 @@ class ExternalUcxServerTransport(
     workerMap.get(appId).map(clients => {
       val clientIds = clients.filterKeys(_.exeId == exeId).keys.toSeq
       allocatedWorker.foreach(_.disconnect(clientIds))
+      globalWorker.disconnect(clientIds)
     })
   }
 
@@ -116,14 +118,9 @@ class ExternalUcxServerTransport(
 
   def handleConnect(handler: ExternalUcxServerWorker,
                     clientWorker: UcxWorkerId, address: ByteBuffer): Unit = {
-    submit(new Runnable {
-      override def run(): Unit = {
-        handler.connectBack(clientWorker, address)
-        workerMap.getOrElseUpdate(clientWorker.appId, {
-          new TrieMap[UcxWorkerId, Unit]
-        }).getOrElseUpdate(clientWorker, Unit)
-      }
-    })
+    workerMap.getOrElseUpdate(clientWorker.appId, {
+      new TrieMap[UcxWorkerId, Unit]
+    }).getOrElseUpdate(clientWorker, Unit)
   }
 
   def handleFetchBlockRequest(handler: ExternalUcxServerWorker,

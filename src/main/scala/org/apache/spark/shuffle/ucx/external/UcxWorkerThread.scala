@@ -24,10 +24,13 @@ class UcxWorkerThread(worker: UcpWorker, useWakeup: Boolean) extends Thread {
     }
   }
 
-  def close(): Unit = {
+  @`inline`
+  def close(cleanTask: Runnable): Unit = {
     if (running.compareAndSet(true, false)) {
-      worker.close()
+      worker.signal()
     }
+    cleanTask.run()
+    worker.close()
   }
 
   override def run(): Unit = {
