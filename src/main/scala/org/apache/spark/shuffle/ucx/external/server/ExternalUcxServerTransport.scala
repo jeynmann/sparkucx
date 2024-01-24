@@ -25,8 +25,6 @@ class ExternalUcxServerTransport(
   private[ucx] val workerMap = new TrieMap[String, TrieMap[UcxWorkerId, Unit]]
   private[ucx] val fileMap = new TrieMap[String, ConcurrentHashMap[UcxShuffleMapId, FileChannel]]
 
-  private[ucx] lazy val currentWorkerId = new AtomicInteger()
-  private[ucx] lazy val workerLocal = new ThreadLocal[ExternalUcxServerWorker]
   private[ucx] var allocatedWorker: Array[ExternalUcxServerWorker] = _
   private[ucx] var globalWorker: ExternalUcxServerWorker = _
   private[ucx] var serverPorts: Seq[Int] = _
@@ -116,10 +114,11 @@ class ExternalUcxServerTransport(
     serverPortsBuffer.duplicate()
   }
 
-  def handleConnect(clientWorker: UcxWorkerId, address: ByteBuffer): Unit = {
+  def handleConnect(handler: ExternalUcxServerWorker,
+                    clientWorker: UcxWorkerId, address: ByteBuffer): Unit = {
     submit(new Runnable {
       override def run(): Unit = {
-        allocatedWorker.foreach(_.connectBack(clientWorker, address))
+        handler.connectBack(clientWorker, address)
         workerMap.getOrElseUpdate(clientWorker.appId, {
           new TrieMap[UcxWorkerId, Unit]
         }).getOrElseUpdate(clientWorker, Unit)
@@ -127,7 +126,8 @@ class ExternalUcxServerTransport(
     })
   }
 
-  def handleFetchBlockRequest(clientWorker: UcxWorkerId, exeId: Int,
+  def handleFetchBlockRequest(handler: ExternalUcxServerWorker,
+                              clientWorker: UcxWorkerId, exeId: Int,
                               replyTag: Int, blockIds: Seq[UcxShuffleBlockId]):
                               Unit = {
     submit(new Runnable {
@@ -139,12 +139,13 @@ class ExternalUcxServerTransport(
                                                   FileSegmentManagedBuffer]
           (openBlock(clientWorker.appId, bid, block), block.getOffset, block.size)
         })
-        selectWorker.handleFetchBlockRequest(clientWorker, replyTag, blockInfos)
+        handler.handleFetchBlockRequest(clientWorker, replyTag, blockInfos)
       }
     })
   }
 
-  def handleFetchBlockStream(clientWorker: UcxWorkerId, exeId: Int,
+  def handleFetchBlockStream(handler: ExternalUcxServerWorker,
+                             clientWorker: UcxWorkerId, exeId: Int,
                              replyTag: Int, bid: UcxShuffleBlockId): Unit = {
     submit(new Runnable {
       override def run(): Unit = {
@@ -154,7 +155,7 @@ class ExternalUcxServerTransport(
                                                 FileSegmentManagedBuffer]
         val blockInfo = (
           openBlock(clientWorker.appId, bid, block), block.getOffset, block.size)
-        selectWorker.handleFetchBlockStream(clientWorker, replyTag, blockInfo)
+        handler.handleFetchBlockStream(clientWorker, replyTag, blockInfo)
       }
     })
   }
@@ -167,18 +168,5 @@ class ExternalUcxServerTransport(
       UcxShuffleMapId(bid.shuffleId, bid.mapId),
       _ => FileChannel.open(blockData.getFile().toPath(), StandardOpenOption.READ)
     )
-  }
-
-  @inline
-  def selectWorker(): ExternalUcxServerWorker = {
-    Option(workerLocal.get) match {
-      case Some(worker) => worker
-      case None => {
-        val worker = allocatedWorker(
-          (currentWorkerId.incrementAndGet() % allocatedWorker.length).abs)
-        workerLocal.set(worker)
-        worker
-      }
-    }
   }
 }
