@@ -69,7 +69,7 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
     val BlockNum = buffer.remaining() / UcxShuffleBlockId.serializedSize
     val blockIds = (0 until BlockNum).map(
       _ => UcxShuffleBlockId.deserialize(buffer))
-    transport.handleFetchBlockRequest(workerId, exeId, replyTag, blockIds)
+    transport.handleFetchBlockRequest(this, workerId, exeId, replyTag, blockIds)
     UcsConstants.STATUS.UCS_OK
   }, UcpConstants.UCP_AM_FLAG_WHOLE_MSG )
 
@@ -81,7 +81,7 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
     val replyTag = header.getInt
     val exeId = header.getInt
     val blockId = UcxShuffleBlockId.deserialize(header)
-    transport.handleFetchBlockStream(workerId, exeId, replyTag, blockId)
+    transport.handleFetchBlockStream(this, workerId, exeId, replyTag, blockId)
     UcsConstants.STATUS.UCS_OK
   }, UcpConstants.UCP_AM_FLAG_WHOLE_MSG )
 
@@ -94,7 +94,7 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
                                                       amData.getLength.toInt)
     val copiedAddress = ByteBuffer.allocateDirect(workerAddress.remaining)
     copiedAddress.put(workerAddress)
-    transport.handleConnect(workerId, copiedAddress)
+    transport.handleConnect(this, workerId, copiedAddress)
     UcsConstants.STATUS.UCS_OK
   }, UcpConstants.UCP_AM_FLAG_WHOLE_MSG )
   // Main RPC thread. reply with ucpAddress.
@@ -267,8 +267,7 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
 
       val nextLatch = new CountDownLatch(1)
       if (remaining > 0) {
-        transport.submit(() => send(transport.selectWorker, currentId + 1,
-                                    nextLatch))
+        transport.submit(() => send(this, currentId + 1, nextLatch))
       }
       sendLatch.await()
 
