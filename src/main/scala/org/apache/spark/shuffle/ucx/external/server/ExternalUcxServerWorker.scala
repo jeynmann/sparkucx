@@ -208,11 +208,12 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
     val resultBuffer = UcxUtils.getByteBufferView(resultMemory.address, msgSize)
 
     resultBuffer.putInt(replyTag)
-    for (i <- 0 until blockInfos.length) {
+    val blocksRange = 0 until blockInfos.length
+    for (i <- blocksRange) {
       resultBuffer.putInt(blockInfos(i)._3.toInt)
     }
 
-    for (i <- 0 until blockInfos.length) {
+    for (i <- blocksRange) {
       val (blockCh, blockOffset, blockSize) = blockInfos(i)
       resultBuffer.limit(resultBuffer.position() + blockSize.toInt)
       blockCh.read(resultBuffer, blockOffset)
