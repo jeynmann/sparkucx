@@ -1,6 +1,5 @@
 package org.apache.spark.shuffle.ucx
 
-import scala.collection.concurrent.TrieMap
 // import org.apache.spark.SparkEnv
 import org.apache.spark.network.util.TransportConf
 import org.apache.spark.network.netty.SparkTransportConf
@@ -15,7 +14,7 @@ import org.openucx.jucx.ucp._
 import java.net.InetSocketAddress
 import java.nio.ByteBuffer
 import java.util.concurrent.atomic.AtomicInteger
-import java.util.concurrent.CountDownLatch
+import java.util.concurrent.{ConcurrentHashMap, CountDownLatch, TimeUnit}
 
 class ExternalUcxClientTransport(clientConf: ExternalUcxClientConf, blockManagerId: BlockManagerId)
 extends ExternalUcxTransport(clientConf) with UcxLogging {
@@ -25,7 +24,7 @@ extends ExternalUcxTransport(clientConf) with UcxLogging {
   private[spark] lazy val sparkTransportConf = SparkTransportConf.fromSparkConf(
     clientConf.getSparkConf, "ucx-shuffle", clientConf.numWorkers)
 
-  private[ucx] val ucxServers = new TrieMap[String, InetSocketAddress]
+  private[ucx] val ucxServers = new ConcurrentHashMap[String, InetSocketAddress]
   private[ucx] val localServerPortsDone = new CountDownLatch(1)
   private[ucx] var localServerPortsBuffer: ByteBuffer = _
   private[ucx] var localServerPorts: Seq[Int] = _
@@ -83,7 +82,7 @@ extends ExternalUcxTransport(clientConf) with UcxLogging {
       running = false
 
       if (allocatedWorker != null) {
-        allocatedWorker.foreach(_.close)
+        allocatedWorker.map(_.closing).foreach(_.get(5, TimeUnit.MILLISECONDS))
       }
 
       super.close()
@@ -112,7 +111,7 @@ extends ExternalUcxTransport(clientConf) with UcxLogging {
   }
 
   def connect(host: String, ports: Seq[Int]): Unit = {
-    val server = ucxServers.getOrElseUpdate(host, {
+    val server = ucxServers.computeIfAbsent(host, _ => {
       val id = executorId.toInt.abs % ports.length
       new InetSocketAddress(host, ports(id))
     })
@@ -122,7 +121,7 @@ extends ExternalUcxTransport(clientConf) with UcxLogging {
 
   def connectAll(shuffleServerMap: Map[String, Seq[Int]]): Unit = {
     val addressSet = shuffleServerMap.map(hostPorts => {
-      ucxServers.getOrElseUpdate(hostPorts._1, {
+      ucxServers.computeIfAbsent(hostPorts._1, _ => {
         val id = executorId.toInt.abs % hostPorts._2.length
         new InetSocketAddress(hostPorts._1, hostPorts._2(id))
       })

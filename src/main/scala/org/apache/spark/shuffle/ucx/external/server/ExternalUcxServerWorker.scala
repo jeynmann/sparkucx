@@ -7,9 +7,9 @@ package org.apache.spark.shuffle.ucx
 import java.io.Closeable
 import java.nio.ByteBuffer
 import java.nio.channels.FileChannel
-import java.util.concurrent.{ConcurrentLinkedQueue, CountDownLatch, Callable, Future, FutureTask}
-import scala.collection.concurrent.TrieMap
+import java.util.concurrent.{ConcurrentLinkedQueue, ConcurrentHashMap, CountDownLatch, Future, FutureTask}
 import scala.collection.mutable
+import scala.collection.JavaConverters._
 import org.openucx.jucx.ucp._
 import org.openucx.jucx.ucs.UcsConstants
 import org.openucx.jucx.ucs.UcsConstants.MEMORY_TYPE
@@ -28,7 +28,7 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
   extends Closeable with UcxLogging {
   private[this] val memPool = transport.hostBounceBufferMemoryPool
   private[this] val maxReplySize = transport.ucxShuffleConf.maxReplySize
-  private[this] val shuffleClients = new TrieMap[UcxWorkerId, UcpEndpoint]
+  private[this] val shuffleClients = new ConcurrentHashMap[UcxWorkerId, UcpEndpoint]
   private[ucx] val executor = new UcxWorkerThread(
     worker, transport.ucxShuffleConf.useWakeup)
 
@@ -94,6 +94,7 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
                                                       amData.getLength.toInt)
     val copiedAddress = ByteBuffer.allocateDirect(workerAddress.remaining)
     copiedAddress.put(workerAddress)
+    connected(workerId, copiedAddress)
     transport.handleConnect(this, workerId, copiedAddress)
     UcsConstants.STATUS.UCS_OK
   }, UcpConstants.UCP_AM_FLAG_WHOLE_MSG )
@@ -112,17 +113,33 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
   }
 
   override def close(): Unit = {
-    reportClients()
-    executor.post(() => {
-      endpoints.foreach(_.closeNonBlockingForce())
-      listener.close()
-    })
-    executor.close()
+    if (!shuffleClients.isEmpty) {
+      logInfo(s"$workerId closing ${shuffleClients.size} clients")
+      shuffleClients.values.asScala.map(
+        _.closeNonBlockingFlush()).foreach(req =>
+          while (!req.isCompleted){
+            worker.progress()
+          }
+        )
+    }
+    if (!endpoints.isEmpty) {
+      logInfo(s"$workerId closing ${endpoints.size} eps")
+      endpoints.map(
+        _.closeNonBlockingForce()).foreach(req =>
+          while (!req.isCompleted){
+            worker.progress()
+          }
+        )
+    }
+    listener.close()
   }
 
-  def close(closeCb: Runnable): Unit = {
-    executor.post(closeCb)
-    executor.close()
+  def closing(): Future[Unit.type] = {
+    val cleanTask = new FutureTask(new Runnable {
+      override def run() = close()
+    }, Unit)
+    executor.close(cleanTask)
+    cleanTask
   }
 
   def getPort(): Int = {
@@ -133,15 +150,15 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
     listenerAddress
   }
 
-  def reportClients(): Unit = {
-    if (!shuffleClients.isEmpty) {
-      logInfo(s"$workerId clients ${shuffleClients.size}")
-    }
-  }
-
   @`inline`
   private def doDisconnect(workerId: UcxWorkerId): Unit = {
-    shuffleClients.remove(workerId).foreach(_.close)
+    try {
+      Option(shuffleClients.remove(workerId)).foreach(ep => {
+        ep.closeNonBlockingFlush()
+      })
+    } catch {
+      case e: Throwable => logWarning(s"$workerId disconnect $e")
+    }
   }
 
   @`inline`
@@ -150,12 +167,8 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
   }
 
   @`inline`
-  def connectBack(shuffleClient: UcxWorkerId, workerAddress: ByteBuffer): Unit = {
-    executor.post(() => getConnection(shuffleClient, workerAddress))
-  }
-
-  private def getConnection(shuffleClient: UcxWorkerId, workerAddress: ByteBuffer): UcpEndpoint = {
-    shuffleClients.getOrElseUpdate(shuffleClient, {
+  def connected(shuffleClient: UcxWorkerId, workerAddress: ByteBuffer): Unit = {
+    shuffleClients.computeIfAbsent(shuffleClient, _ => {
       logDebug(s"$workerId connecting back to $shuffleClient by worker address")
       worker.newEndpoint(new UcpEndpointParams()
         .setName(s"Server to $UcxWorkerId")
@@ -164,16 +177,16 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
   }
 
   def awaitConnection(shuffleClient: UcxWorkerId): UcpEndpoint = {
-    shuffleClients.getOrElse(shuffleClient, {
-      // wait until transport handleConnect finished
+    shuffleClients.getOrDefault(shuffleClient, {
+      // wait until connected finished
       val startTime = System.currentTimeMillis()
-      while (!shuffleClients.contains(shuffleClient)) {
+      while (!shuffleClients.containsKey(shuffleClient)) {
         if  (System.currentTimeMillis() - startTime > 10000) {
-          throw new UcxException(s"Don't get a worker address for $UcxWorkerId")
+          throw new UcxException(s"Don't get a worker address for $shuffleClient")
         }
         Thread.`yield`
       }
-      shuffleClients(shuffleClient)
+      shuffleClients.get(shuffleClient)
     })
   }
 
@@ -208,11 +221,12 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
     val resultBuffer = UcxUtils.getByteBufferView(resultMemory.address, msgSize)
 
     resultBuffer.putInt(replyTag)
-    for (i <- 0 until blockInfos.length) {
+    val blocksRange = 0 until blockInfos.length
+    for (i <- blocksRange) {
       resultBuffer.putInt(blockInfos(i)._3.toInt)
     }
 
-    for (i <- 0 until blockInfos.length) {
+    for (i <- blocksRange) {
       val (blockCh, blockOffset, blockSize) = blockInfos(i)
       resultBuffer.limit(resultBuffer.position() + blockSize.toInt)
       blockCh.read(resultBuffer, blockOffset)

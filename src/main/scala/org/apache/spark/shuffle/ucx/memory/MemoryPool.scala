@@ -223,7 +223,8 @@ case class UcxLinkedMemAllocator(length: Long, minRegistrationSize: Long,
                                  next: UcxLinkedMemAllocator,
                                  ucxContext: UcpContext)
   extends UcxBaseMemAllocator() with Closeable {
-  private[this] lazy val registrationSize = length.max(minRegistrationSize)
+  private[this] val registrationSize = length.max(minRegistrationSize)
+  private[this] val sliceRange = (0L until (registrationSize / length))
   private[this] var limit: Semaphore = _
   logInfo(s"Allocator stack size $length")
   if (next == null) {
@@ -240,9 +241,8 @@ case class UcxLinkedMemAllocator(length: Long, minRegistrationSize: Long,
       while (result == null) {
         numAllocs.incrementAndGet()
         val memory = ucxContext.memoryMap(memMapParams)
-        val numBuffers = memory.getLength / length
         var address = memory.getAddress
-        for (i <- 0L until numBuffers) {
+        for (i <- sliceRange) {
           stack.add(new UcxLinkedMemBlock(null, null, memory, this, address, length))
           address += length
         }

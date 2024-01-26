@@ -6,9 +6,10 @@ package org.apache.spark.shuffle.ucx
 
 import java.io.Closeable
 import java.nio.channels.ReadableByteChannel
-import java.util.concurrent.{ConcurrentLinkedQueue, Callable, Future, FutureTask}
+import java.util.concurrent.{ConcurrentLinkedQueue, ConcurrentHashMap, Future, FutureTask}
 import java.util.concurrent.atomic.AtomicInteger
 import scala.collection.concurrent.TrieMap
+import scala.collection.JavaConverters._
 import scala.util.Random
 import org.openucx.jucx.ucp._
 import org.openucx.jucx.ucs.UcsConstants
@@ -32,7 +33,7 @@ case class ExternalUcxClientWorker(val worker: UcpWorker,
   private[this] val tag = new AtomicInteger(Random.nextInt())
   private[this] val memPool = transport.hostBounceBufferMemoryPool
   private[this] val connectQueue = new ConcurrentLinkedQueue[InetSocketAddress]
-  private[this] val shuffleServers = new TrieMap[String, UcpEndpoint]
+  private[this] val shuffleServers = new ConcurrentHashMap[String, UcpEndpoint]
   private[this] val executor = new UcxWorkerThread(
     worker, transport.ucxShuffleConf.useWakeup)
   private[this] lazy val requestData = new TrieMap[Int, (Seq[OperationCallback], UcxRequest)]
@@ -270,16 +271,20 @@ case class ExternalUcxClientWorker(val worker: UcpWorker,
   }
 
   override def close(): Unit = {
-    executor.post(() => {
-      val closeRequests = shuffleServers.map {
-        case (_, endpoint) => endpoint.closeNonBlockingForce()
-      }
-      while (!closeRequests.forall(_.isCompleted)) {
-        progress()
-      }
-      shuffleServers.clear()
-    })
-    executor.close()
+    val closeRequests = shuffleServers.asScala.map {
+      case (_, endpoint) => endpoint.closeNonBlockingForce()
+    }
+    while (!closeRequests.forall(_.isCompleted)) {
+      progress()
+    }
+  }
+
+  def closing(): Future[Unit.type] = {
+    val cleanTask = new FutureTask(new Runnable {
+      override def run() = close()
+    }, Unit)
+    executor.close(cleanTask)
+    cleanTask
   }
 
   /**
@@ -291,7 +296,7 @@ case class ExternalUcxClientWorker(val worker: UcpWorker,
 
   @`inline`
   def requestAddress(localServer: InetSocketAddress): Unit = {
-    executor.post(() => shuffleServers.getOrElseUpdate("0.0.0.0", {
+    executor.post(() => shuffleServers.computeIfAbsent("0.0.0.0", _ => {
       doConnect(localServer, ExternalAmId.ADDRESS,
                 UcpConstants.UCP_AM_SEND_FLAG_REPLY)
     }))
@@ -351,14 +356,15 @@ case class ExternalUcxClientWorker(val worker: UcpWorker,
   }
 
   private def getConnection(shuffleServer: InetSocketAddress): UcpEndpoint = {
-    shuffleServers.getOrElseUpdate(shuffleServer.getHostName(), {
+    shuffleServers.computeIfAbsent(shuffleServer.getHostName(), _ => {
       doConnect(shuffleServer)
     })
   }
 
   private def getConnection(host: String): UcpEndpoint = {
-    shuffleServers.getOrElseUpdate(host, {
-      val shuffleServer = transport.ucxServers.getOrElseUpdate(host, {
+    shuffleServers.computeIfAbsent(host, _ => {
+      val shuffleServer = transport.ucxServers.computeIfAbsent(host, _ => {
+        logInfo(s"connecting $host with controller port")
         new InetSocketAddress(host, transport.ucxServerPort)
       })
       doConnect(shuffleServer)
