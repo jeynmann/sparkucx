@@ -21,8 +21,9 @@ extends ExternalUcxTransport(clientConf) with UcxLogging {
   private[spark] val executorId = blockManagerId.executorId.toLong
   private[spark] val tcpServerPort = blockManagerId.port
   private[spark] val ucxServerPort = clientConf.ucxServerPort
+  private[spark] val numWorkers = clientConf.numWorkers
   private[spark] lazy val sparkTransportConf = SparkTransportConf.fromSparkConf(
-    clientConf.getSparkConf, "ucx-shuffle", clientConf.numWorkers)
+    clientConf.getSparkConf, "ucx-shuffle", numWorkers)
 
   private[ucx] val ucxServers = new ConcurrentHashMap[String, InetSocketAddress]
   private[ucx] val localServerPortsDone = new CountDownLatch(1)
@@ -35,7 +36,7 @@ extends ExternalUcxTransport(clientConf) with UcxLogging {
 
   private var maxBlocksPerRequest = 0
 
-  override def estimateNumEps(): Int = clientConf.numWorkers *
+  override def estimateNumEps(): Int = numWorkers *
       clientConf.sparkConf.getInt("spark.executor.instances", 1)
 
   override def init(): ByteBuffer = {
@@ -46,19 +47,17 @@ extends ExternalUcxTransport(clientConf) with UcxLogging {
       ucpWorkerParams.requestWakeupRX().requestWakeupTX().requestWakeupEdge()
     }
 
-    initTaskPool(clientConf.numThreads)
-
-    logInfo(s"Allocating ${clientConf.numWorkers} client workers")
+    logInfo(s"Allocating ${numWorkers} client workers")
     val appId = clientConf.sparkConf.getAppId
-    allocatedWorker = new Array[ExternalUcxClientWorker](clientConf.numWorkers)
-    for (i <- 0 until clientConf.numWorkers) {
+    allocatedWorker = new Array[ExternalUcxClientWorker](numWorkers)
+    for (i <- 0 until numWorkers) {
       ucpWorkerParams.setClientId((executorId << 32) | i.toLong)
       val worker = ucxContext.newWorker(ucpWorkerParams)
       val workerId = new UcxWorkerId(appId, executorId.toInt, i)
       allocatedWorker(i) = new ExternalUcxClientWorker(worker, this, workerId)
     }
 
-    logInfo(s"Launching ${clientConf.numWorkers} client workers")
+    logInfo(s"Launching ${numWorkers} client workers")
     allocatedWorker.foreach(_.start)
 
     maxBlocksPerRequest = clientConf.maxBlocksPerRequest.min(

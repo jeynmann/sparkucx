@@ -49,7 +49,7 @@ case class ExternalUcxClientWorker(val worker: UcpWorker,
       val i = headerBuffer.getInt
       val remaining = headerBuffer.getInt
 
-      transport.submit(() => handleReplySlice(i, remaining, ucpAmData))
+      handleReplySlice(i, remaining, ucpAmData)
       UcsConstants.STATUS.UCS_INPROGRESS
     }, UcpConstants.UCP_AM_FLAG_PERSISTENT_DATA | UcpConstants.UCP_AM_FLAG_WHOLE_MSG)
 
@@ -61,7 +61,7 @@ case class ExternalUcxClientWorker(val worker: UcpWorker,
       val i = headerBuffer.getInt
       val remaining = headerBuffer.getInt
 
-      transport.submit(() => handleReplyStream(i, remaining, ucpAmData))
+      handleReplyStream(i, remaining, ucpAmData)
       UcsConstants.STATUS.UCS_INPROGRESS
     }, UcpConstants.UCP_AM_FLAG_PERSISTENT_DATA | UcpConstants.UCP_AM_FLAG_WHOLE_MSG)
 
@@ -73,7 +73,7 @@ case class ExternalUcxClientWorker(val worker: UcpWorker,
       val numBlocks = headerBuffer.remaining() / UnsafeUtils.INT_SIZE
       val blockSizes = (0 until numBlocks).map(_ => headerBuffer.getInt())
 
-      transport.submit(() => handleReplyBlock(i, blockSizes, ucpAmData))
+      handleReplyBlock(i, blockSizes, ucpAmData)
       UcsConstants.STATUS.UCS_INPROGRESS
     }, UcpConstants.UCP_AM_FLAG_PERSISTENT_DATA | UcpConstants.UCP_AM_FLAG_WHOLE_MSG)
 
