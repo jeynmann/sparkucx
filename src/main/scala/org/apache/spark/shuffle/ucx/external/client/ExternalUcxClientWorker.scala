@@ -358,19 +358,13 @@ case class ExternalUcxClientWorker(val worker: UcpWorker,
   }
 
   private def getConnection(shuffleServer: InetSocketAddress): UcpEndpoint = {
-    shuffleServers.computeIfAbsent(shuffleServer.getHostName(), _ => {
+    shuffleServers.computeIfAbsent(shuffleServer.getAddress().getHostAddress(), _ => {
       doConnect(shuffleServer)
     })
   }
 
   private def getConnection(host: String): UcpEndpoint = {
-    shuffleServers.computeIfAbsent(host, _ => {
-      val shuffleServer = transport.ucxServers.computeIfAbsent(host, _ => {
-        logInfo(s"connecting $host with controller port")
-        new InetSocketAddress(host, transport.ucxServerPort)
-      })
-      doConnect(shuffleServer)
-    })
+    getConnection(transport.getServer(host))
   }
 
   def fetchBlocksByBlockIds(host: String, execId: Int, blockIds: Seq[BlockId],

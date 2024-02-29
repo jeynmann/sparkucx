@@ -109,6 +109,14 @@ extends ExternalUcxTransport(clientConf) with UcxLogging {
     }
   }
 
+  @`inline`
+  def getServer(host: String): InetSocketAddress = {
+    ucxServers.computeIfAbsent(host, _ => {
+      logInfo(s"connecting $host with controller port")
+      new InetSocketAddress(host, ucxServerPort)
+    })
+  }
+
   def connect(host: String, ports: Seq[Int]): Unit = {
     val server = ucxServers.computeIfAbsent(host, _ => {
       val id = executorId.toInt.abs % ports.length
