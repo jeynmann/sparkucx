@@ -50,8 +50,8 @@ case class ExternalUcxClientWorker(val worker: UcpWorker,
       val remaining = headerBuffer.getInt
 
       handleReplySlice(i, remaining, ucpAmData)
-      UcsConstants.STATUS.UCS_INPROGRESS
-    }, UcpConstants.UCP_AM_FLAG_PERSISTENT_DATA | UcpConstants.UCP_AM_FLAG_WHOLE_MSG)
+      UcsConstants.STATUS.UCS_OK
+    }, UcpConstants.UCP_AM_FLAG_WHOLE_MSG)
 
   worker.setAmRecvHandler(ExternalAmId.REPLY_STREAM,
     (headerAddress: Long, headerSize: Long, ucpAmData: UcpAmData,
@@ -62,8 +62,8 @@ case class ExternalUcxClientWorker(val worker: UcpWorker,
       val remaining = headerBuffer.getInt
 
       handleReplyStream(i, remaining, ucpAmData)
-      UcsConstants.STATUS.UCS_INPROGRESS
-    }, UcpConstants.UCP_AM_FLAG_PERSISTENT_DATA | UcpConstants.UCP_AM_FLAG_WHOLE_MSG)
+      UcsConstants.STATUS.UCS_OK
+    }, UcpConstants.UCP_AM_FLAG_WHOLE_MSG)
 
   worker.setAmRecvHandler(ExternalAmId.REPLY_BLOCK,
     (headerAddress: Long, headerSize: Long, ucpAmData: UcpAmData, _: UcpEndpoint) => {
@@ -74,7 +74,11 @@ case class ExternalUcxClientWorker(val worker: UcpWorker,
       val blockSizes = (0 until numBlocks).map(_ => headerBuffer.getInt())
 
       handleReplyBlock(i, blockSizes, ucpAmData)
-      UcsConstants.STATUS.UCS_INPROGRESS
+      if (ucpAmData.isDataValid) {
+        UcsConstants.STATUS.UCS_INPROGRESS
+      } else {
+        UcsConstants.STATUS.UCS_OK
+      }
     }, UcpConstants.UCP_AM_FLAG_PERSISTENT_DATA | UcpConstants.UCP_AM_FLAG_WHOLE_MSG)
 
   worker.setAmRecvHandler(ExternalAmId.REPLY_ADDRESS,
@@ -129,10 +133,9 @@ case class ExternalUcxClientWorker(val worker: UcpWorker,
             new UcxSucceedOperationResult(result, stats))
           sliceData.remove(i)
         }
-        executor.post(() => ucpAmData.close())
       } else {
         stats.amHandleTime = System.nanoTime()
-        executor.post(() => worker.recvAmDataNonBlocking(
+        worker.recvAmDataNonBlocking(
           ucpAmData.getDataHandle, currentAddress, ucpAmData.getLength,
           new UcxCallback() {
             override def onSuccess(r: UcpRequest): Unit = {
@@ -150,7 +153,7 @@ case class ExternalUcxClientWorker(val worker: UcpWorker,
                 sliceData.remove(i)
               }
             }
-          }, UcsConstants.MEMORY_TYPE.UCS_MEMORY_TYPE_HOST))
+          }, UcsConstants.MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
       }
     }
 
@@ -183,11 +186,10 @@ case class ExternalUcxClientWorker(val worker: UcpWorker,
             new UcxSucceedOperationResult(null, stats))
           streamData.remove(i)
         }
-        executor.post(() => ucpAmData.close())
       } else {
         val mem = memPool.get(ucpAmData.getLength)
         stats.amHandleTime = System.nanoTime()
-        executor.post(() => worker.recvAmDataNonBlocking(
+        worker.recvAmDataNonBlocking(
           ucpAmData.getDataHandle, mem.address, ucpAmData.getLength,
           new UcxCallback() {
             override def onSuccess(r: UcpRequest): Unit = {
@@ -205,7 +207,7 @@ case class ExternalUcxClientWorker(val worker: UcpWorker,
                 streamData.remove(i)
               }
             }
-          }, UcsConstants.MEMORY_TYPE.UCS_MEMORY_TYPE_HOST))
+          }, UcsConstants.MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
       }
     }
 
@@ -245,7 +247,7 @@ case class ExternalUcxClientWorker(val worker: UcpWorker,
       } else {
         val mem = memPool.get(ucpAmData.getLength)
         stats.amHandleTime = System.nanoTime()
-        executor.post(() => request.setRequest(worker.recvAmDataNonBlocking(ucpAmData.getDataHandle, mem.address, ucpAmData.getLength,
+        request.setRequest(worker.recvAmDataNonBlocking(ucpAmData.getDataHandle, mem.address, ucpAmData.getLength,
           new UcxCallback() {
             override def onSuccess(r: UcpRequest): Unit = {
               request.completed = true
@@ -262,7 +264,7 @@ case class ExternalUcxClientWorker(val worker: UcpWorker,
               }
 
             }
-          }, UcsConstants.MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)))
+          }, UcsConstants.MEMORY_TYPE.UCS_MEMORY_TYPE_HOST))
       }
     }
 

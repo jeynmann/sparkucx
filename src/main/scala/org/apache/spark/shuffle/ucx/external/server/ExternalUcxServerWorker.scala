@@ -209,7 +209,7 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
 
   def handleFetchBlockRequest(
     clientWorker: UcxWorkerId, replyTag: Int,
-    blockInfos: Seq[(FileChannel, Long, Long)]): Unit = try {
+    blockInfos: Seq[(FileChannel, Long, Long)]): Unit = {
     if (blockInfos.length == 1 && blockInfos(0)._3 > maxReplySize) {
       return handleFetchBlockStream(clientWorker, replyTag, blockInfos(0),
                                     ExternalAmId.REPLY_SLICE)
@@ -250,8 +250,6 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
       }, new UcpRequestParams().setMemoryType(UcsConstants.MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
       .setMemoryHandle(resultMemory.memory))
     })
-  } catch {
-    case ex: Throwable => logError(s"Failed to reply block tag $replyTag $ex.")
   }
 
   def handleFetchBlockStream(clientWorker: UcxWorkerId, replyTag: Int,
@@ -261,7 +259,7 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
     val maxBodySize = maxReplySize - headerSize.toLong
     val (blockCh, blockOffset, blockSize) = blockInfo
     val blockSlice = (0L until blockSize by maxBodySize)
-    val firstLatch = new CountDownLatch(1)
+    val firstLatch = new CountDownLatch(0)
 
     def send(workerWrapper: ExternalUcxServerWorker, currentId: Int,
              sendLatch: CountDownLatch): Unit = try {
@@ -307,10 +305,9 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
       })
     } catch {
       case ex: Throwable =>
-        logError(s"Failed to reply stream $currentId tag $replyTag $ex.")
+        logError(s"Failed to reply stream $clientWorker tag $replyTag $currentId $ex.")
     }
 
-    firstLatch.countDown()
     send(this, 0, firstLatch)
   }
 }
