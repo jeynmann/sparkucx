@@ -92,6 +92,7 @@ trait Request {
 trait OperationCallback {
   def onComplete(result: OperationResult): Unit
   def onData(buf: ByteBuffer): Unit = ???
+  def onFailure(e: Throwable): Unit = ???
 }
 
 /**

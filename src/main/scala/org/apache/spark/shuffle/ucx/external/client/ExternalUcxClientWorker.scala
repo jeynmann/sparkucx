@@ -405,8 +405,9 @@ case class ExternalUcxClientWorker(val worker: UcpWorker,
         }
         override def onError(ucsStatus: Int, errorMsg: String): Unit = {
           val err = s"Sent fetch to $host tag $t failed: $errorMsg";
+          callbacks.foreach(_.onFailure(new UcxException(err)))
+          requestData.remove(t)
           logError(err)
-          throw new UcxException(err)
         }
       }, MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
     })
@@ -442,8 +443,9 @@ case class ExternalUcxClientWorker(val worker: UcpWorker,
         }
         override def onError(ucsStatus: Int, errorMsg: String): Unit = {
           val err = s"Sent stream to $host tag $t failed: $errorMsg";
+          callback.onFailure(new UcxException(err))
+          requestData.remove(t)
           logError(err)
-          throw new UcxException(err)
         }
       }, MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
     })

@@ -158,6 +158,10 @@ private[shuffle] class UcxFetchCallBack(
   blockId: String, listener: BlockFetchingListener)
   extends OperationCallback {
 
+  override def onFailure(e: Throwable): Unit = {
+    listener.onBlockFetchFailure(blockId, e)
+  }
+
   override def onComplete(result: OperationResult): Unit = {
     val memBlock = result.getData
     val buffer = UnsafeUtils.getByteBufferView(memBlock.address,
@@ -180,6 +184,10 @@ private[shuffle] class UcxDownloadCallBack(
   private[this] val targetFile = downloadFileManager.createTempFile(
     transportConf)
   private[this] val channel = targetFile.openForWriting();
+
+  override def onFailure(e: Throwable): Unit = {
+    listener.onBlockFetchFailure(blockId, e)
+  }
 
   override def onData(buffer: ByteBuffer): Unit = {
     while (buffer.hasRemaining()) {
