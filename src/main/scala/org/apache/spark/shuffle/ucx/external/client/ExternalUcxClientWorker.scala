@@ -400,8 +400,13 @@ case class ExternalUcxClientWorker(val worker: UcpWorker,
       UcpConstants.UCP_AM_SEND_FLAG_EAGER, new UcxCallback() {
         override def onSuccess(request: UcpRequest): Unit = {
           buffer.clear()
-          logDebug(s"Sent message to $host to fetch ${blockIds.length} blocks on tag $t" +
+          logDebug(s"Sent fetch to $host tag $t blocks ${blockIds.length} " +
           s"in ${System.nanoTime() - startTime} ns")
+        }
+        override def onError(ucsStatus: Int, errorMsg: String): Unit = {
+          val err = s"Sent fetch to $host tag $t failed: $errorMsg";
+          logError(err)
+          throw new UcxException(err)
         }
       }, MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
     })
@@ -432,8 +437,13 @@ case class ExternalUcxClientWorker(val worker: UcpWorker,
         address, 0, UcpConstants.UCP_AM_SEND_FLAG_EAGER, new UcxCallback() {
         override def onSuccess(request: UcpRequest): Unit = {
           buffer.clear()
-          logDebug(s"$workerId sent stream to $host block $blockId " +
-            s"tag $t in ${System.nanoTime() - startTime} ns")
+          logDebug(s"Sent stream to $host tag $t block $blockId " +
+            s"in ${System.nanoTime() - startTime} ns")
+        }
+        override def onError(ucsStatus: Int, errorMsg: String): Unit = {
+          val err = s"Sent stream to $host tag $t failed: $errorMsg";
+          logError(err)
+          throw new UcxException(err)
         }
       }, MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
     })
