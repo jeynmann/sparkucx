@@ -315,9 +315,9 @@ case class ExternalUcxClientWorker(val worker: UcpWorker,
   }
 
   @`inline`
-  private def doConnectNext(): Unit = {
+  private def connectNext(): Unit = {
     if (!connectQueue.isEmpty) {
-      getConnection(connectQueue.poll())
+      executor.post(() => getConnection(connectQueue.poll()))
     }
   }
 
@@ -348,10 +348,11 @@ case class ExternalUcxClientWorker(val worker: UcpWorker,
         override def onSuccess(request: UcpRequest): Unit = {
           header.clear()
           workerAddress.clear()
-          doConnectNext()
+          connectNext()
         }
         override def onError(ucsStatus: Int, errorMsg: String): Unit = {
-          doConnectNext()
+          logError(s"$workerId Sent connect to $shuffleServer failed: $errorMsg");
+          connectNext()
         }
       }, MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
     ep

@@ -61,7 +61,7 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
   worker.setAmRecvHandler(ExternalAmId.FETCH_BLOCK,
     (headerAddress: Long, headerSize: Long, amData: UcpAmData, _: UcpEndpoint) => {
     val header = UnsafeUtils.getByteBufferView(headerAddress, headerSize.toInt)
-    val workerId = UcxWorkerId.deserialize(header)
+    val shuffleClient = UcxWorkerId.deserialize(header)
     val replyTag = header.getInt
     val exeId = header.getInt
     val buffer = UnsafeUtils.getByteBufferView(amData.getDataAddress,
@@ -69,7 +69,8 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
     val BlockNum = buffer.remaining() / UcxShuffleBlockId.serializedSize
     val blockIds = (0 until BlockNum).map(
       _ => UcxShuffleBlockId.deserialize(buffer))
-    transport.handleFetchBlockRequest(this, workerId, exeId, replyTag, blockIds)
+    logTrace(s"Recv fetch from $shuffleClient tag $replyTag.")
+    transport.handleFetchBlockRequest(this, shuffleClient, exeId, replyTag, blockIds)
     UcsConstants.STATUS.UCS_OK
   }, UcpConstants.UCP_AM_FLAG_WHOLE_MSG )
 
@@ -77,11 +78,12 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
   worker.setAmRecvHandler(ExternalAmId.FETCH_STREAM,
     (headerAddress: Long, headerSize: Long, amData: UcpAmData, _: UcpEndpoint) => {
     val header = UnsafeUtils.getByteBufferView(headerAddress, headerSize.toInt)
-    val workerId = UcxWorkerId.deserialize(header)
+    val shuffleClient = UcxWorkerId.deserialize(header)
     val replyTag = header.getInt
     val exeId = header.getInt
     val blockId = UcxShuffleBlockId.deserialize(header)
-    transport.handleFetchBlockStream(this, workerId, exeId, replyTag, blockId)
+    logTrace(s"Recv stream from $shuffleClient tag $replyTag.")
+    transport.handleFetchBlockStream(this, shuffleClient, exeId, replyTag, blockId)
     UcsConstants.STATUS.UCS_OK
   }, UcpConstants.UCP_AM_FLAG_WHOLE_MSG )
 
@@ -89,13 +91,13 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
   worker.setAmRecvHandler(ExternalAmId.CONNECT,
     (headerAddress: Long, headerSize: Long, amData: UcpAmData, _: UcpEndpoint) => {
     val header = UnsafeUtils.getByteBufferView(headerAddress, headerSize.toInt)
-    val workerId = UcxWorkerId.deserialize(header)
+    val shuffleClient = UcxWorkerId.deserialize(header)
     val workerAddress = UnsafeUtils.getByteBufferView(amData.getDataAddress,
                                                       amData.getLength.toInt)
     val copiedAddress = ByteBuffer.allocateDirect(workerAddress.remaining)
     copiedAddress.put(workerAddress)
-    connected(workerId, copiedAddress)
-    transport.handleConnect(this, workerId, copiedAddress)
+    connected(shuffleClient, copiedAddress)
+    transport.handleConnect(this, shuffleClient, copiedAddress)
     UcsConstants.STATUS.UCS_OK
   }, UcpConstants.UCP_AM_FLAG_WHOLE_MSG )
   // Main RPC thread. reply with ucpAddress.
@@ -168,8 +170,8 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
 
   @`inline`
   def connected(shuffleClient: UcxWorkerId, workerAddress: ByteBuffer): Unit = {
+    logDebug(s"$workerId connecting back to $shuffleClient by worker address")
     shuffleClients.computeIfAbsent(shuffleClient, _ => {
-      logDebug(s"$workerId connecting back to $shuffleClient by worker address")
       worker.newEndpoint(new UcpEndpointParams()
         .setName(s"Server to $UcxWorkerId")
         .setUcpAddress(workerAddress))
@@ -193,18 +195,20 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
   def handleAddress(ep: UcpEndpoint) = {
     val msg = transport.getServerPortsBuffer()
     val header = UnsafeUtils.getAdress(msg)
-    ep.sendAmNonBlocking(
-      ExternalAmId.REPLY_ADDRESS, header, msg.remaining(), header, 0,
-      UcpConstants.UCP_AM_SEND_FLAG_EAGER, new UcxCallback {
-        override def onSuccess(request: UcpRequest): Unit = {
-          logTrace(s"$workerId sent to REPLY_ADDRESS to $ep")
-          msg.clear()
-        }
+    executor.post(() => {
+      ep.sendAmNonBlocking(
+        ExternalAmId.REPLY_ADDRESS, header, msg.remaining(), header, 0,
+        UcpConstants.UCP_AM_SEND_FLAG_EAGER, new UcxCallback {
+          override def onSuccess(request: UcpRequest): Unit = {
+            logTrace(s"$workerId sent to REPLY_ADDRESS to $ep")
+            msg.clear()
+          }
 
-        override def onError(ucsStatus: Int, errorMsg: String): Unit = {
-          logWarning(s"$workerId sent to REPLY_ADDRESS to $ep: $errorMsg")
-        }
-      }, MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
+          override def onError(ucsStatus: Int, errorMsg: String): Unit = {
+            logWarning(s"$workerId sent to REPLY_ADDRESS to $ep: $errorMsg")
+          }
+        }, MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
+    })
   }
 
   def handleFetchBlockRequest(
