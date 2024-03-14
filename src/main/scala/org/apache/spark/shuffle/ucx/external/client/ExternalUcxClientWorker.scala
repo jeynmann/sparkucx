@@ -274,7 +274,9 @@ case class ExternalUcxClientWorker(val worker: UcpWorker,
   }
 
   override def close(): Unit = {
-    val closeConnecting = connectingServers.values.asScala.map {
+    val closeConnecting = connectingServers.values.asScala.filterNot {
+      case (_, req) => req.isCompleted
+    }.map {
       case (endpoint, _) => endpoint.closeNonBlockingForce()
     }
     val closeRequests = shuffleServers.asScala.map {
@@ -353,13 +355,13 @@ case class ExternalUcxClientWorker(val worker: UcpWorker,
       UcxUtils.getAddress(workerAddress), workerAddress.remaining(),
       UcpConstants.UCP_AM_SEND_FLAG_EAGER | flag, new UcxCallback() {
         override def onSuccess(request: UcpRequest): Unit = {
-          header.clear()
-          workerAddress.clear()
           connectNext()
         }
         override def onError(ucsStatus: Int, errorMsg: String): Unit = {
           logError(s"$workerId Sent connect to $shuffleServer failed: $errorMsg");
           connectNext()
+          header.clear()
+          workerAddress.clear()
         }
       }, MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
     ep -> req
@@ -373,8 +375,14 @@ case class ExternalUcxClientWorker(val worker: UcpWorker,
     val shuffleServer = transport.getServer(host)
     shuffleServers.computeIfAbsent(shuffleServer.getAddress().getHostAddress(), _ => {
       val (ep, req) = startConnection(shuffleServer)
-      while (!req.isCompleted) {
-        worker.progress()
+      if (!req.isCompleted) {
+        val deadline = System.currentTimeMillis() + 30000 // 30s
+        while (!req.isCompleted) {
+          if (System.currentTimeMillis() > deadline) {
+            throw new UcxException(s"connect $shuffleServer timeout")
+          }
+          worker.progress()
+        }
       }
       ep
     })
