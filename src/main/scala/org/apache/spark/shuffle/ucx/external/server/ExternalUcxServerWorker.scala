@@ -173,6 +173,12 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
     logDebug(s"$workerId connecting back to $shuffleClient by worker address")
     shuffleClients.computeIfAbsent(shuffleClient, _ => {
       worker.newEndpoint(new UcpEndpointParams()
+        .setErrorHandler(new UcpEndpointErrorHandler {
+          override def onError(ucpEndpoint: UcpEndpoint, errorCode: Int, errorString: String): Unit = {
+            shuffleClients.remove(shuffleClient)
+            ucpEndpoint.close()
+          }
+        })
         .setName(s"Server to $shuffleClient")
         .setUcpAddress(workerAddress))
     })
