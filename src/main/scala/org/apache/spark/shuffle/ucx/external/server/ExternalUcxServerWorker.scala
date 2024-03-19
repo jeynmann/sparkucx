@@ -36,11 +36,11 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
   private val listener = worker.newListener(
     new UcpListenerParams().setSockAddr(new InetSocketAddress("0.0.0.0", port))
     .setConnectionHandler((ucpConnectionRequest: UcpConnectionRequest) => {
-      val id = ucpConnectionRequest.getClientId()
+      val clientAddress = ucpConnectionRequest.getClientAddress()
       val ep = worker.newEndpoint(
         new UcpEndpointParams().setConnectionRequest(ucpConnectionRequest)
           .setPeerErrorHandlingMode().setErrorHandler(errorHandler)
-          .setName(s"Endpoint to $id"))
+          .setName(s"Endpoint to $clientAddress"))
       endpoints.add(ep)
     }))
 
@@ -173,7 +173,7 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
     logDebug(s"$workerId connecting back to $shuffleClient by worker address")
     shuffleClients.computeIfAbsent(shuffleClient, _ => {
       worker.newEndpoint(new UcpEndpointParams()
-        .setName(s"Server to $UcxWorkerId")
+        .setName(s"Server to $shuffleClient")
         .setUcpAddress(workerAddress))
     })
   }
@@ -195,20 +195,18 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
   def handleAddress(ep: UcpEndpoint) = {
     val msg = transport.getServerPortsBuffer()
     val header = UnsafeUtils.getAdress(msg)
-    executor.post(() => {
-      ep.sendAmNonBlocking(
-        ExternalAmId.REPLY_ADDRESS, header, msg.remaining(), header, 0,
-        UcpConstants.UCP_AM_SEND_FLAG_EAGER, new UcxCallback {
-          override def onSuccess(request: UcpRequest): Unit = {
-            logTrace(s"$workerId sent to REPLY_ADDRESS to $ep")
-            msg.clear()
-          }
+    ep.sendAmNonBlocking(
+      ExternalAmId.REPLY_ADDRESS, header, msg.remaining(), header, 0,
+      UcpConstants.UCP_AM_SEND_FLAG_EAGER, new UcxCallback {
+        override def onSuccess(request: UcpRequest): Unit = {
+          logTrace(s"$workerId sent to REPLY_ADDRESS to $ep")
+          msg.clear()
+        }
 
-          override def onError(ucsStatus: Int, errorMsg: String): Unit = {
-            logWarning(s"$workerId sent to REPLY_ADDRESS to $ep: $errorMsg")
-          }
-        }, MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
-    })
+        override def onError(ucsStatus: Int, errorMsg: String): Unit = {
+          logWarning(s"$workerId sent to REPLY_ADDRESS to $ep: $errorMsg")
+        }
+      }, MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
   }
 
   def handleFetchBlockRequest(
