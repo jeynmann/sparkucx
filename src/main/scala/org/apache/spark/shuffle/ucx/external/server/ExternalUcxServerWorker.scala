@@ -29,6 +29,7 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
   private[this] val memPool = transport.hostBounceBufferMemoryPool
   private[this] val maxReplySize = transport.ucxShuffleConf.maxReplySize
   private[this] val shuffleClients = new ConcurrentHashMap[UcxWorkerId, UcpEndpoint]
+  private[this] val workerReqs = new mutable.HashMap[UcxWorkerId, mutable.ListBuffer[UcpRequest]]
   private[ucx] val executor = new UcxWorkerThread(
     worker, transport.ucxShuffleConf.useWakeup)
 
@@ -37,20 +38,24 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
     new UcpListenerParams().setSockAddr(new InetSocketAddress("0.0.0.0", port))
     .setConnectionHandler((ucpConnectionRequest: UcpConnectionRequest) => {
       val clientAddress = ucpConnectionRequest.getClientAddress()
-      val ep = worker.newEndpoint(
-        new UcpEndpointParams().setConnectionRequest(ucpConnectionRequest)
-          .setPeerErrorHandlingMode().setErrorHandler(errorHandler)
-          .setName(s"Endpoint to $clientAddress"))
-      endpoints.add(ep)
+      try {
+        val ep = worker.newEndpoint(
+          new UcpEndpointParams().setConnectionRequest(ucpConnectionRequest)
+            .setPeerErrorHandlingMode().setErrorHandler(errorHandler)
+            .setName(s"Endpoint to $clientAddress"))
+        endpoints.add(ep)
+      } catch {
+        case e: UcxException => logWarning(s"Accept $clientAddress fail: $e")
+      }
     }))
 
   private val listenerAddress = listener.getAddress
   private val errorHandler = new UcpEndpointErrorHandler {
     override def onError(ucpEndpoint: UcpEndpoint, errorCode: Int, errorString: String): Unit = {
       if (errorCode == UcsConstants.STATUS.UCS_ERR_CONNECTION_RESET) {
-        logWarning(s"Connection closed on ep: $ucpEndpoint")
+        logInfo(s"Connection closed on ep: $ucpEndpoint")
       } else {
-        logError(s"Ep $ucpEndpoint got an error: $errorString")
+        logWarning(s"Ep $ucpEndpoint got an error: $errorString")
       }
       endpoints.remove(ucpEndpoint)
       ucpEndpoint.close()
@@ -155,6 +160,9 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
   @`inline`
   private def doDisconnect(workerId: UcxWorkerId): Unit = {
     try {
+      workerReqs.remove(workerId).foreach(reqs => {
+        reqs.filterNot(_.isCompleted).foreach(worker.cancelRequest(_))
+      })
       Option(shuffleClients.remove(workerId)).foreach(ep => {
         ep.closeNonBlockingFlush()
       })
@@ -171,17 +179,22 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
   @`inline`
   def connected(shuffleClient: UcxWorkerId, workerAddress: ByteBuffer): Unit = {
     logDebug(s"$workerId connecting back to $shuffleClient by worker address")
-    shuffleClients.computeIfAbsent(shuffleClient, _ => {
-      worker.newEndpoint(new UcpEndpointParams()
-        .setErrorHandler(new UcpEndpointErrorHandler {
-          override def onError(ucpEndpoint: UcpEndpoint, errorCode: Int, errorString: String): Unit = {
-            shuffleClients.remove(shuffleClient)
-            ucpEndpoint.close()
-          }
-        })
-        .setName(s"Server to $shuffleClient")
-        .setUcpAddress(workerAddress))
-    })
+    try {
+      shuffleClients.computeIfAbsent(shuffleClient, _ => {
+        worker.newEndpoint(new UcpEndpointParams()
+          .setErrorHandler(new UcpEndpointErrorHandler {
+            override def onError(ucpEndpoint: UcpEndpoint, errorCode: Int, errorString: String): Unit = {
+              shuffleClients.remove(shuffleClient)
+              workerReqs.remove(shuffleClient)
+              ucpEndpoint.close()
+            }
+          })
+          .setName(s"Server to $shuffleClient")
+          .setUcpAddress(workerAddress))
+      })
+    } catch {
+      case e: UcxException => logWarning(s"Connect back to $shuffleClient fail: $e")
+    }
   }
 
   def awaitConnection(shuffleClient: UcxWorkerId): UcpEndpoint = {
@@ -198,6 +211,17 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
     })
   }
 
+  private def addInFlight(clientWorker: UcxWorkerId, req: UcpRequest): Unit = {
+    val reqs = workerReqs.getOrElseUpdate(clientWorker, {
+      new mutable.ListBuffer[UcpRequest]()
+    })
+
+    while (reqs.nonEmpty && reqs(0).isCompleted) {
+      reqs.remove(0)
+    }
+    reqs.append(req)
+  }
+
   def handleAddress(ep: UcpEndpoint) = {
     val msg = transport.getServerPortsBuffer()
     val header = UnsafeUtils.getAdress(msg)
@@ -206,11 +230,11 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
       UcpConstants.UCP_AM_SEND_FLAG_EAGER, new UcxCallback {
         override def onSuccess(request: UcpRequest): Unit = {
           logTrace(s"$workerId sent to REPLY_ADDRESS to $ep")
-          msg.clear()
         }
 
         override def onError(ucsStatus: Int, errorMsg: String): Unit = {
           logWarning(s"$workerId sent to REPLY_ADDRESS to $ep: $errorMsg")
+          msg.clear()
         }
       }, MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
   }
@@ -243,20 +267,23 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
     val startTime = System.nanoTime()
     val ep = awaitConnection(clientWorker)
     executor.post(() => {
-      ep.sendAmNonBlocking(ExternalAmId.REPLY_BLOCK, resultMemory.address, tagAndSizes,
-      resultMemory.address + tagAndSizes, msgSize - tagAndSizes, 0, new UcxCallback {
-        override def onSuccess(request: UcpRequest): Unit = {
-          logTrace(s"Sent to ${clientWorker} ${blockInfos.length} blocks of size: " +
-          s"${msgSize} tag $replyTag in ${System.nanoTime() - startTime} ns.")
-          resultMemory.close()
-        }
+      val req = ep.sendAmNonBlocking(ExternalAmId.REPLY_BLOCK,
+        resultMemory.address, tagAndSizes, resultMemory.address + tagAndSizes,
+        msgSize - tagAndSizes, 0, new UcxCallback {
+          override def onSuccess(request: UcpRequest): Unit = {
+            resultMemory.close()
+            logTrace(s"Sent to ${clientWorker} ${blockInfos.length} blocks of size: " +
+              s"${msgSize} tag $replyTag in ${System.nanoTime() - startTime} ns.")
+          }
 
-        override def onError(ucsStatus: Int, errorMsg: String): Unit = {
-          logError(s"Failed to send $errorMsg")
-          resultMemory.close()
-        }
-      }, new UcpRequestParams().setMemoryType(UcsConstants.MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
+          override def onError(ucsStatus: Int, errorMsg: String): Unit = {
+            resultMemory.close()
+            logError(s"Failed to reply fetch $clientWorker tag $replyTag $errorMsg.")
+          }
+        }, new UcpRequestParams().setMemoryType(
+          UcsConstants.MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
       .setMemoryHandle(resultMemory.memory))
+      addInFlight(clientWorker, req)
     })
   }
 
@@ -294,22 +321,23 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
       val startTime = System.nanoTime()
       val ep = workerWrapper.awaitConnection(clientWorker)
       workerWrapper.executor.post(() => {
-        ep.sendAmNonBlocking(amId, mem.address, headerSize,
+        val req = ep.sendAmNonBlocking(amId, mem.address, headerSize,
           mem.address + headerSize, currentSize, 0, new UcxCallback {
             override def onSuccess(request: UcpRequest): Unit = {
+              mem.close()
+              nextLatch.countDown()
               logTrace(s"Reply stream size $currentSize tag $replyTag seg " +
                 s"$currentId in ${System.nanoTime() - startTime} ns.")
-              mem.close()
-              nextLatch.countDown()
             }
             override def onError(ucsStatus: Int, errorMsg: String): Unit = {
-              logError(s"Failed to reply tag $replyTag seg $currentId $errorMsg")
               mem.close()
               nextLatch.countDown()
+              logError(s"Failed to reply stream $clientWorker tag $replyTag $currentId $errorMsg.")
             }
           }, new UcpRequestParams()
             .setMemoryType(UcsConstants.MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
             .setMemoryHandle(mem.memory))
+        addInFlight(clientWorker, req)
       })
     } catch {
       case ex: Throwable =>
