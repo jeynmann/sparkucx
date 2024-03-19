@@ -161,7 +161,11 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
   private def doDisconnect(workerId: UcxWorkerId): Unit = {
     try {
       workerReqs.remove(workerId).foreach(reqs => {
-        reqs.filterNot(_.isCompleted).foreach(worker.cancelRequest(_))
+        val inCompletes = reqs.filterNot(_.isCompleted)
+        if (inCompletes.nonEmpty) {
+          inCompletes.foreach(worker.cancelRequest(_))
+          logInfo(s"$workerId canceled ${inCompletes.size} requests")
+        }
       })
       Option(shuffleClients.remove(workerId)).foreach(ep => {
         ep.closeNonBlockingFlush()
