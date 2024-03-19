@@ -32,8 +32,6 @@ case class ExternalUcxClientWorker(val worker: UcpWorker,
   extends Closeable with UcxLogging {
   private[this] val tag = new AtomicInteger(Random.nextInt())
   private[this] val memPool = transport.hostBounceBufferMemoryPool
-  private[this] val connectQueue = new ConcurrentLinkedQueue[InetSocketAddress]
-  private[this] val connectingServers = new ConcurrentHashMap[InetSocketAddress, (UcpEndpoint, UcpRequest)]
   private[this] val shuffleServers = new ConcurrentHashMap[String, UcpEndpoint]
   private[this] val executor = new UcxWorkerThread(
     worker, transport.ucxShuffleConf.useWakeup)
@@ -274,16 +272,8 @@ case class ExternalUcxClientWorker(val worker: UcpWorker,
   }
 
   override def close(): Unit = {
-    val closeConnecting = connectingServers.values.asScala.filterNot {
-      case (_, req) => req.isCompleted
-    }.map {
-      case (endpoint, _) => endpoint.closeNonBlockingForce()
-    }
     val closeRequests = shuffleServers.asScala.map {
       case (_, endpoint) => endpoint.closeNonBlockingForce()
-    }
-    while (!closeConnecting.forall(_.isCompleted)) {
-      progress()
     }
     while (!closeRequests.forall(_.isCompleted)) {
       progress()
@@ -315,19 +305,10 @@ case class ExternalUcxClientWorker(val worker: UcpWorker,
 
   @`inline`
   def connect(shuffleServer: InetSocketAddress): Unit = {
-    connectQueue.add(shuffleServer)
   }
 
   @`inline`
   def connectAll(addressSet: Seq[InetSocketAddress]): Unit = {
-    addressSet.foreach(connectQueue.add(_))
-  }
-
-  @`inline`
-  private def connectNext(): Unit = {
-    if (!connectQueue.isEmpty) {
-      executor.post(() => startConnection(connectQueue.poll()))
-    }
   }
 
   private def doConnect(shuffleServer: InetSocketAddress,
@@ -355,11 +336,9 @@ case class ExternalUcxClientWorker(val worker: UcpWorker,
       UcxUtils.getAddress(workerAddress), workerAddress.remaining(),
       UcpConstants.UCP_AM_SEND_FLAG_EAGER | flag, new UcxCallback() {
         override def onSuccess(request: UcpRequest): Unit = {
-          connectNext()
         }
         override def onError(ucsStatus: Int, errorMsg: String): Unit = {
           logError(s"$workerId Sent connect to $shuffleServer failed: $errorMsg");
-          connectNext()
           header.clear()
           workerAddress.clear()
         }
@@ -367,19 +346,15 @@ case class ExternalUcxClientWorker(val worker: UcpWorker,
     ep -> req
   }
 
-  private def startConnection(shuffleServer: InetSocketAddress): (UcpEndpoint, UcpRequest) = {
-    connectingServers.computeIfAbsent(shuffleServer, _ => doConnect(shuffleServer))
-  }
-
   private def getConnection(host: String): UcpEndpoint = {
     val shuffleServer = transport.getServer(host)
     shuffleServers.computeIfAbsent(shuffleServer.getAddress().getHostAddress(), _ => {
-      val (ep, req) = startConnection(shuffleServer)
+      val (ep, req) = doConnect(shuffleServer)
       if (!req.isCompleted) {
         val deadline = System.currentTimeMillis() + 30000 // 30s
         while (!req.isCompleted) {
           if (System.currentTimeMillis() > deadline) {
-            throw new UcxException(s"connect $shuffleServer timeout")
+            throw new UcxException(s"$workerId connect $host timeout")
           }
           worker.progress()
         }
