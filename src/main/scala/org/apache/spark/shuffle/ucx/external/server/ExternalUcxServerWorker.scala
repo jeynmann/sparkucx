@@ -33,7 +33,8 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
   private[ucx] val executor = new UcxWorkerThread(
     worker, transport.ucxShuffleConf.useWakeup)
 
-  private val endpoints = mutable.Set.empty[UcpEndpoint]
+  private val emptyCallback = () => {}
+  private val endpoints = mutable.HashMap.empty[UcpEndpoint, () => Unit]
   private val listener = worker.newListener(
     new UcpListenerParams().setSockAddr(new InetSocketAddress("0.0.0.0", port))
     .setConnectionHandler((ucpConnectionRequest: UcpConnectionRequest) => {
@@ -43,9 +44,9 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
           new UcpEndpointParams().setConnectionRequest(ucpConnectionRequest)
             .setPeerErrorHandlingMode().setErrorHandler(errorHandler)
             .setName(s"Endpoint to $clientAddress"))
-        endpoints.add(ep)
+        endpoints.getOrElseUpdate(ep, emptyCallback)
       } catch {
-        case e: UcxException => logWarning(s"Accept $clientAddress fail: $e")
+        case e: UcxException => logError(s"Accept $clientAddress fail: $e")
       }
     }))
 
@@ -57,7 +58,7 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
       } else {
         logWarning(s"Ep $ucpEndpoint got an error: $errorString")
       }
-      endpoints.remove(ucpEndpoint)
+      endpoints.remove(ucpEndpoint).foreach(_())
       ucpEndpoint.close()
     }
   }
@@ -94,7 +95,7 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
 
   // AM to get worker address for client worker and connect server workers to it
   worker.setAmRecvHandler(ExternalAmId.CONNECT,
-    (headerAddress: Long, headerSize: Long, amData: UcpAmData, _: UcpEndpoint) => {
+    (headerAddress: Long, headerSize: Long, amData: UcpAmData, ep: UcpEndpoint) => {
     val header = UnsafeUtils.getByteBufferView(headerAddress, headerSize.toInt)
     val shuffleClient = UcxWorkerId.deserialize(header)
     val workerAddress = UnsafeUtils.getByteBufferView(amData.getDataAddress,
@@ -102,7 +103,7 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
     val copiedAddress = ByteBuffer.allocateDirect(workerAddress.remaining)
     copiedAddress.put(workerAddress)
     connected(shuffleClient, copiedAddress)
-    transport.handleConnect(this, shuffleClient, copiedAddress)
+    endpoints.put(ep, () => doDisconnect(shuffleClient))
     UcsConstants.STATUS.UCS_OK
   }, UcpConstants.UCP_AM_FLAG_WHOLE_MSG )
   // Main RPC thread. reply with ucpAddress.
@@ -131,7 +132,7 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
     }
     if (!endpoints.isEmpty) {
       logInfo(s"$workerId closing ${endpoints.size} eps")
-      endpoints.map(
+      endpoints.keys.map(
         _.closeNonBlockingForce()).foreach(req =>
           while (!req.isCompleted){
             worker.progress()
@@ -158,20 +159,21 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
   }
 
   @`inline`
-  private def doDisconnect(workerId: UcxWorkerId): Unit = {
+  private def doDisconnect(shuffleClient: UcxWorkerId): Unit = {
     try {
-      workerReqs.remove(workerId).foreach(reqs => {
+      workerReqs.remove(shuffleClient).foreach(reqs => {
         val inCompletes = reqs.filterNot(_.isCompleted)
         if (inCompletes.nonEmpty) {
           inCompletes.foreach(worker.cancelRequest(_))
-          logInfo(s"$workerId canceled ${inCompletes.size} requests")
+          logInfo(s"Canceled ${inCompletes.size} requests to $shuffleClient")
         }
       })
-      Option(shuffleClients.remove(workerId)).foreach(ep => {
+      Option(shuffleClients.remove(shuffleClient)).foreach(ep => {
         ep.closeNonBlockingFlush()
+        logInfo(s"Disconnect $shuffleClient")
       })
     } catch {
-      case e: Throwable => logWarning(s"$workerId disconnect $e")
+      case e: Throwable => logWarning(s"Disconnect $shuffleClient: $e")
     }
   }
 
@@ -188,6 +190,7 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
         worker.newEndpoint(new UcpEndpointParams()
           .setErrorHandler(new UcpEndpointErrorHandler {
             override def onError(ucpEndpoint: UcpEndpoint, errorCode: Int, errorString: String): Unit = {
+              logInfo(s"Connection to $shuffleClient closed: $errorString")
               shuffleClients.remove(shuffleClient)
               workerReqs.remove(shuffleClient)
               ucpEndpoint.close()
@@ -197,7 +200,7 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
           .setUcpAddress(workerAddress))
       })
     } catch {
-      case e: UcxException => logWarning(s"Connect back to $shuffleClient fail: $e")
+      case e: UcxException => logWarning(s"Connection to $shuffleClient failed: $e")
     }
   }
 
@@ -220,7 +223,7 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
       new mutable.ListBuffer[UcpRequest]()
     })
 
-    while (reqs.nonEmpty && reqs(0).isCompleted) {
+    while (reqs.nonEmpty && reqs.head.isCompleted) {
       reqs.remove(0)
     }
     reqs.append(req)

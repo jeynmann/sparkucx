@@ -117,7 +117,7 @@ class ExternalUcxServerTransport(
   }
 
   def handleConnect(handler: ExternalUcxServerWorker,
-                    clientWorker: UcxWorkerId, address: ByteBuffer): Unit = {
+                    clientWorker: UcxWorkerId): Unit = {
     workerMap.getOrElseUpdate(clientWorker.appId, {
       new TrieMap[UcxWorkerId, Unit]
     }).getOrElseUpdate(clientWorker, Unit)
