@@ -170,7 +170,7 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
       })
       Option(shuffleClients.remove(shuffleClient)).foreach(ep => {
         ep.closeNonBlockingFlush()
-        logInfo(s"Disconnect $shuffleClient")
+        logDebug(s"Disconnect $shuffleClient")
       })
     } catch {
       case e: Throwable => logWarning(s"Disconnect $shuffleClient: $e")
