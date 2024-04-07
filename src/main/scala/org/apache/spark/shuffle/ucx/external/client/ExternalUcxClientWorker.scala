@@ -37,9 +37,10 @@ case class ExternalUcxClientWorker(val worker: UcpWorker,
   private[this] val shuffleServers = new ConcurrentHashMap[String, UcpEndpoint]
   private[this] val executor = new UcxWorkerThread(
     worker, transport.ucxShuffleConf.useWakeup)
-  private[this] lazy val requestData = new TrieMap[Int, (Seq[OperationCallback], UcxRequest)]
+  private[this] lazy val requestData = new TrieMap[Int, UcxFetchState]
   private[this] lazy val streamData = new TrieMap[Int, UcxStreamState]
   private[this] lazy val sliceData = new TrieMap[Int, UcxSliceState]
+  private[this] var prevTag = 0
 
   // Receive block data handler
   worker.setAmRecvHandler(ExternalAmId.REPLY_SLICE,
@@ -100,7 +101,8 @@ case class ExternalUcxClientWorker(val worker: UcpWorker,
         requestData.remove(i) match {
           case Some(data) => {
             val mem = memPool.get(ucpAmData.getLength * (remaining + 1))
-            new UcxSliceState(data._1(0), data._2, mem, 0L, Int.MaxValue)
+            new UcxSliceState(data.callbacks(0), data.request, data.timestamp,
+                              mem, 0L, Int.MaxValue)
           }
           case None => throw new UcxException(s"Slice tag $i context not found.")
         }
@@ -220,7 +222,9 @@ case class ExternalUcxClientWorker(val worker: UcpWorker,
         throw new UcxException(s"No data for tag $i.")
       }
 
-      val (callbacks, request) = data.get
+      val fetchState = data.get
+      val callbacks = fetchState.callbacks
+      val request = fetchState.request
       val stats = request.getStats.get.asInstanceOf[UcxStats]
       stats.receiveSize = ucpAmData.getLength
 
@@ -376,13 +380,13 @@ case class ExternalUcxClientWorker(val worker: UcpWorker,
     shuffleServers.computeIfAbsent(shuffleServer.getAddress().getHostAddress(), _ => {
       val (ep, req) = startConnection(shuffleServer)
       if (!req.isCompleted) {
-        val deadline = System.currentTimeMillis() + 30000 // 30s
-        while (!req.isCompleted) {
+        val deadline = System.currentTimeMillis() + transport.timeoutMs
+        do {
+          worker.progress()
           if (System.currentTimeMillis() > deadline) {
             throw new UcxException(s"connect $shuffleServer timeout")
           }
-          worker.progress()
-        }
+        } while (!req.isCompleted)
       }
       ep
     })
@@ -402,7 +406,7 @@ case class ExternalUcxClientWorker(val worker: UcpWorker,
     blockIds.foreach(b => b.serialize(buffer))
 
     val request = new UcxRequest(null, new UcxStats())
-    requestData.put(t, (callbacks, request))
+    requestData.put(t, new UcxFetchState(callbacks, request, startTime))
 
     buffer.rewind()
     val address = UnsafeUtils.getAdress(buffer)
@@ -442,7 +446,7 @@ case class ExternalUcxClientWorker(val worker: UcpWorker,
     blockId.serialize(buffer)
 
     val request = new UcxRequest(null, new UcxStats())
-    streamData.put(t, new UcxStreamState(callback, request, Int.MaxValue))
+    streamData.put(t, new UcxStreamState(callback, request, startTime, Int.MaxValue))
 
     val address = UnsafeUtils.getAdress(buffer)
 
@@ -462,5 +466,36 @@ case class ExternalUcxClientWorker(val worker: UcpWorker,
         }
       }, MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
     })
+  }
+
+  def progressTimeOut(): Unit = {
+    val currTag = tag.get()
+    if (prevTag != currTag) {
+      prevTag = currTag
+      return
+    }
+
+    val validTime = System.nanoTime - transport.timeoutMs * 1000000L
+    if (requestData.nonEmpty) {
+      requestData.filterNot {
+        case (_, request) => request.timestamp >= validTime
+      }.keys.foreach(requestData.remove(_).foreach(request => {
+        request.callbacks.foreach(_.onError(new UcxFailureOperationResult("timeout")))
+      }))
+    }
+    if (streamData.nonEmpty) {
+      streamData.filterNot {
+        case (_, request) => request.timestamp >= validTime
+      }.keys.foreach(streamData.remove(_).foreach(request => {
+        request.callback.onError(new UcxFailureOperationResult("timeout"))
+      }))
+    }
+    if (sliceData.nonEmpty) {
+      sliceData.filterNot {
+        case (_, request) => request.timestamp >= validTime
+      }.keys.foreach(sliceData.remove(_).foreach(request => {
+        request.callback.onError(new UcxFailureOperationResult("timeout"))
+      }))
+    }
   }
 }

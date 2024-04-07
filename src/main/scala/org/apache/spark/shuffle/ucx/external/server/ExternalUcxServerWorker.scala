@@ -29,7 +29,6 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
   private[this] val memPool = transport.hostBounceBufferMemoryPool
   private[this] val maxReplySize = transport.ucxShuffleConf.maxReplySize
   private[this] val shuffleClients = new ConcurrentHashMap[UcxWorkerId, UcpEndpoint]
-  private[this] val workerReqs = new mutable.HashMap[UcxWorkerId, mutable.ListBuffer[UcpRequest]]
   private[ucx] val executor = new UcxWorkerThread(
     worker, transport.ucxShuffleConf.useWakeup)
 
@@ -161,13 +160,6 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
   @`inline`
   private def doDisconnect(shuffleClient: UcxWorkerId): Unit = {
     try {
-      workerReqs.remove(shuffleClient).foreach(reqs => {
-        val inCompletes = reqs.filterNot(_.isCompleted)
-        if (inCompletes.nonEmpty) {
-          inCompletes.foreach(worker.cancelRequest(_))
-          logInfo(s"Canceled ${inCompletes.size} requests to $shuffleClient")
-        }
-      })
       Option(shuffleClients.remove(shuffleClient)).foreach(ep => {
         ep.closeNonBlockingFlush()
         logDebug(s"Disconnect $shuffleClient")
@@ -192,7 +184,6 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
             override def onError(ucpEndpoint: UcpEndpoint, errorCode: Int, errorString: String): Unit = {
               logInfo(s"Connection to $shuffleClient closed: $errorString")
               shuffleClients.remove(shuffleClient)
-              workerReqs.remove(shuffleClient)
               ucpEndpoint.close()
             }
           })
@@ -216,17 +207,6 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
       }
       shuffleClients.get(shuffleClient)
     })
-  }
-
-  private def addInFlight(clientWorker: UcxWorkerId, req: UcpRequest): Unit = {
-    val reqs = workerReqs.getOrElseUpdate(clientWorker, {
-      new mutable.ListBuffer[UcpRequest]()
-    })
-
-    while (reqs.nonEmpty && reqs.head.isCompleted) {
-      reqs.remove(0)
-    }
-    reqs.append(req)
   }
 
   def handleAddress(ep: UcpEndpoint) = {
@@ -271,9 +251,9 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
       blockCh.read(resultBuffer, blockOffset)
     }
 
-    val startTime = System.nanoTime()
     val ep = awaitConnection(clientWorker)
     executor.post(() => {
+      val startTime = System.nanoTime()
       val req = ep.sendAmNonBlocking(ExternalAmId.REPLY_BLOCK,
         resultMemory.address, tagAndSizes, resultMemory.address + tagAndSizes,
         msgSize - tagAndSizes, 0, new UcxCallback {
@@ -290,7 +270,6 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
         }, new UcpRequestParams().setMemoryType(
           UcsConstants.MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
       .setMemoryHandle(resultMemory.memory))
-      addInFlight(clientWorker, req)
     })
   }
 
@@ -324,10 +303,9 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
         transport.submit(() => send(this, currentId + 1, nextLatch))
       }
       sendLatch.await()
-
-      val startTime = System.nanoTime()
       val ep = workerWrapper.awaitConnection(clientWorker)
       workerWrapper.executor.post(() => {
+        val startTime = System.nanoTime()
         val req = ep.sendAmNonBlocking(amId, mem.address, headerSize,
           mem.address + headerSize, currentSize, 0, new UcxCallback {
             override def onSuccess(request: UcpRequest): Unit = {
@@ -344,7 +322,6 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
           }, new UcpRequestParams()
             .setMemoryType(UcsConstants.MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
             .setMemoryHandle(mem.memory))
-        addInFlight(clientWorker, req)
       })
     } catch {
       case ex: Throwable =>

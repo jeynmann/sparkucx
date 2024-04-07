@@ -22,7 +22,9 @@ extends ExternalUcxTransport(clientConf) with UcxLogging {
   private[spark] val tcpServerPort = blockManagerId.port
   private[spark] val ucxServerPort = clientConf.ucxServerPort
   private[spark] val numWorkers = clientConf.numWorkers
-  private[spark] lazy val sparkTransportConf = SparkTransportConf.fromSparkConf(
+  private[spark] val timeoutMs = clientConf.getSparkConf.getTimeAsMs(
+    "spark.network.timeout", "10s")
+  private[spark] val sparkTransportConf = SparkTransportConf.fromSparkConf(
     clientConf.getSparkConf, "ucx-shuffle", numWorkers)
 
   private[ucx] val ucxServers = new ConcurrentHashMap[String, InetSocketAddress]
@@ -33,6 +35,8 @@ extends ExternalUcxTransport(clientConf) with UcxLogging {
   private[ucx] lazy val currentWorkerId = new AtomicInteger()
   private[ucx] lazy val workerLocal = new ThreadLocal[ExternalUcxClientWorker]
   private[ucx] var allocatedWorker: Array[ExternalUcxClientWorker] = _
+
+  private[ucx] val scheduledLatch = new CountDownLatch(1)
 
   private var maxBlocksPerRequest = 0
 
@@ -64,6 +68,10 @@ extends ExternalUcxTransport(clientConf) with UcxLogging {
       (allocatedWorker(0).worker.getMaxAmHeaderSize - 2).toInt /
       UnsafeUtils.INT_SIZE)
 
+    logInfo(s"Launching time-scheduled threads, period: $timeoutMs ms")
+    initTaskPool(1)
+    submit(() => progressTimeOut())
+
     logInfo(s"Connecting server.")
 
     val shuffleServer = new InetSocketAddress(blockManagerId.host, ucxServerPort)
@@ -79,6 +87,8 @@ extends ExternalUcxTransport(clientConf) with UcxLogging {
   override def close(): Unit = {
     if (initialized) {
       running = false
+
+      scheduledLatch.countDown()
 
       if (allocatedWorker != null) {
         allocatedWorker.map(_.closing).foreach(_.get(5, TimeUnit.MILLISECONDS))
@@ -160,6 +170,12 @@ extends ExternalUcxTransport(clientConf) with UcxLogging {
                          callback: OperationCallback): Unit = {
     selectWorker.fetchBlockByStream(host, exeId, blockId, callback)
   }
+
+  def progressTimeOut(): Unit = {
+    if (!scheduledLatch.await(timeoutMs, TimeUnit.MILLISECONDS)) {
+      allocatedWorker.foreach(_.progressTimeOut)
+    }
+  }
 }
 
 private[shuffle] class UcxFetchCallBack(
@@ -176,6 +192,10 @@ private[shuffle] class UcxFetchCallBack(
         this
       }
     })
+  }
+
+  override def onError(result: OperationResult): Unit = {
+    listener.onBlockFetchFailure(blockId, result.getError)
   }
 }
 
@@ -200,5 +220,9 @@ private[shuffle] class UcxDownloadCallBack(
     if (!downloadFileManager.registerTempFileToClean(targetFile)) {
       targetFile.delete();
     }
+  }
+
+  override def onError(result: OperationResult): Unit = {
+    listener.onBlockFetchFailure(blockId, result.getError)
   }
 }

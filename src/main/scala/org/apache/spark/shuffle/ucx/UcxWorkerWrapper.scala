@@ -75,7 +75,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
   extends Closeable with Logging {
   private[ucx] final val timeout = transport.ucxShuffleConf.getSparkConf.getTimeAsMs("spark.network.timeout", "100")
   private[ucx] final val connections = new TrieMap[transport.ExecutorId, UcpEndpoint]
-  private[ucx] lazy val requestData = new TrieMap[Int, (Seq[OperationCallback], UcxRequest, transport.BufferAllocator)]
+  private[ucx] lazy val requestData = new TrieMap[Int, UcxFetchState]
   private[ucx] lazy val streamData = new TrieMap[Int, UcxStreamState]
   private[ucx] lazy val sliceData = new TrieMap[Int, UcxSliceState]
   private[ucx] lazy val tag = new AtomicInteger(Random.nextInt())
@@ -105,7 +105,8 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
         requestData.remove(i) match {
           case Some(data) => {
             val mem = memPool.get(maxReplySize * (remaining + 1))
-            new UcxSliceState(data._1(0), data._2, mem, 0L, Int.MaxValue)
+            new UcxSliceState(data.callbacks(0), data.request, data.timestamp,
+                              mem, 0L, Int.MaxValue)
           }
           case None => throw new UcxException(s"Slice tag $i context not found.")
         }
@@ -241,7 +242,9 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
           throw new UcxException(s"No data for tag $i.")
         }
 
-        val (callbacks, request, _) = data.get
+        val fetchState = data.get
+        val callbacks = fetchState.callbacks
+        val request = fetchState.request
         val stats = request.getStats.get.asInstanceOf[UcxStats]
         stats.receiveSize = ucpAmData.getLength
 
@@ -425,7 +428,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
     blockIds.foreach(b => b.serialize(buffer))
 
     val request = new UcxRequest(null, new UcxStats())
-    requestData.put(t, (callbacks, request, resultBufferAllocator))
+    requestData.put(t, new UcxFetchState(callbacks, request, startTime))
 
     buffer.rewind()
     val address = UnsafeUtils.getAdress(buffer)
@@ -519,7 +522,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
     blockId.serialize(buffer)
 
     val request = new UcxRequest(null, new UcxStats())
-    streamData.put(t, new UcxStreamState(callback, request, Int.MaxValue))
+    streamData.put(t, new UcxStreamState(callback, request, startTime, Int.MaxValue))
 
     val address = UnsafeUtils.getAdress(buffer)
 
