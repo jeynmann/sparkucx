@@ -91,6 +91,7 @@ trait Request {
  */
 trait OperationCallback {
   def onComplete(result: OperationResult): Unit
+  def onError(result: OperationResult): Unit = ???
   def onData(buf: ByteBuffer): Unit = ???
 }
 
@@ -203,12 +204,18 @@ class UcxStats extends OperationStats {
   override def recvSize: Long = receiveSize
 }
 
+private[ucx] class UcxFetchState(val callbacks: Seq[OperationCallback],
+                                 val request: UcxRequest,
+                                 val timestamp: Long) {}
+
 private[ucx] class UcxStreamState(val callback: OperationCallback,
                                   val request: UcxRequest,
+                                  val timestamp: Long,
                                   var remaining: Int) {}
 
 private[ucx] class UcxSliceState(val callback: OperationCallback,
                                  val request: UcxRequest,
+                                 val timestamp: Long,
                                  val mem: MemoryBlock,
                                  var offset: Long,
                                  var remaining: Int) {}

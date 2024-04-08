@@ -6,7 +6,7 @@ package org.apache.spark.shuffle.ucx.memory
 
 import java.io.Closeable
 import java.util.concurrent.atomic.AtomicInteger
-import java.util.concurrent.{ConcurrentHashMap, ConcurrentLinkedDeque}
+import java.util.concurrent.{ConcurrentHashMap, ConcurrentLinkedDeque, ConcurrentSkipListSet}
 
 import org.openucx.jucx.ucp.{UcpContext, UcpMemMapParams, UcpMemory}
 import org.openucx.jucx.ucs.UcsConstants
@@ -182,7 +182,10 @@ class UcxLinkedMemBlock(private[memory] val superMem: UcxLinkedMemBlock,
                         override private[ucx] val memory: UcpMemory,
                         override private[ucx] val allocator: UcxMemoryAllocator,
                         override val address: Long, override val size: Long)
-  extends UcxMemBlock(memory, allocator, address, size) {
+  extends UcxMemBlock(memory, allocator, address, size) with Comparable[UcxLinkedMemBlock] {
+  override def compareTo(o: UcxLinkedMemBlock): Int = {
+    return address.compareTo(o.address)
+  }
 }
 
 trait UcxMemoryAllocator extends Closeable {
@@ -194,7 +197,7 @@ trait UcxMemoryAllocator extends Closeable {
 }
 
 class UcxBaseMemAllocator extends UcxMemoryAllocator with UcxLogging {
-  private[memory] val stack = new ConcurrentLinkedDeque[UcxMemBlock]
+  private[memory] val stack = new ConcurrentSkipListSet[UcxMemBlock]
   private[memory] val numAllocs = new AtomicInteger(0)
   private[memory] val memMapParams = new UcpMemMapParams().allocate()
     .setMemoryType(UcsConstants.MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
@@ -237,7 +240,7 @@ case class UcxLinkedMemAllocator(length: Long, minRegistrationSize: Long,
     if (result != null) {
       result
     } else if (next == null) {
-      logTrace(s"Allocating buffer of size $length.")
+      logDebug(s"Allocating buffer of size $length.")
       while (result == null) {
         numAllocs.incrementAndGet()
         val memory = ucxContext.memoryMap(memMapParams)
@@ -266,7 +269,13 @@ case class UcxLinkedMemAllocator(length: Long, minRegistrationSize: Long,
 
   override def deallocate(memBlock: UcxMemBlock): Unit = {
     val block = memBlock.asInstanceOf[UcxLinkedMemBlock]
-    if ((block.superMem == null) || (!stack.remove(block.broMem))) {
+    if (block.superMem == null) {
+      stack.add(block)
+      releaseLimit()
+      return
+    }
+
+    if (!stack.remove(block.broMem)) {
       stack.add(block)
     } else {
       next.deallocate(block.superMem)
