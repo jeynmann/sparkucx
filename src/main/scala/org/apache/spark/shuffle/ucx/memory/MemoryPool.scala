@@ -7,12 +7,14 @@ package org.apache.spark.shuffle.ucx.memory
 import java.io.Closeable
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.{ConcurrentHashMap, ConcurrentLinkedDeque, ConcurrentSkipListSet}
+import java.util.concurrent.Semaphore
+import java.nio.ByteBuffer
+import scala.collection.JavaConverters._
 
 import org.openucx.jucx.ucp.{UcpContext, UcpMemMapParams, UcpMemory}
 import org.openucx.jucx.ucs.UcsConstants
 import org.apache.spark.shuffle.utils.{SparkucxUtils, UcxLogging, UnsafeUtils}
 import org.apache.spark.shuffle.ucx.MemoryBlock
-import java.util.concurrent.Semaphore
 
 class UcxBounceBufferMemoryBlock(private[ucx] val memory: UcpMemory, private[ucx] val refCount: AtomicInteger,
                                  private[ucx] val memPool: MemoryPool,
@@ -166,11 +168,9 @@ class UcxMemBlock(private[ucx] val memory: UcpMemory,
                   override val address: Long, override val size: Long)
   extends MemoryBlock(address, size,memory.getMemType ==
     UcsConstants.MEMORY_TYPE.UCS_MEMORY_TYPE_HOST) {
-
-  private[memory] lazy val byteBuffer = UnsafeUtils.getByteBufferView(
-    address, size.min(Int.MaxValue).toInt)
-
-  def toByteBuffer() = byteBuffer.duplicate()
+  def toByteBuffer() = {
+    UnsafeUtils.getByteBufferView(address, size.min(Int.MaxValue).toInt)
+  }
 
   override def close(): Unit = {
     allocator.deallocate(this)
@@ -194,16 +194,15 @@ trait UcxMemoryAllocator extends Closeable {
   def preallocate(numBuffers: Int): Unit = {
     (0 until numBuffers).map(x => allocate()).foreach(_.close())
   }
+  def totalSize(): Long
 }
 
-class UcxBaseMemAllocator extends UcxMemoryAllocator with UcxLogging {
+abstract class UcxBaseMemAllocator extends UcxMemoryAllocator with UcxLogging {
   private[memory] val stack = new ConcurrentSkipListSet[UcxMemBlock]
   private[memory] val numAllocs = new AtomicInteger(0)
   private[memory] val memMapParams = new UcpMemMapParams().allocate()
     .setMemoryType(UcsConstants.MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
 
-  override def allocate(): UcxMemBlock = ???
-  override def deallocate(mem: UcxMemBlock): Unit = ???
   override def close(): Unit = {
     var numBuffers = 0
     var length = 0L
@@ -275,17 +274,21 @@ case class UcxLinkedMemAllocator(length: Long, minRegistrationSize: Long,
       return
     }
 
-    if (!stack.remove(block.broMem)) {
-      stack.add(block)
-    } else {
+    var releaseNext = false
+    block.superMem.synchronized {
+      releaseNext = stack.remove(block.broMem)
+      if (!releaseNext) {
+        stack.add(block)
+      }
+    }
+
+    if (releaseNext) {
       next.deallocate(block.superMem)
     }
     releaseLimit()
   }
 
-  def setLimit(num: Int): Unit = {
-    limit = new Semaphore(num)
-  }
+  override def totalSize(): Long = registrationSize * numAllocs.get()
 
   def acquireLimit() = if (limit != null) {
     limit.acquire(1)
@@ -294,16 +297,34 @@ case class UcxLinkedMemAllocator(length: Long, minRegistrationSize: Long,
   def releaseLimit() = if (limit != null) {
     limit.release(1)
   }
+
+  def setLimit(num: Int): Unit = {
+    limit = new Semaphore(num)
+  }
 }
 
 case class UcxLimitedMemPool(ucxContext: UcpContext)
   extends Closeable with UcxLogging {
+  private[memory] val allocatorMap = new ConcurrentHashMap[Long, UcxMemoryAllocator]()
   private[memory] val memGroupSize = 3
   private[memory] val maxMemFactor = 1L - 1L / (1L << (memGroupSize - 1L))
   private[memory] var minBufferSize: Long = 4096L
   private[memory] var maxBufferSize: Long = 2L * 1024 * 1024 * 1024
   private[memory] var minRegistrationSize: Long = 1024L * 1024
   private[memory] var maxRegistrationSize: Long = 16L * 1024 * 1024 * 1024
+
+  def get(size: Long): MemoryBlock = {
+    allocatorMap.get(roundUpToTheNextPowerOf2(size)).allocate()
+  }
+
+  def report(): Unit = {
+    val memInfo = allocatorMap.asScala.map(allocator =>
+      allocator._1 -> allocator._2.totalSize).filter(_._2 != 0)
+
+    if (memInfo.nonEmpty) {
+      logInfo(s"Memory pool use: $memInfo")
+    }
+  }
 
   def init(minBufSize: Long, maxBufSize: Long, minRegSize: Long, maxRegSize: Long, preAllocMap: Map[Long, Int], limit: Boolean):
     Unit = {
@@ -362,14 +383,8 @@ case class UcxLimitedMemPool(ucxContext: UcpContext)
     }
   }
 
-  protected val allocatorMap = new ConcurrentHashMap[Long, UcxMemoryAllocator]()
-
   override def close(): Unit = {
     allocatorMap.values.forEach(allocator => allocator.close())
     allocatorMap.clear()
-  }
-
-  def get(size: Long): MemoryBlock = {
-    allocatorMap.get(roundUpToTheNextPowerOf2(size)).allocate()
   }
 }

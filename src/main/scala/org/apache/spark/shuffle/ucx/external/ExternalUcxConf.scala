@@ -15,6 +15,7 @@ trait ExternalUcxConf {
   lazy val maxBufferSize: Long = ExternalUcxConf.MAX_BUFFER_SIZE_DEFAULT
   lazy val minRegistrationSize: Long = ExternalUcxConf.MIN_REGISTRATION_SIZE_DEFAULT
   lazy val maxRegistrationSize: Long = ExternalUcxConf.MAX_REGISTRATION_SIZE_DEFAULT
+  lazy val numPools: Int = ExternalUcxConf.NUM_POOLS_DEFAULT
   lazy val listenerAddress: String = ExternalUcxConf.SOCKADDR_DEFAULT
   lazy val useWakeup: Boolean = ExternalUcxConf.WAKEUP_FEATURE_DEFAULT
   lazy val numIoThreads: Int = ExternalUcxConf.NUM_IO_THREADS_DEFAULT
@@ -45,6 +46,9 @@ object ExternalUcxConf {
 
   lazy val MAX_REGISTRATION_SIZE_KEY = getUcxConf("memory.maxAllocationSize")
   lazy val MAX_REGISTRATION_SIZE_DEFAULT = 16L * 1024 * 1024 * 1024
+
+  lazy val NUM_POOLS_KEY = getUcxConf("memory.numPools")
+  lazy val NUM_POOLS_DEFAULT = 1
 
   lazy val SOCKADDR_KEY = getUcxConf("listener.sockaddr")
   lazy val SOCKADDR_DEFAULT = "0.0.0.0:0"

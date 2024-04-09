@@ -28,9 +28,13 @@ class ExternalUcxTransport(val ucxShuffleConf: ExternalUcxConf) extends UcxLoggi
   @volatile protected var initialized: Boolean = false
   @volatile protected var running: Boolean = true
   private[ucx] var ucxContext: UcpContext = _
-  private[ucx] var hostBounceBufferMemoryPool: UcxLimitedMemPool = _
+  private[ucx] var memPools: Array[UcxLimitedMemPool] = _
   private[ucx] val ucpWorkerParams = new UcpWorkerParams().requestThreadSafety()
   private[ucx] var taskExecutors: ExecutorService = _
+
+  def hostBounceBufferMemoryPool(i: Int = 0): UcxLimitedMemPool = {
+    memPools(i % memPools.length)
+  }
 
   def estimateNumEps(): Int = 1
 
@@ -50,13 +54,17 @@ class ExternalUcxTransport(val ucxShuffleConf: ExternalUcxConf) extends UcxLoggi
   }
 
   def initMemoryPool(): Unit = {
-    hostBounceBufferMemoryPool = new UcxLimitedMemPool(ucxContext)
-    hostBounceBufferMemoryPool.init(ucxShuffleConf.minBufferSize,
-                                    ucxShuffleConf.maxBufferSize,
-                                    ucxShuffleConf.minRegistrationSize,
-                                    ucxShuffleConf.maxRegistrationSize,
-                                    ucxShuffleConf.preallocateBuffersMap,
-                                    ucxShuffleConf.memoryLimit)
+    val numPools = ucxShuffleConf.numPools.max(1).min(ucxShuffleConf.numWorkers)
+    memPools = new Array[UcxLimitedMemPool](numPools)
+    for (i <- 0 until numPools) {
+      memPools(i) = new UcxLimitedMemPool(ucxContext)
+      memPools(i).init(ucxShuffleConf.minBufferSize,
+                       ucxShuffleConf.maxBufferSize,
+                       ucxShuffleConf.minRegistrationSize,
+                       ucxShuffleConf.maxRegistrationSize / numPools,
+                       ucxShuffleConf.preallocateBuffersMap,
+                       ucxShuffleConf.memoryLimit)
+    }
   }
 
   def initTaskPool(threadNum: Int): Unit = {
@@ -72,9 +80,7 @@ class ExternalUcxTransport(val ucxShuffleConf: ExternalUcxConf) extends UcxLoggi
 
   def close(): Unit = {
     if (initialized) {
-      if (hostBounceBufferMemoryPool != null) {
-        hostBounceBufferMemoryPool.close()
-      }
+      memPools.filter(_ != null).foreach(_.close())
       if (ucxContext != null) {
         ucxContext.close()
       }

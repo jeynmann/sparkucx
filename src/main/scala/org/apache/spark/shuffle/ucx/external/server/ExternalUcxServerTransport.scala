@@ -13,7 +13,7 @@ import org.openucx.jucx.{UcxCallback, UcxException, UcxUtils}
 import java.net.InetSocketAddress
 import java.nio.ByteBuffer
 import java.util.concurrent.atomic.AtomicInteger
-import java.util.concurrent.{ConcurrentHashMap, TimeUnit}
+import java.util.concurrent.{ConcurrentHashMap, TimeUnit, CountDownLatch}
 import java.nio.channels.FileChannel
 import java.nio.file.StandardOpenOption
 import scala.collection.concurrent.TrieMap
@@ -28,6 +28,9 @@ class ExternalUcxServerTransport(
   private[ucx] var allocatedWorker: Array[ExternalUcxServerWorker] = _
   private[ucx] var globalWorker: ExternalUcxServerWorker = _
   private[ucx] var serverPorts: Seq[Int] = _
+
+  private[ucx] val scheduledLatch = new CountDownLatch(1)
+
   private var serverPortsBuffer: ByteBuffer = _
 
   override def estimateNumEps(): Int = serverConf.ucxEpsNum
@@ -40,7 +43,9 @@ class ExternalUcxServerTransport(
       ucpWorkerParams.requestWakeupRX().requestWakeupTX().requestWakeupEdge()
     }
 
-    initTaskPool(serverConf.numThreads)
+    // additional 1 for mem pool report
+    initTaskPool(serverConf.numThreads + 1)
+    submit(() => scheduledReport())
 
     logInfo(s"Allocating ${serverConf.numWorkers} server workers")
 
@@ -86,6 +91,8 @@ class ExternalUcxServerTransport(
       if (allocatedWorker != null) {
         allocatedWorker.map(_.closing).foreach(_.get(5, TimeUnit.MILLISECONDS))
       }
+
+      scheduledLatch.countDown()
 
       super.close()
 
@@ -171,5 +178,11 @@ class ExternalUcxServerTransport(
       UcxShuffleMapId(bid.shuffleId, bid.mapId),
       _ => FileChannel.open(blockData.getFile().toPath(), StandardOpenOption.READ)
     )
+  }
+
+  def scheduledReport(): Unit = {
+    while (!scheduledLatch.await(30, TimeUnit.SECONDS)) {
+      memPools.foreach(_.report)
+    }
   }
 }

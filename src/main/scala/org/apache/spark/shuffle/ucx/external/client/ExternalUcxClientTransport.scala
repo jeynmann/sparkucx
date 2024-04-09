@@ -172,7 +172,7 @@ extends ExternalUcxTransport(clientConf) with UcxLogging {
   }
 
   def progressTimeOut(): Unit = {
-    if (!scheduledLatch.await(timeoutMs, TimeUnit.MILLISECONDS)) {
+    while (!scheduledLatch.await(timeoutMs, TimeUnit.MILLISECONDS)) {
       allocatedWorker.foreach(_.progressTimeOut)
     }
   }

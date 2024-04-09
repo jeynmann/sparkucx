@@ -66,7 +66,16 @@ class ExternalUcxClientConf(val sparkConf: SparkConf) extends SparkConf with Ext
     .createWithDefault(ExternalUcxConf.MAX_REGISTRATION_SIZE_DEFAULT)
 
   override lazy val maxRegistrationSize: Long = sparkConf.getSizeAsBytes(MAX_REGISTRATION_SIZE.key,
-    MAX_REGISTRATION_SIZE.defaultValue.get).toInt
+    MAX_REGISTRATION_SIZE.defaultValue.get).toLong
+
+  private lazy val NUM_POOLS =
+    ConfigBuilder(ExternalUcxConf.NUM_POOLS_KEY)
+    .doc("Number of memory pool.")
+    .intConf
+    .createWithDefault(ExternalUcxConf.NUM_POOLS_DEFAULT)
+
+  override lazy val numPools: Int = sparkConf.getInt(NUM_POOLS.key,
+    NUM_POOLS.defaultValue.get)
 
   private lazy val SOCKADDR =
     ConfigBuilder(ExternalUcxConf.SOCKADDR_KEY)
