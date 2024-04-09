@@ -38,6 +38,10 @@ class ExternalUcxServerConf(val yarnConf: Configuration) extends ExternalUcxConf
     ExternalUcxConf.MAX_REGISTRATION_SIZE_KEY,
     ExternalUcxConf.MAX_REGISTRATION_SIZE_DEFAULT)
 
+  override lazy val numPools: Int = yarnConf.getInt(
+    ExternalUcxConf.NUM_POOLS_KEY,
+    ExternalUcxConf.NUM_POOLS_DEFAULT)
+
   override lazy val listenerAddress: String = yarnConf.get(
     ExternalUcxConf.SOCKADDR_KEY,
     ExternalUcxConf.SOCKADDR_DEFAULT)

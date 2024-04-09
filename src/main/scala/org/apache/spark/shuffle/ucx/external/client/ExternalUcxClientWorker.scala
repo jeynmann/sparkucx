@@ -31,7 +31,7 @@ case class ExternalUcxClientWorker(val worker: UcpWorker,
                                    workerId: UcxWorkerId)
   extends Closeable with UcxLogging {
   private[this] val tag = new AtomicInteger(Random.nextInt())
-  private[this] val memPool = transport.hostBounceBufferMemoryPool
+  private[this] val memPool = transport.hostBounceBufferMemoryPool(workerId.workerId)
   private[this] val connectQueue = new ConcurrentLinkedQueue[InetSocketAddress]
   private[this] val connectingServers = new ConcurrentHashMap[InetSocketAddress, (UcpEndpoint, UcpRequest)]
   private[this] val shuffleServers = new ConcurrentHashMap[String, UcpEndpoint]
@@ -329,7 +329,16 @@ case class ExternalUcxClientWorker(val worker: UcpWorker,
   @`inline`
   private def connectNext(): Unit = {
     if (!connectQueue.isEmpty) {
-      executor.post(() => startConnection(connectQueue.poll()))
+      executor.post(() => {
+        val shuffleServer = connectQueue.poll()
+        try {
+          startConnection(shuffleServer)
+        } catch {
+          // We cannot throw error here as current server might be down/rebooting.
+          case e: Throwable =>
+            logWarning(s"Endpoint to $shuffleServer got an error: $e")
+        }
+      })
     }
   }
 

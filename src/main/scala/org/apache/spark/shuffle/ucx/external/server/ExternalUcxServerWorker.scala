@@ -26,7 +26,7 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
                                    workerId: UcxWorkerId,
                                    port: Int)
   extends Closeable with UcxLogging {
-  private[this] val memPool = transport.hostBounceBufferMemoryPool
+  private[this] val memPool = transport.hostBounceBufferMemoryPool(workerId.workerId)
   private[this] val maxReplySize = transport.ucxShuffleConf.maxReplySize
   private[this] val shuffleClients = new ConcurrentHashMap[UcxWorkerId, UcpEndpoint]
   private[ucx] val executor = new UcxWorkerThread(
