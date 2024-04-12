@@ -217,6 +217,7 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
       UcpConstants.UCP_AM_SEND_FLAG_EAGER, new UcxCallback {
         override def onSuccess(request: UcpRequest): Unit = {
           logTrace(s"$workerId sent to REPLY_ADDRESS to $ep")
+          msg.clear()
         }
 
         override def onError(ucsStatus: Int, errorMsg: String): Unit = {

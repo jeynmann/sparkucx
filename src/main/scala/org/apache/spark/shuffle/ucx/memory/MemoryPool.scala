@@ -307,7 +307,7 @@ case class UcxLimitedMemPool(ucxContext: UcpContext)
   extends Closeable with UcxLogging {
   private[memory] val allocatorMap = new ConcurrentHashMap[Long, UcxMemoryAllocator]()
   private[memory] val memGroupSize = 3
-  private[memory] val maxMemFactor = 1L - 1L / (1L << (memGroupSize - 1L))
+  private[memory] val maxMemFactor = 1.0 - 1.0 / (1 << (memGroupSize - 1))
   private[memory] var minBufferSize: Long = 4096L
   private[memory] var maxBufferSize: Long = 2L * 1024 * 1024 * 1024
   private[memory] var minRegistrationSize: Long = 1024L * 1024
@@ -331,14 +331,14 @@ case class UcxLimitedMemPool(ucxContext: UcpContext)
     minBufferSize = roundUpToTheNextPowerOf2(minBufSize)
     maxBufferSize = roundUpToTheNextPowerOf2(maxBufSize)
     minRegistrationSize = roundUpToTheNextPowerOf2(minRegSize)
-    maxRegistrationSize = roundUpToTheNextPowerOf2(maxRegSize * maxMemFactor)
+    maxRegistrationSize = roundUpToTheNextPowerOf2(maxRegSize)
 
     val memRange = (1 until 47).map(1L << _).reverse
-    val minLimit = (maxRegistrationSize / maxBufferSize).max(1L)
-                                                        .min(Int.MaxValue)
+    val minLimit = (maxRegistrationSize / maxBufferSize * maxMemFactor).toLong
     logInfo(s"limit $limit buf ($minBufferSize, $maxBufferSize) reg " +
             s"($minRegistrationSize, $maxRegistrationSize)")
 
+    var shift = 0
     for (i <- 0 until memRange.length by memGroupSize) {
       var superAllocator: UcxLinkedMemAllocator = null
       for (j <- 0 until memGroupSize.min(memRange.length - i)) {
@@ -348,11 +348,12 @@ case class UcxLimitedMemPool(ucxContext: UcpContext)
                                                   superAllocator, ucxContext)
           // set limit to top allocator
           if (limit && (superAllocator == null)) {
-            val memLimit = (maxRegistrationSize / memSize).min(minLimit << i)
+            val memLimit = (maxRegistrationSize / memSize).min(minLimit << shift)
                                                           .max(1L)
                                                           .min(Int.MaxValue)
-            logDebug(s"mem $memSize limit $memLimit")
+            logInfo(s"mem $memSize limit $memLimit")
             current.setLimit(memLimit.toInt)
+            shift += 1
           }
           superAllocator = current
           allocatorMap.put(memSize, current)
