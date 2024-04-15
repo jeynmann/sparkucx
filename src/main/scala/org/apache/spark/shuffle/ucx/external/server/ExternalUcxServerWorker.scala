@@ -74,7 +74,7 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
     val BlockNum = buffer.remaining() / UcxShuffleBlockId.serializedSize
     val blockIds = (0 until BlockNum).map(
       _ => UcxShuffleBlockId.deserialize(buffer))
-    logTrace(s"Recv fetch from $shuffleClient tag $replyTag.")
+    logTrace(s"${workerId.workerId} Recv fetch from $shuffleClient tag $replyTag.")
     transport.handleFetchBlockRequest(this, shuffleClient, exeId, replyTag, blockIds)
     UcsConstants.STATUS.UCS_OK
   }, UcpConstants.UCP_AM_FLAG_WHOLE_MSG )
@@ -87,7 +87,7 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
     val replyTag = header.getInt
     val exeId = header.getInt
     val blockId = UcxShuffleBlockId.deserialize(header)
-    logTrace(s"Recv stream from $shuffleClient tag $replyTag.")
+    logTrace(s"${workerId.workerId} Recv stream from $shuffleClient tag $replyTag.")
     transport.handleFetchBlockStream(this, shuffleClient, exeId, replyTag, blockId)
     UcsConstants.STATUS.UCS_OK
   }, UcpConstants.UCP_AM_FLAG_WHOLE_MSG )
@@ -225,6 +225,7 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
           msg.clear()
         }
       }, MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
+    logTrace(s"$workerId sending to REPLY_ADDRESS $msg mem $header")
   }
 
   def handleFetchBlockRequest(
@@ -260,18 +261,19 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
         msgSize - tagAndSizes, 0, new UcxCallback {
           override def onSuccess(request: UcpRequest): Unit = {
             resultMemory.close()
-            logTrace(s"Sent to ${clientWorker} ${blockInfos.length} blocks of size: " +
+            logTrace(s"${workerId.workerId} Sent to ${clientWorker} ${blockInfos.length} blocks of size: " +
               s"${msgSize} tag $replyTag in ${System.nanoTime() - startTime} ns.")
           }
 
           override def onError(ucsStatus: Int, errorMsg: String): Unit = {
             resultMemory.close()
-            logError(s"Failed to reply fetch $clientWorker tag $replyTag $errorMsg.")
+            logError(s"${workerId.workerId} Failed to reply fetch $clientWorker tag $replyTag $errorMsg.")
           }
         }, new UcpRequestParams().setMemoryType(
           UcsConstants.MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
       .setMemoryHandle(resultMemory.memory))
     })
+    logTrace(s"${workerId.workerId} Sending to $clientWorker tag $replyTag mem $resultMemory size $msgSize")
   }
 
   def handleFetchBlockStream(clientWorker: UcxWorkerId, replyTag: Int,
@@ -312,21 +314,22 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
             override def onSuccess(request: UcpRequest): Unit = {
               mem.close()
               nextLatch.countDown()
-              logTrace(s"Reply stream size $currentSize tag $replyTag seg " +
+              logTrace(s"${workerId.workerId} Sent to ${clientWorker} size $currentSize tag $replyTag seg " +
                 s"$currentId in ${System.nanoTime() - startTime} ns.")
             }
             override def onError(ucsStatus: Int, errorMsg: String): Unit = {
               mem.close()
               nextLatch.countDown()
-              logError(s"Failed to reply stream $clientWorker tag $replyTag $currentId $errorMsg.")
+              logError(s"${workerId.workerId} Failed to reply stream $clientWorker tag $replyTag $currentId $errorMsg.")
             }
           }, new UcpRequestParams()
             .setMemoryType(UcsConstants.MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
             .setMemoryHandle(mem.memory))
       })
+      logTrace(s"${workerId.workerId} Sending to $clientWorker tag $replyTag $currentId mem $mem size $msgSize.")
     } catch {
       case ex: Throwable =>
-        logError(s"Failed to reply stream $clientWorker tag $replyTag $currentId $ex.")
+        logError(s"${workerId.workerId} Failed to reply stream $clientWorker tag $replyTag $currentId $ex.")
     }
 
     send(this, 0, firstLatch)
