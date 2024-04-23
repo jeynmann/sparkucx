@@ -73,7 +73,8 @@ class UcxRefCountMemoryBlock(baseBlock: MemoryBlock, offset: Long, size: Long,
 case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, isClientWorker: Boolean,
                             id: Long = 0L)
   extends Closeable with Logging {
-  private[ucx] final val timeout = transport.ucxShuffleConf.getSparkConf.getTimeAsMs("spark.network.timeout", "100")
+  private[ucx] final val timeout = transport.ucxShuffleConf.getSparkConf.getTimeAsSeconds(
+    "spark.network.timeout", "120s") * 1000
   private[ucx] final val connections = new TrieMap[transport.ExecutorId, UcpEndpoint]
   private[ucx] lazy val requestData = new TrieMap[Int, UcxFetchState]
   private[ucx] lazy val streamData = new TrieMap[Int, UcxStreamState]
