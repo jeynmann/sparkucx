@@ -22,8 +22,8 @@ extends ExternalUcxTransport(clientConf) with UcxLogging {
   private[spark] val tcpServerPort = blockManagerId.port
   private[spark] val ucxServerPort = clientConf.ucxServerPort
   private[spark] val numWorkers = clientConf.numWorkers
-  private[spark] val timeoutMs = clientConf.getSparkConf.getTimeAsMs(
-    "spark.network.timeout", "10s")
+  private[spark] val timeoutMs = clientConf.getSparkConf.getTimeAsSeconds(
+    "spark.network.timeout", "120s") * 1000
   private[spark] val sparkTransportConf = SparkTransportConf.fromSparkConf(
     clientConf.getSparkConf, "ucx-shuffle", numWorkers)
 
