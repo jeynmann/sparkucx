@@ -135,18 +135,22 @@ class ExternalUcxServerTransport(
                               replyTag: Int, blockIds: Seq[UcxShuffleBlockId]):
                               Unit = {
     submit(new Runnable {
-      override def run(): Unit = try {
-        val blockInfos = blockIds.map(bid => {
-          val block = blockManager.getBlockData(clientWorker.appId, exeId.toString,
-                                                bid.shuffleId, bid.mapId,
-                                                bid.reduceId).asInstanceOf[
-                                                  FileSegmentManagedBuffer]
-          (openBlock(clientWorker.appId, bid, block), block.getOffset, block.size)
-        })
-        handler.handleFetchBlockRequest(clientWorker, replyTag, blockInfos)
-      } catch {
-        case ex: Throwable =>
-          logError(s"Failed to reply fetch $clientWorker tag $replyTag $ex.")
+      override def run(): Unit = {
+        var block: FileSegmentManagedBuffer = null
+        var blockInfos: Seq[(FileChannel, Long, Long)] = null
+        try {
+          blockInfos = blockIds.map(bid => {
+            block = blockManager.getBlockData(clientWorker.appId, exeId.toString,
+                                              bid.shuffleId, bid.mapId,
+                                              bid.reduceId).asInstanceOf[
+                                                FileSegmentManagedBuffer]
+            (openBlock(clientWorker.appId, bid, block), block.getOffset, block.size)
+          })
+          handler.handleFetchBlockRequest(clientWorker, replyTag, blockInfos)
+        } catch {
+          case ex: Throwable =>
+            logError(s"Failed to reply fetch $clientWorker tag $replyTag files $blockInfos block $block $ex.")
+        }
       }
     })
   }
@@ -155,17 +159,21 @@ class ExternalUcxServerTransport(
                              clientWorker: UcxWorkerId, exeId: Int,
                              replyTag: Int, bid: UcxShuffleBlockId): Unit = {
     submit(new Runnable {
-      override def run(): Unit = try {
-        val block = blockManager.getBlockData(clientWorker.appId, exeId.toString,
-                                              bid.shuffleId, bid.mapId,
-                                              bid.reduceId).asInstanceOf[
-                                                FileSegmentManagedBuffer]
-        val blockInfo = (
-          openBlock(clientWorker.appId, bid, block), block.getOffset, block.size)
-        handler.handleFetchBlockStream(clientWorker, replyTag, blockInfo)
-      } catch {
-        case ex: Throwable =>
-          logError(s"Failed to reply stream $clientWorker tag $replyTag $ex.")
+      override def run(): Unit = {
+        var block: FileSegmentManagedBuffer = null
+        var blockInfo: (FileChannel, Long, Long) = null
+        try {
+          block = blockManager.getBlockData(clientWorker.appId, exeId.toString,
+                                            bid.shuffleId, bid.mapId,
+                                            bid.reduceId).asInstanceOf[
+                                              FileSegmentManagedBuffer]
+          blockInfo =
+            (openBlock(clientWorker.appId, bid, block), block.getOffset, block.size)
+          handler.handleFetchBlockStream(clientWorker, replyTag, blockInfo)
+        } catch {
+          case ex: Throwable =>
+            logError(s"Failed to reply stream $clientWorker tag $replyTag file $blockInfo block $block $ex.")
+        }
       }
     })
   }
