@@ -161,12 +161,17 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
   private def doDisconnect(shuffleClient: UcxWorkerId): Unit = {
     try {
       Option(shuffleClients.remove(shuffleClient)).foreach(ep => {
-        ep.closeNonBlockingFlush()
+        ep.close()
         logDebug(s"Disconnect $shuffleClient")
       })
     } catch {
       case e: Throwable => logWarning(s"Disconnect $shuffleClient: $e")
     }
+  }
+
+  @`inline`
+  def isEpClosed(ep: UcpEndpoint): Boolean = {
+    ep.getNativeId() == null
   }
 
   @`inline`
@@ -255,6 +260,10 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
 
     val ep = awaitConnection(clientWorker)
     executor.post(() => {
+      if (isEpClosed(ep)) {
+        return
+      }
+
       val startTime = System.nanoTime()
       val req = ep.sendAmNonBlocking(ExternalAmId.REPLY_BLOCK,
         resultMemory.address, tagAndSizes, resultMemory.address + tagAndSizes,
@@ -308,6 +317,10 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
       sendLatch.await()
       val ep = workerWrapper.awaitConnection(clientWorker)
       workerWrapper.executor.post(() => {
+        if (isEpClosed(ep)) {
+          return
+        }
+
         val startTime = System.nanoTime()
         val req = ep.sendAmNonBlocking(amId, mem.address, headerSize,
           mem.address + headerSize, currentSize, 0, new UcxCallback {
