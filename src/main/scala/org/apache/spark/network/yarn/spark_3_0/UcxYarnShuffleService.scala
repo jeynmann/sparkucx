@@ -127,7 +127,7 @@ class UcxYarnShuffleService extends AuxiliaryService("sparkucx_shuffle") with Uc
 
       val metricsSystem = DefaultMetricsSystem.instance().asInstanceOf[MetricsSystemImpl];
       metricsSystem.register(
-          "sparkShuffleService", "Metrics on the Spark Shuffle Service", serviceMetrics);
+          "sparkUcxShuffleService", "Metrics on the Spark Shuffle Service", serviceMetrics);
       logInfo("Registered metrics with Hadoop's DefaultMetricsSystem");
 
       logInfo(s"Started YARN shuffle service for Spark on port ${port}. " +
