@@ -18,6 +18,7 @@ import org.apache.spark.shuffle.ucx.memory.UcxLinkedMemBlock
 import org.apache.spark.shuffle.utils.{UnsafeUtils, UcxLogging}
 import java.net.InetSocketAddress
 
+class ExternalUcxEndpoint(val ucpEp: UcpEndpoint, var closed: Boolean) {}
 /**
  * Worker per thread wrapper, that maintains connection and progress logic.
  */
@@ -28,7 +29,7 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
   extends Closeable with UcxLogging {
   private[this] val memPool = transport.hostBounceBufferMemoryPool(workerId.workerId)
   private[this] val maxReplySize = transport.ucxShuffleConf.maxReplySize
-  private[this] val shuffleClients = new ConcurrentHashMap[UcxWorkerId, UcpEndpoint]
+  private[this] val shuffleClients = new ConcurrentHashMap[UcxWorkerId, ExternalUcxEndpoint]
   private[ucx] val executor = new UcxWorkerThread(
     worker, transport.ucxShuffleConf.useWakeup)
 
@@ -123,7 +124,7 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
     if (!shuffleClients.isEmpty) {
       logInfo(s"$workerId closing ${shuffleClients.size} clients")
       shuffleClients.values.asScala.map(
-        _.closeNonBlockingFlush()).foreach(req =>
+        _.ucpEp.closeNonBlockingFlush()).foreach(req =>
           while (!req.isCompleted){
             worker.progress()
           }
@@ -161,7 +162,8 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
   private def doDisconnect(shuffleClient: UcxWorkerId): Unit = {
     try {
       Option(shuffleClients.remove(shuffleClient)).foreach(ep => {
-        ep.close()
+        ep.ucpEp.closeNonBlockingFlush()
+        ep.closed = true
         logDebug(s"Disconnect $shuffleClient")
       })
     } catch {
@@ -184,7 +186,7 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
     logDebug(s"$workerId connecting back to $shuffleClient by worker address")
     try {
       shuffleClients.computeIfAbsent(shuffleClient, _ => {
-        worker.newEndpoint(new UcpEndpointParams()
+        val ucpEp = worker.newEndpoint(new UcpEndpointParams()
           .setErrorHandler(new UcpEndpointErrorHandler {
             override def onError(ucpEndpoint: UcpEndpoint, errorCode: Int, errorString: String): Unit = {
               logInfo(s"Connection to $shuffleClient closed: $errorString")
@@ -194,13 +196,14 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
           })
           .setName(s"Server to $shuffleClient")
           .setUcpAddress(workerAddress))
+        new ExternalUcxEndpoint(ucpEp, false)
       })
     } catch {
       case e: UcxException => logWarning(s"Connection to $shuffleClient failed: $e")
     }
   }
 
-  def awaitConnection(shuffleClient: UcxWorkerId): UcpEndpoint = {
+  def awaitConnection(shuffleClient: UcxWorkerId): ExternalUcxEndpoint = {
     shuffleClients.getOrDefault(shuffleClient, {
       // wait until connected finished
       val startTime = System.currentTimeMillis()
@@ -260,12 +263,12 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
 
     val ep = awaitConnection(clientWorker)
     executor.post(() => {
-      if (isEpClosed(ep)) {
+      if (ep.closed) {
         return
       }
 
       val startTime = System.nanoTime()
-      val req = ep.sendAmNonBlocking(ExternalAmId.REPLY_BLOCK,
+      val req = ep.ucpEp.sendAmNonBlocking(ExternalAmId.REPLY_BLOCK,
         resultMemory.address, tagAndSizes, resultMemory.address + tagAndSizes,
         msgSize - tagAndSizes, 0, new UcxCallback {
           override def onSuccess(request: UcpRequest): Unit = {
@@ -317,12 +320,12 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
       sendLatch.await()
       val ep = workerWrapper.awaitConnection(clientWorker)
       workerWrapper.executor.post(() => {
-        if (isEpClosed(ep)) {
+        if (ep.closed) {
           return
         }
 
         val startTime = System.nanoTime()
-        val req = ep.sendAmNonBlocking(amId, mem.address, headerSize,
+        val req = ep.ucpEp.sendAmNonBlocking(amId, mem.address, headerSize,
           mem.address + headerSize, currentSize, 0, new UcxCallback {
             override def onSuccess(request: UcpRequest): Unit = {
               mem.close()
