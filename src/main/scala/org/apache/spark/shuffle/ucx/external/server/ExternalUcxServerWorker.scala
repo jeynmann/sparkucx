@@ -264,6 +264,7 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
     val ep = awaitConnection(clientWorker)
     executor.post(() => {
       if (ep.closed) {
+        resultMemory.close()
         return
       }
 
@@ -321,6 +322,8 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
       val ep = workerWrapper.awaitConnection(clientWorker)
       workerWrapper.executor.post(() => {
         if (ep.closed) {
+          mem.close()
+          nextLatch.countDown()
           return
         }
 
