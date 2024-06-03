@@ -160,3 +160,7 @@ trait ShuffleTransport {
   def progress(): Unit
 
 }
+
+class UcxFetchState(val callbacks: Seq[OperationCallback],
+                    val request: UcxRequest,
+                    val timestamp: Long) {}

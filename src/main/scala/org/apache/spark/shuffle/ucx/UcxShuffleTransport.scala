@@ -322,18 +322,3 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
   override def progress(): Unit = {
   }
 }
-
-private[ucx] class UcxSucceedOperationResult(
-  mem: MemoryBlock, stats: OperationStats) extends OperationResult {
-  override def getStatus: OperationStatus.Value = OperationStatus.SUCCESS
-
-  override def getError: TransportError = null
-
-  override def getStats: Option[OperationStats] = Option(stats)
-
-  override def getData: MemoryBlock = mem
-}
-
-private[ucx] class UcxFetchState(val callbacks: Seq[OperationCallback],
-                                 val request: UcxRequest,
-                                 val timestamp: Long) {}
