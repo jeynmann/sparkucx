@@ -5,7 +5,6 @@
 package org.apache.spark.shuffle.ucx
 
 import java.io.Closeable
-import java.util.concurrent.{ConcurrentLinkedQueue, Callable, Future, FutureTask}
 import java.util.concurrent.atomic.AtomicInteger
 import scala.collection.concurrent.TrieMap
 import scala.util.Random
@@ -211,13 +210,12 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
 
   def getConnection(executorId: transport.ExecutorId): UcpEndpoint = {
 
-    if (!connections.contains(executorId)) {
-      if (!transport.executorAddresses.contains(executorId)) {
-        val startTime = System.currentTimeMillis()
-        while (!transport.executorAddresses.contains(executorId)) {
-          if  (System.currentTimeMillis() - startTime > timeout) {
-            throw new UcxException(s"Don't get a worker address for $executorId")
-          }
+    if ((!connections.contains(executorId)) &&
+        (!transport.executorAddresses.contains(executorId))) {
+      val startTime = System.currentTimeMillis()
+      while (!transport.executorAddresses.contains(executorId)) {
+        if  (System.currentTimeMillis() - startTime > timeout) {
+          throw new UcxException(s"Don't get a worker address for $executorId")
         }
       }
     }

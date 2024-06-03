@@ -205,6 +205,7 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
    * connection establishment outside of UcxShuffleManager.
    */
   override def addExecutor(executorId: ExecutorId, workerAddress: ByteBuffer): Unit = {
+    executorAddresses.put(executorId, workerAddress)
     allocatedClientWorkers.foreach(_.getConnection(executorId))
   }
 
