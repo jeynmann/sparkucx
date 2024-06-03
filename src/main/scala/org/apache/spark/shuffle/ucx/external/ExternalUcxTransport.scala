@@ -63,7 +63,8 @@ class ExternalUcxTransport(val ucxShuffleConf: ExternalUcxConf) extends UcxLoggi
                        ucxShuffleConf.minRegistrationSize,
                        ucxShuffleConf.maxRegistrationSize / numPools,
                        ucxShuffleConf.preallocateBuffersMap,
-                       ucxShuffleConf.memoryLimit)
+                       ucxShuffleConf.memoryLimit,
+                       ucxShuffleConf.memoryGroupSize)
     }
   }
 
