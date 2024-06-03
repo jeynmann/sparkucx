@@ -34,6 +34,14 @@ class ExternalUcxClientConf(val sparkConf: SparkConf) extends SparkConf with Ext
   override lazy val memoryLimit: Boolean = sparkConf.getBoolean(MEMORY_LIMIT.key,
     MEMORY_LIMIT.defaultValue.get)
 
+  private lazy val MEMORY_GROUP_SIZE = ConfigBuilder(ExternalUcxConf.MEMORY_GROUP_SIZE_KEY)
+    .doc("Memory group size.")
+    .intConf
+    .createWithDefault(ExternalUcxConf.MEMORY_GROUP_SIZE_DEFAULT)
+
+  override lazy val memoryGroupSize: Int = sparkConf.getInt(MEMORY_GROUP_SIZE.key,
+    MEMORY_GROUP_SIZE.defaultValue.get)
+
   private lazy val MIN_BUFFER_SIZE = ConfigBuilder(ExternalUcxConf.MIN_BUFFER_SIZE_KEY)
     .doc("Minimal buffer size in memory pool.")
     .bytesConf(ByteUnit.BYTE)

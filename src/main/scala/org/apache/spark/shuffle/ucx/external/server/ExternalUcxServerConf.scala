@@ -22,6 +22,10 @@ class ExternalUcxServerConf(val yarnConf: Configuration) extends ExternalUcxConf
     ExternalUcxConf.MEMORY_LIMIT_KEY,
     ExternalUcxConf.MEMORY_LIMIT_DEFAULT)
 
+  override lazy val memoryGroupSize: Int = yarnConf.getInt(
+    ExternalUcxConf.MEMORY_GROUP_SIZE_KEY,
+    ExternalUcxConf.MEMORY_GROUP_SIZE_DEFAULT)
+
   override lazy val minBufferSize: Long = yarnConf.getLong(
     ExternalUcxConf.MIN_BUFFER_SIZE_KEY,
     ExternalUcxConf.MIN_BUFFER_SIZE_DEFAULT)
