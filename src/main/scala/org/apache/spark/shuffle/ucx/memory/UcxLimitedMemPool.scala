@@ -166,8 +166,6 @@ case class UcxLinkedMemAllocator(length: Long, minRegistrationSize: Long,
 case class UcxLimitedMemPool(ucxContext: UcpContext)
   extends Closeable with UcxLogging {
   private[memory] val allocatorMap = new ConcurrentHashMap[Long, UcxMemoryAllocator]()
-  private[memory] val memGroupSize = 3
-  private[memory] val maxMemFactor = 1.0 - 1.0 / (1 << (memGroupSize - 1))
   private[memory] var minBufferSize: Long = 4096L
   private[memory] var maxBufferSize: Long = 2L * 1024 * 1024 * 1024
   private[memory] var minRegistrationSize: Long = 1024L * 1024
@@ -186,8 +184,11 @@ case class UcxLimitedMemPool(ucxContext: UcpContext)
     }
   }
 
-  def init(minBufSize: Long, maxBufSize: Long, minRegSize: Long, maxRegSize: Long, preAllocMap: Map[Long, Int], limit: Boolean):
+  def init(minBufSize: Long, maxBufSize: Long, minRegSize: Long, maxRegSize: Long,
+           preAllocMap: Map[Long, Int], limit: Boolean, memGroupSize: Int = 3):
     Unit = {
+    assert(memGroupSize > 2, s"Invalid memGroupSize. Expect > 2. Actual $memGroupSize")
+    val maxMemFactor = 1.0 - 1.0 / (1 << (memGroupSize - 1))
     minBufferSize = roundUpToTheNextPowerOf2(minBufSize)
     maxBufferSize = roundUpToTheNextPowerOf2(maxBufSize)
     minRegistrationSize = roundUpToTheNextPowerOf2(minRegSize)
@@ -213,7 +214,7 @@ case class UcxLimitedMemPool(ucxContext: UcpContext)
                                                           .min(Int.MaxValue)
             logInfo(s"mem $memSize limit $memLimit")
             current.setLimit(memLimit.toInt)
-            shift += 1
+            shift += memGroupSize - 2
           }
           superAllocator = current
           allocatorMap.put(memSize, current)
