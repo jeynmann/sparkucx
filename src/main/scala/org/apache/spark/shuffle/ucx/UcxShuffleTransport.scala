@@ -194,7 +194,7 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
   }
 
   def maxBlocksInAmHeader(): Long = {
-    (globalWorker.getMaxAmHeaderSize - 2) / UnsafeUtils.INT_SIZE
+    (globalWorker.getMaxAmHeaderSize - UnsafeUtils.INT_SIZE) / UnsafeUtils.INT_SIZE
   }
 
   /**

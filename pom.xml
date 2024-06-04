@@ -98,7 +98,7 @@ See file LICENSE for terms.
               <includes>
                 <include>org/apache/spark/network/**</include>
                 <include>org/apache/spark/shuffle/ucx/external/**</include>
-                <include>org/apache/spark/shuffle/ucx/memory/**</include>
+                <include>org/apache/spark/shuffle/ucx/memory/UcxLimitedMemPool.scala</include>
                 <include>org/apache/spark/shuffle/ucx/ShuffleTransport.scala</include>
                 <include>org/apache/spark/shuffle/utils/**</include>
               </includes>
@@ -141,7 +141,7 @@ See file LICENSE for terms.
               <includes>
                 <include>org/apache/spark/network/**</include>
                 <include>org/apache/spark/shuffle/ucx/external/**</include>
-                <include>org/apache/spark/shuffle/ucx/memory/**</include>
+                <include>org/apache/spark/shuffle/ucx/memory/UcxLimitedMemPool.scala</include>
                 <include>org/apache/spark/shuffle/ucx/ShuffleTransport.scala</include>
                 <include>org/apache/spark/shuffle/utils/**</include>
               </includes>
