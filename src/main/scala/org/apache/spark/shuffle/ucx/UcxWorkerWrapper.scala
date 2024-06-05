@@ -87,7 +87,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
   private[ucx] lazy val ioTaskSupport = new ForkJoinTaskSupport(ioThreadPool)
   private[ucx] var progressThread: Thread = _
 
-  private[ucx] lazy val maxReplySize = transport.ucxShuffleConf.maxReplySize
+  private[ucx] lazy val maxReplySize = transport.getMaxReplySize()
   private[ucx] lazy val memPool = if (isClientWorker) {
     transport.hostBounceBufferMemoryPool
   } else {
@@ -107,7 +107,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
           case Some(data) => {
             val mem = memPool.get(maxReplySize * (remaining + 1))
             new UcxSliceState(data.callbacks(0), data.request, data.timestamp,
-                              mem, 0L, Int.MaxValue)
+                              mem, Long.MaxValue)
           }
           case None => throw new UcxException(s"Slice tag $i context not found.")
         }
@@ -457,6 +457,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
     val tagAndSizes = UnsafeUtils.INT_SIZE + UnsafeUtils.INT_SIZE * blocks.length
     val msgSize = tagAndSizes + blocks.map(_.getSize).sum
     val resultMemory = memPool.get(msgSize).asInstanceOf[UcxLinkedMemBlock]
+    assert(resultMemory != null)
     val resultBuffer = UcxUtils.getByteBufferView(resultMemory.address, msgSize)
     resultBuffer.putInt(replyTag)
 
@@ -523,7 +524,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
     blockId.serialize(buffer)
 
     val request = new UcxRequest(null, new UcxStats())
-    streamData.put(t, new UcxStreamState(callback, request, startTime, Int.MaxValue))
+    streamData.put(t, new UcxStreamState(callback, request, startTime, Long.MaxValue))
 
     val address = UnsafeUtils.getAdress(buffer)
 
@@ -543,15 +544,20 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
   def handleFetchBlockStream(block: Block, replyTag: Int,
                              replyExecutor: Long, amId: Int = 2): Unit = {
     val headerSize = UnsafeUtils.INT_SIZE + UnsafeUtils.INT_SIZE
-    val maxBodySize = maxReplySize - headerSize.toLong
     val blockSize = block.getSize
-    val blockSlice = (0L until blockSize by maxBodySize)
+    val blockSlice = (0L until blockSize by maxReplySize).toArray
+    // make sure the last one is not too small
+    if (blockSlice.size >= 2) {
+      val last2sum = blockSlice.takeRight(2).sum
+      blockSlice(blockSlice.size - 1) = last2sum / 2
+      blockSlice(blockSlice.size - 2) = last2sum - blockSlice.last
+    }
     val firstLatch = new CountDownLatch(1)
 
     def send(workerWrapper: UcxWorkerWrapper, currentId: Int,
              sendLatch: CountDownLatch): Unit = try {
       val currentOffset = blockSlice(currentId)
-      val currentSize = (blockSize - currentOffset).min(maxBodySize)
+      val currentSize = (blockSize - currentOffset).min(maxReplySize)
       val msgSize = headerSize + currentSize.toInt
       val mem = memPool.get(msgSize).asInstanceOf[UcxLinkedMemBlock]
       val buffer = mem.toByteBuffer()

@@ -67,6 +67,7 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
   var hostBounceBufferMemoryPool: UcxLimitedMemPool = _
   var serverBounceBufferMemoryPool: UcxLimitedMemPool = _
 
+  private[ucx] var maxReplySize: Long = 0
   private[spark] lazy val replyThreadPool = ThreadUtils.newForkJoinPool(
     "UcxListenerThread", ucxShuffleConf.numListenerThreads)
   private[spark] lazy val sparkTransportConf = SparkTransportConf.fromSparkConf(
@@ -106,9 +107,12 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
 
     ucxContext = new UcpContext(params)
     globalWorker = ucxContext.newWorker(ucpWorkerParams)
+    val maxAmHeaderSize = globalWorker.getMaxAmHeaderSize
+    maxReplySize = ucxShuffleConf.maxReplySize.min(ucxShuffleConf.maxBufferSize -
+                                                   maxAmHeaderSize)
     val maxSizeInFlight = ucxShuffleConf.getSparkConf.getSizeAsBytes("spark.reducer.maxSizeInFlight", "48m")
     val serverMaxRegSize = (ucxShuffleConf.maxRegistrationSize / 2L).min(
-      maxSizeInFlight.max(ucxShuffleConf.maxReplySize * 4L) *
+      maxSizeInFlight.max(maxReplySize * 4L) *
       ucxShuffleConf.numListenerThreads.toLong)
     val clientMaxRegSize = ucxShuffleConf.maxRegistrationSize - serverMaxRegSize
     hostBounceBufferMemoryPool = new UcxLimitedMemPool(ucxContext)
@@ -152,8 +156,9 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
 
     allocatedServerWorkers.foreach(_.progressStart())
     allocatedClientWorkers.foreach(_.progressStart())
+
     initialized = true
-    logInfo(s"Started listener on ${listener.getAddress}")
+    logInfo(s"Started listener on ${listener.getAddress} maxReplySize $maxReplySize")
     globalWorker.getAddress()
   }
 
@@ -192,6 +197,8 @@ class UcxShuffleTransport(var ucxShuffleConf: UcxShuffleConf = null, var executo
       }
     }
   }
+
+  def getMaxReplySize(): Long = maxReplySize
 
   def maxBlocksInAmHeader(): Long = {
     (globalWorker.getMaxAmHeaderSize - UnsafeUtils.INT_SIZE) / UnsafeUtils.INT_SIZE
