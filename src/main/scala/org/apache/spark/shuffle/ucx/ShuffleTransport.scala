@@ -181,6 +181,10 @@ class UcxRequest(private var request: UcpRequest, stats: OperationStats)
 
   override def getStats: Option[OperationStats] = Some(stats)
 
+  override def toString: String = {
+    s"UcxRequest(isCompleted=$isCompleted size=${stats.recvSize} cost=${stats.getElapsedTimeNs}ns)"
+  }
+
   private[ucx] def setRequest(request: UcpRequest): Unit = {
     this.request = request
   }
@@ -208,13 +212,21 @@ class UcxStats extends OperationStats {
 class UcxFetchState(val callbacks: Seq[OperationCallback],
                     val request: UcxRequest,
                     val timestamp: Long,
-                    val recvSet: HashSet[Int] = new HashSet[Int]) {}
+                    val recvSet: HashSet[Int] = new HashSet[Int]) {
+  override def toString(): String = {
+    s"UcxFetchState(chunks=${callbacks.size}, $request, start=$timestamp, received=${recvSet.size})"
+  }
+}
 
 class UcxStreamState(val callback: OperationCallback,
                      val request: UcxRequest,
                      val timestamp: Long,
                      var remaining: Long,
-                     val recvMap: HashMap[Long, MemoryBlock] = new HashMap[Long, MemoryBlock]) {}
+                     val recvMap: HashMap[Long, MemoryBlock] = new HashMap[Long, MemoryBlock]) {
+  override def toString(): String = {
+    s"UcxStreamState($request, start=$timestamp, remaining=$remaining, received=${recvMap.size})"
+  }
+}
 
 class UcxSliceState(val callback: OperationCallback,
                     val request: UcxRequest,
@@ -222,4 +234,8 @@ class UcxSliceState(val callback: OperationCallback,
                     val mem: MemoryBlock,
                     var remaining: Long,
                     var offset: Long = 0L,
-                    val recvSet: HashSet[Long] = new HashSet[Long]) {}
+                    val recvSet: HashSet[Long] = new HashSet[Long]) {
+  override def toString(): String = {
+    s"UcxStreamState($request, start=$timestamp, remaining=$remaining, received=${recvSet.size})"
+  }
+}

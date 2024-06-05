@@ -316,20 +316,19 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
     val blockSlice = (0L until blockSize by maxReplySize).toArray
     // make sure the last one is not too small
     if (blockSlice.size >= 2) {
-      val last2sum = blockSlice.takeRight(2).sum
-      blockSlice(blockSlice.size - 1) = last2sum / 2
-      blockSlice(blockSlice.size - 2) = last2sum - blockSlice.last
+      val mid = (blockSlice(blockSlice.size - 2) + blockSize) / 2
+      blockSlice(blockSlice.size - 1) = mid
     }
 
     def send(workerWrapper: ExternalUcxServerWorker, currentId: Int): Unit = try {
+      val hashNext = (currentId + 1 != blockSlice.size)
+      val nextOffset = if (hashNext) blockSlice(currentId + 1) else blockSize
       val currentOffset = blockSlice(currentId)
-      val currentSize = (blockSize - currentOffset).min(maxReplySize)
+      val currentSize = nextOffset - currentOffset
+      val unsent = blockSlice.length - currentId - 1
       val msgSize = headerSize + currentSize.toInt
-
       val mem = memPool.get(msgSize).asInstanceOf[UcxLinkedMemBlock]
       val buffer = mem.toByteBuffer()
-
-      val unsent = blockSlice.length - currentId - 1
 
       buffer.limit(msgSize)
       buffer.putInt(replyTag)
@@ -365,7 +364,7 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
         }
       })
       logTrace(s"${workerId.workerId} Sending to $clientWorker tag $replyTag $currentId mem $mem size $msgSize.")
-      if (currentId + 1 != blockSlice.size) {
+      if (hashNext) {
         transport.submit(() => send(this, currentId + 1))
       }
     } catch {

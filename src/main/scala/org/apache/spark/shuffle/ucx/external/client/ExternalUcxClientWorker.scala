@@ -52,8 +52,8 @@ case class ExternalUcxClientWorker(val worker: UcpWorker,
       val remaining = headerBuffer.getInt
 
       if (headerBuffer.hasRemaining) {
-        val offset = headerBuffer.getLong
         val length = headerBuffer.getLong
+        val offset = headerBuffer.getLong
         handleReplySlice(i, offset, length, ucpAmData)
       } else {
         handleReplySlice_v1(i, remaining, ucpAmData)
@@ -70,8 +70,8 @@ case class ExternalUcxClientWorker(val worker: UcpWorker,
       val remaining = headerBuffer.getInt
 
       if (headerBuffer.hasRemaining) {
-        val offset = headerBuffer.getLong
         val length = headerBuffer.getLong
+        val offset = headerBuffer.getLong
         handleReplyStream(i, offset, length, ucpAmData)
       } else {
         handleReplyStream_v1(i, remaining, ucpAmData)
@@ -245,17 +245,17 @@ case class ExternalUcxClientWorker(val worker: UcpWorker,
 
       val stats = sliceState.request.getStats.get.asInstanceOf[UcxStats]
       stats.receiveSize += ucpAmData.getLength
-
-      val currentAddress = sliceState.mem.address + offset 
       stats.amHandleTime = System.nanoTime()
+
+      val currentAddress = sliceState.mem.address + offset
       worker.recvAmDataNonBlocking(
         ucpAmData.getDataHandle, currentAddress, ucpAmData.getLength,
         new UcxCallback() {
           override def onSuccess(r: UcpRequest): Unit = {
             stats.endTime = System.nanoTime()
             logDebug(s"Slice receive rndv data size ${ucpAmData.getLength} " +
-              s"tag $i in ${stats.getElapsedTimeNs} ns amHandle " +
-              s"${stats.endTime - stats.amHandleTime} ns")
+              s"tag $i ($offset, $length) in ${stats.getElapsedTimeNs} ns " +
+              s"amHandle ${stats.endTime - stats.amHandleTime} ns")
             receivedSlice(i, offset, length, ucpAmData.getLength, sliceState)
           }
         }, UcsConstants.MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
@@ -288,8 +288,8 @@ case class ExternalUcxClientWorker(val worker: UcpWorker,
           override def onSuccess(r: UcpRequest): Unit = {
             stats.endTime = System.nanoTime()
             logDebug(s"Stream receive rndv data ${ucpAmData.getLength} " +
-              s"tag $i in ${stats.getElapsedTimeNs} ns amHandle " +
-              s"${stats.endTime - stats.amHandleTime} ns")
+              s"tag $i ($offset, $length) in ${stats.getElapsedTimeNs} ns " +
+              s"amHandle ${stats.endTime - stats.amHandleTime} ns")
             receivedStream(i, offset, length, memRef, streamState)
           }
         }, UcsConstants.MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
@@ -297,7 +297,7 @@ case class ExternalUcxClientWorker(val worker: UcpWorker,
 
   private def handleReplyBlock(
     i: Int, blockSizes: Seq[Int], ucpAmData: UcpAmData): Unit = {
-      val data = requestData.remove(i)
+      val data = requestData.get(i)
 
       if (data.isEmpty) {
         throw new UcxException(s"No data for tag $i.")
@@ -360,6 +360,7 @@ case class ExternalUcxClientWorker(val worker: UcpWorker,
       return
     }
 
+    logTrace(s"tag $tag $sliceState")
     sliceState.remaining -= msgLen
     if (sliceState.remaining != 0) {
       return
@@ -388,6 +389,7 @@ case class ExternalUcxClientWorker(val worker: UcpWorker,
       return
     }
 
+    logTrace(s"tag $tag $streamState")
     var received = length - streamState.remaining
     var memNow = streamState.recvMap.get(received)
     while (memNow != null) {
@@ -395,6 +397,7 @@ case class ExternalUcxClientWorker(val worker: UcpWorker,
       streamState.callback.onData(buf)
       received += memNow.size
       memNow.close()
+      memNow = streamState.recvMap.get(received)
     }
 
     streamState.remaining = length - received
@@ -421,6 +424,7 @@ case class ExternalUcxClientWorker(val worker: UcpWorker,
       fetchState.callbacks(chunkId).onComplete(result)
     }
 
+    logTrace(s"tag $tag $fetchState")
     if (fetchState.recvSet.size != fetchState.callbacks.size) {
       return
     }

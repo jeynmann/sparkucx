@@ -548,24 +548,25 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
     val blockSlice = (0L until blockSize by maxReplySize).toArray
     // make sure the last one is not too small
     if (blockSlice.size >= 2) {
-      val last2sum = blockSlice.takeRight(2).sum
-      blockSlice(blockSlice.size - 1) = last2sum / 2
-      blockSlice(blockSlice.size - 2) = last2sum - blockSlice.last
+      val mid = (blockSlice(blockSlice.size - 2) + blockSize) / 2
+      blockSlice(blockSlice.size - 1) = mid
     }
     val firstLatch = new CountDownLatch(1)
 
     def send(workerWrapper: UcxWorkerWrapper, currentId: Int,
              sendLatch: CountDownLatch): Unit = try {
+      val hashNext = (currentId + 1 != blockSlice.size)
+      val nextOffset = if (hashNext) blockSlice(currentId + 1) else blockSize
       val currentOffset = blockSlice(currentId)
-      val currentSize = (blockSize - currentOffset).min(maxReplySize)
+      val currentSize = nextOffset - currentOffset
+      val unsent = blockSlice.length - currentId - 1
       val msgSize = headerSize + currentSize.toInt
       val mem = memPool.get(msgSize).asInstanceOf[UcxLinkedMemBlock]
       val buffer = mem.toByteBuffer()
 
-      val remaining = blockSlice.length - currentId - 1
       buffer.limit(msgSize)
       buffer.putInt(replyTag)
-      buffer.putInt(remaining)
+      buffer.putInt(unsent)
       block.getBlock(buffer, currentOffset)
 
       val nextLatch = new CountDownLatch(1)
@@ -591,7 +592,7 @@ case class UcxWorkerWrapper(worker: UcpWorker, transport: UcxShuffleTransport, i
             .setMemoryType(UcsConstants.MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
             .setMemoryHandle(mem.memory))
       }
-      if (remaining > 0) {
+      if (hashNext) {
         transport.replyThreadPool.submit(new Runnable {
           override def run = send(transport.selectServerWorker, currentId + 1,
                                   nextLatch)
