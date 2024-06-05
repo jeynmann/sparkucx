@@ -31,6 +31,8 @@ class ExternalUcxServerTransport(
 
   private[ucx] val scheduledLatch = new CountDownLatch(1)
 
+  private[ucx] var maxReplySize: Long = 0
+
   private var serverPortsBuffer: ByteBuffer = _
 
   override def estimateNumEps(): Int = serverConf.ucxEpsNum
@@ -46,6 +48,15 @@ class ExternalUcxServerTransport(
     // additional 1 for mem pool report
     initTaskPool(serverConf.numThreads + 1)
     submit(() => scheduledReport())
+
+    logInfo(s"Allocating global worker")
+    val worker = ucxContext.newWorker(ucpWorkerParams)
+    globalWorker = new ExternalUcxServerWorker(
+      worker, this, new UcxWorkerId("Listener", 0, 0), serverConf.ucxServerPort)
+
+    val maxAmHeaderSize = worker.getMaxAmHeaderSize
+    maxReplySize = serverConf.maxReplySize.min(serverConf.maxBufferSize -
+                                               maxAmHeaderSize)
 
     logInfo(s"Allocating ${serverConf.numWorkers} server workers")
 
@@ -65,15 +76,12 @@ class ExternalUcxServerTransport(
     logInfo(s"Launching ${serverConf.numWorkers} server workers")
     allocatedWorker.foreach(_.start)
 
-    logInfo(s"Allocating global worker")
+    logInfo(s"Launching global worker")
 
-    val worker = ucxContext.newWorker(ucpWorkerParams)
-    globalWorker = new ExternalUcxServerWorker(
-      worker, this, new UcxWorkerId("Listener", 0, 0), serverConf.ucxServerPort)
     globalWorker.start
 
     initialized = true
-    logInfo(s"Started listener on ${globalWorker.getAddress} ${serverPorts}")
+    logInfo(s"Started listener on ${globalWorker.getAddress} ${serverPorts} maxReplySize $maxReplySize")
     SerializationUtils.serializeInetAddress(globalWorker.getAddress)
   }
 
@@ -118,6 +126,8 @@ class ExternalUcxServerTransport(
       globalWorker.disconnect(clientIds)
     })
   }
+
+  def getMaxReplySize(): Long = maxReplySize
 
   def getServerPortsBuffer(): ByteBuffer = {
     serverPortsBuffer.duplicate()
