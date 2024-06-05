@@ -5,6 +5,7 @@
 package org.apache.spark.shuffle.ucx
 
 import java.nio.ByteBuffer
+import java.util.{HashSet, HashMap}
 import java.util.concurrent.locks.StampedLock
 import org.openucx.jucx.ucp.UcpRequest
 
@@ -180,6 +181,10 @@ class UcxRequest(private var request: UcpRequest, stats: OperationStats)
 
   override def getStats: Option[OperationStats] = Some(stats)
 
+  override def toString(): String = {
+    s"UcxRequest(isCompleted=$isCompleted size=${stats.recvSize} cost=${stats.getElapsedTimeNs}ns)"
+  }
+
   private[ucx] def setRequest(request: UcpRequest): Unit = {
     this.request = request
   }
@@ -206,19 +211,34 @@ class UcxStats extends OperationStats {
 
 class UcxFetchState(val callbacks: Seq[OperationCallback],
                     val request: UcxRequest,
-                    val timestamp: Long) {}
+                    val timestamp: Long,
+                    val recvSet: HashSet[Int] = new HashSet[Int]) {
+  override def toString(): String = {
+    s"UcxFetchState(chunks=${callbacks.size}, $request, start=$timestamp, received=${recvSet.size})"
+  }
+}
 
 class UcxStreamState(val callback: OperationCallback,
                      val request: UcxRequest,
                      val timestamp: Long,
-                     var remaining: Int) {}
+                     var remaining: Long,
+                     val recvMap: HashMap[Long, MemoryBlock] = new HashMap[Long, MemoryBlock]) {
+  override def toString(): String = {
+    s"UcxStreamState($request, start=$timestamp, remaining=$remaining, received=${recvMap.size})"
+  }
+}
 
 class UcxSliceState(val callback: OperationCallback,
                     val request: UcxRequest,
                     val timestamp: Long,
                     val mem: MemoryBlock,
-                    var offset: Long,
-                    var remaining: Int) {}
+                    var remaining: Long,
+                    var offset: Long = 0L,
+                    val recvSet: HashSet[Long] = new HashSet[Long]) {
+  override def toString(): String = {
+    s"UcxStreamState($request, start=$timestamp, remaining=$remaining, received=${recvSet.size})"
+  }
+}
 
 class UcxSucceedOperationResult(mem: MemoryBlock, stats: OperationStats)
   extends OperationResult {

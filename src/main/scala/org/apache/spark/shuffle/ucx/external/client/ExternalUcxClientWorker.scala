@@ -50,8 +50,10 @@ case class ExternalUcxClientWorker(val worker: UcpWorker,
                                                        headerSize.toInt)
       val i = headerBuffer.getInt
       val remaining = headerBuffer.getInt
+      val length = headerBuffer.getLong
+      val offset = headerBuffer.getLong
 
-      handleReplySlice(i, remaining, ucpAmData)
+      handleReplySlice(i, offset, length, ucpAmData)
       UcsConstants.STATUS.UCS_OK
     }, UcpConstants.UCP_AM_FLAG_WHOLE_MSG)
 
@@ -62,8 +64,10 @@ case class ExternalUcxClientWorker(val worker: UcpWorker,
                                                        headerSize.toInt)
       val i = headerBuffer.getInt
       val remaining = headerBuffer.getInt
+      val length = headerBuffer.getLong
+      val offset = headerBuffer.getLong
 
-      handleReplyStream(i, remaining, ucpAmData)
+      handleReplyStream(i, offset, length, ucpAmData)
       UcsConstants.STATUS.UCS_OK
     }, UcpConstants.UCP_AM_FLAG_WHOLE_MSG)
 
@@ -95,128 +99,78 @@ case class ExternalUcxClientWorker(val worker: UcpWorker,
       UcsConstants.STATUS.UCS_OK
     }, UcpConstants.UCP_AM_FLAG_WHOLE_MSG)
 
-  private def handleReplySlice(
-    i: Int, remaining: Int, ucpAmData: UcpAmData): Unit = {
+  private def handleReplySlice(i: Int, offset: Long, length: Long,
+                               ucpAmData: UcpAmData): Unit = {
+      assert(!ucpAmData.isDataValid)
+
       val sliceState = sliceData.getOrElseUpdate(i, {
-        requestData.remove(i) match {
+        requestData.get(i) match {
           case Some(data) => {
-            val mem = memPool.get(ucpAmData.getLength * (remaining + 1))
+            val mem = memPool.get(length)
+            val memRef = new UcxRefCountMemoryBlock(mem, 0, length,
+                                                    new AtomicInteger(1))
             new UcxSliceState(data.callbacks(0), data.request, data.timestamp,
-                              mem, 0L, Int.MaxValue)
+                              memRef, length)
           }
           case None => throw new UcxException(s"Slice tag $i context not found.")
         }
       })
 
-      if (remaining >= sliceState.remaining) {
-        throw new UcxException(
-          s"Slice tag $i out of order $remaining <= ${sliceState.remaining}.")
-      }
-      sliceState.remaining = remaining
-
       val stats = sliceState.request.getStats.get.asInstanceOf[UcxStats]
       stats.receiveSize += ucpAmData.getLength
+      stats.amHandleTime = System.nanoTime()
 
-      val currentAddress = sliceState.mem.address + sliceState.offset
-      if (ucpAmData.isDataValid) {
-        stats.endTime = System.nanoTime()
-        logDebug(s"Slice receive amData ${ucpAmData} tag $i in "
-          + s"${stats.getElapsedTimeNs} ns")
-        val curBuf = UnsafeUtils.getByteBufferView(
-          ucpAmData.getDataAddress, ucpAmData.getLength.toInt)
-        val buffer = UnsafeUtils.getByteBufferView(
-          currentAddress, ucpAmData.getLength.toInt)
-        buffer.put(curBuf)
-        sliceState.offset += ucpAmData.getLength()
-        if (remaining == 0) {
-          val result = new UcxRefCountMemoryBlock(sliceState.mem, 0,
-                                                  sliceState.offset,
-                                                  new AtomicInteger(1))
-          sliceState.callback.onComplete(
-            new UcxSucceedOperationResult(result, stats))
-          sliceData.remove(i)
-        }
-      } else {
-        stats.amHandleTime = System.nanoTime()
-        worker.recvAmDataNonBlocking(
-          ucpAmData.getDataHandle, currentAddress, ucpAmData.getLength,
-          new UcxCallback() {
-            override def onSuccess(r: UcpRequest): Unit = {
-              stats.endTime = System.nanoTime()
-              logDebug(s"Slice receive rndv data size ${ucpAmData.getLength} " +
-                s"tag $i in ${stats.getElapsedTimeNs} ns amHandle " +
-                s"${stats.endTime - stats.amHandleTime} ns")
-              sliceState.offset += ucpAmData.getLength()
-              if (remaining == 0) {
-                val result = new UcxRefCountMemoryBlock(sliceState.mem, 0,
-                                                        sliceState.offset,
-                                                        new AtomicInteger(1))
-                sliceState.callback.onComplete(
-                  new UcxSucceedOperationResult(result, stats))
-                sliceData.remove(i)
-              }
-            }
-          }, UcsConstants.MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
-      }
+      val currentAddress = sliceState.mem.address + offset
+      worker.recvAmDataNonBlocking(
+        ucpAmData.getDataHandle, currentAddress, ucpAmData.getLength,
+        new UcxCallback() {
+          override def onSuccess(r: UcpRequest): Unit = {
+            stats.endTime = System.nanoTime()
+            logDebug(s"Slice receive rndv data size ${ucpAmData.getLength} " +
+              s"tag $i ($offset, $length) in ${stats.getElapsedTimeNs} ns " +
+              s"amHandle ${stats.endTime - stats.amHandleTime} ns")
+            receivedSlice(i, offset, length, ucpAmData.getLength, sliceState)
+          }
+        }, UcsConstants.MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
     }
 
-  private def handleReplyStream(
-    i: Int, remaining: Int, ucpAmData: UcpAmData): Unit = {
+  private def handleReplyStream(i: Int, offset: Long, length: Long,
+                                ucpAmData: UcpAmData): Unit = {
+      assert(!ucpAmData.isDataValid)
+
+      val mem = memPool.get(ucpAmData.getLength)
+      val memRef = new UcxRefCountMemoryBlock(mem, 0, ucpAmData.getLength,
+                                              new AtomicInteger(1))
+
       val data = streamData.get(i)
       if (data.isEmpty) {
         throw new UcxException(s"Stream tag $i context not found.")
       }
 
       val streamState = data.get
-      if (remaining >= streamState.remaining) {
-        throw new UcxException(
-          s"Stream tag $i out of order $remaining <= ${streamState.remaining}.")
+      if (streamState.remaining == Long.MaxValue) {
+        streamState.remaining = length
       }
-      streamState.remaining = remaining
 
       val stats = streamState.request.getStats.get.asInstanceOf[UcxStats]
       stats.receiveSize += ucpAmData.getLength
-
-      if (ucpAmData.isDataValid) {
-        stats.endTime = System.nanoTime()
-        logDebug(s"Stream receive amData ${ucpAmData} tag $i in "
-          + s"${stats.getElapsedTimeNs} ns")
-        val buffer = UnsafeUtils.getByteBufferView(
-          ucpAmData.getDataAddress, ucpAmData.getLength.toInt)
-        streamState.callback.onData(buffer)
-        if (remaining == 0) {
-          streamState.callback.onComplete(
-            new UcxSucceedOperationResult(null, stats))
-          streamData.remove(i)
-        }
-      } else {
-        val mem = memPool.get(ucpAmData.getLength)
-        stats.amHandleTime = System.nanoTime()
-        worker.recvAmDataNonBlocking(
-          ucpAmData.getDataHandle, mem.address, ucpAmData.getLength,
-          new UcxCallback() {
-            override def onSuccess(r: UcpRequest): Unit = {
-              stats.endTime = System.nanoTime()
-              logDebug(s"Stream receive rndv data ${ucpAmData.getLength} " +
-                s"tag $i in ${stats.getElapsedTimeNs} ns amHandle " +
-                s"${stats.endTime - stats.amHandleTime} ns")
-              val buffer = UnsafeUtils.getByteBufferView(
-                mem.address, ucpAmData.getLength.toInt)
-              streamState.callback.onData(buffer)
-              mem.close()
-              if (remaining == 0) {
-                streamState.callback.onComplete(
-                  new UcxSucceedOperationResult(null, stats))
-                streamData.remove(i)
-              }
-            }
-          }, UcsConstants.MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
-      }
+      stats.amHandleTime = System.nanoTime()
+      worker.recvAmDataNonBlocking(
+        ucpAmData.getDataHandle, memRef.address, ucpAmData.getLength,
+        new UcxCallback() {
+          override def onSuccess(r: UcpRequest): Unit = {
+            stats.endTime = System.nanoTime()
+            logDebug(s"Stream receive rndv data ${ucpAmData.getLength} " +
+              s"tag $i ($offset, $length) in ${stats.getElapsedTimeNs} ns " +
+              s"amHandle ${stats.endTime - stats.amHandleTime} ns")
+            receivedStream(i, offset, length, memRef, streamState)
+          }
+        }, UcsConstants.MEMORY_TYPE.UCS_MEMORY_TYPE_HOST)
     }
 
   private def handleReplyBlock(
     i: Int, blockSizes: Seq[Int], ucpAmData: UcpAmData): Unit = {
-      val data = requestData.remove(i)
+      val data = requestData.get(i)
 
       if (data.isEmpty) {
         throw new UcxException(s"No data for tag $i.")
@@ -243,9 +197,9 @@ case class ExternalUcxClientWorker(val worker: UcpWorker,
         for (b <- 0 until numBlocks) {
           val blockSize = blockSizes(b)
           if (callbacks(b) != null) {
-            callbacks(b).onComplete(new UcxSucceedOperationResult(
-              new UcxSharedMemoryBlock(closeCb, refCounts, address + offset,
-                                       blockSize), stats))
+            val mem = new UcxSharedMemoryBlock(closeCb, refCounts, address + offset,
+                                               blockSize)
+            receivedChunk(i, b, mem, fetchState)
             offset += blockSize
           }
         }
@@ -262,9 +216,8 @@ case class ExternalUcxClientWorker(val worker: UcpWorker,
                 s"time from amHandle: ${System.nanoTime() - stats.amHandleTime} ns")
               for (b <- 0 until numBlocks) {
                 val blockSize = blockSizes(b)
-                callbacks(b).onComplete(new UcxSucceedOperationResult(
-                  new UcxRefCountMemoryBlock(mem, offset, blockSize, refCounts),
-                  stats))
+                val memRef = new UcxRefCountMemoryBlock(mem, offset, blockSize, refCounts)
+                receivedChunk(i, b, memRef, fetchState)
                 offset += blockSize
               }
 
@@ -272,6 +225,85 @@ case class ExternalUcxClientWorker(val worker: UcpWorker,
           }, UcsConstants.MEMORY_TYPE.UCS_MEMORY_TYPE_HOST))
       }
     }
+
+  private def receivedSlice(tag: Int, offset: Long, length: Long, msgLen: Long,
+                            sliceState: UcxSliceState): Unit = {
+    if (!sliceState.recvSet.add(offset)) {
+      logWarning(s"Received duplicate slice: tag $tag offset $offset")
+      return
+    }
+
+    logTrace(s"tag $tag $sliceState")
+    sliceState.remaining -= msgLen
+    if (sliceState.remaining != 0) {
+      return
+    }
+
+    val stats = sliceState.request.getStats.get
+    val result = new UcxSucceedOperationResult(sliceState.mem, stats)
+    sliceState.callback.onComplete(result)
+    sliceData.remove(tag)
+
+    val data = requestData.get(tag)
+    if (data.isEmpty) {
+      logWarning(s"No fetch found: tag $tag")
+      return
+    }
+    // block must be the last chunk
+    val fetchState = data.get
+    val chunkId = fetchState.callbacks.size - 1
+    receivedChunk(tag, chunkId, null, fetchState)
+  }
+
+  private def receivedStream(tag: Int, offset: Long, length: Long, mem: MemoryBlock,
+                             streamState: UcxStreamState): Unit = {
+    if (streamState.recvMap.put(offset, mem) != null) {
+      logWarning(s"Received duplicate stream: tag $tag offset $offset")
+      return
+    }
+
+    logTrace(s"tag $tag $streamState")
+    var received = length - streamState.remaining
+    var memNow = streamState.recvMap.get(received)
+    while (memNow != null) {
+      val buf = UnsafeUtils.getByteBufferView(memNow.address, memNow.size.toInt)
+      streamState.callback.onData(buf)
+      received += memNow.size
+      memNow.close()
+      memNow = streamState.recvMap.get(received)
+    }
+
+    streamState.remaining = length - received
+    if (streamState.remaining != 0) {
+      return
+    }
+
+    val stats = streamState.request.getStats.get
+    val result = new UcxSucceedOperationResult(null, stats)
+    streamState.callback.onComplete(result)
+    streamData.remove(tag)
+  }
+
+  private def receivedChunk(tag: Int, chunkId: Int, mem: MemoryBlock,
+                            fetchState: UcxFetchState): Unit = {
+    if (!fetchState.recvSet.add(chunkId)) {
+      logWarning(s"Received duplicate chunk: tag $tag chunk $chunkId")
+      return
+    }
+
+    if (mem != null) {
+      val stats = fetchState.request.getStats.get
+      val result = new UcxSucceedOperationResult(mem, stats)
+      fetchState.callbacks(chunkId).onComplete(result)
+    }
+
+    logTrace(s"tag $tag $fetchState")
+    if (fetchState.recvSet.size != fetchState.callbacks.size) {
+      return
+    }
+
+    requestData.remove(tag)
+  }
 
   def start(): Unit = {
     executor.start()
@@ -455,7 +487,8 @@ case class ExternalUcxClientWorker(val worker: UcpWorker,
     blockId.serialize(buffer)
 
     val request = new UcxRequest(null, new UcxStats())
-    streamData.put(t, new UcxStreamState(callback, request, startTime, Int.MaxValue))
+    streamData.put(t, new UcxStreamState(callback, request, startTime,
+                                         Long.MaxValue))
 
     val address = UnsafeUtils.getAdress(buffer)
 

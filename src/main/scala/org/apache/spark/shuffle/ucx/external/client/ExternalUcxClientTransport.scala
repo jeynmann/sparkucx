@@ -64,9 +64,9 @@ extends ExternalUcxTransport(clientConf) with UcxLogging {
     logInfo(s"Launching ${numWorkers} client workers")
     allocatedWorker.foreach(_.start)
 
+    val maxAmHeaderSize = allocatedWorker(0).worker.getMaxAmHeaderSize.toInt
     maxBlocksPerRequest = clientConf.maxBlocksPerRequest.min(
-      (allocatedWorker(0).worker.getMaxAmHeaderSize - 2).toInt /
-      UnsafeUtils.INT_SIZE)
+      (maxAmHeaderSize - UnsafeUtils.INT_SIZE) / UnsafeUtils.INT_SIZE)
 
     logInfo(s"Launching time-scheduled threads, period: $timeoutMs ms")
     initTaskPool(1)
