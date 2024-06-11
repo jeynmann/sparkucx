@@ -236,6 +236,6 @@ class UcxSliceState(val callback: OperationCallback,
                     var offset: Long = 0L,
                     val recvSet: HashSet[Long] = new HashSet[Long]) {
   override def toString(): String = {
-    s"UcxStreamState($request, start=$timestamp, remaining=$remaining, received=${recvSet.size})"
+    s"UcxSliceState($request, start=$timestamp, remaining=$remaining, received=${recvSet.size})"
   }
 }
