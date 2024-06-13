@@ -74,9 +74,9 @@ class ExternalUcxServerConf(val yarnConf: Configuration) extends ExternalUcxConf
     ExternalUcxConf.MAX_REPLY_SIZE_KEY,
     ExternalUcxConf.MAX_REPLY_SIZE_DEFAULT)
 
-  override lazy val outOfOrderReply: Boolean = yarnConf.getBoolean(
-    ExternalUcxConf.OUT_OF_ORDER_REPLY_KEY,
-    ExternalUcxConf.OUT_OF_ORDER_REPLY_DEFAULT)
+  override lazy val maxReplyInFlight: Int = yarnConf.getInt(
+    ExternalUcxConf.MAX_REPLY_IN_FLIGHT_KEY,
+    ExternalUcxConf.MAX_REPLY_IN_FLIGHT_DEFAULT)
 
   lazy val ucxEpsNum: Int = yarnConf.getInt(
     ExternalUcxServerConf.SPARK_UCX_SHUFFLE_EPS_NUM_KEY,

@@ -7,7 +7,7 @@ package org.apache.spark.shuffle.ucx
 import java.io.Closeable
 import java.nio.ByteBuffer
 import java.nio.channels.FileChannel
-import java.util.concurrent.{ConcurrentLinkedQueue, ConcurrentHashMap, CountDownLatch, Future, FutureTask}
+import java.util.concurrent.{ConcurrentLinkedQueue, ConcurrentHashMap, Semaphore, Future, FutureTask}
 import scala.collection.mutable
 import scala.collection.JavaConverters._
 import org.openucx.jucx.ucp._
@@ -29,7 +29,7 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
   extends Closeable with UcxLogging {
   private[this] val memPool = transport.hostBounceBufferMemoryPool(workerId.workerId)
   private[this] val maxReplySize = transport.getMaxReplySize()
-  private[this] val outOfOrderReply = transport.ucxShuffleConf.outOfOrderReply
+  private[this] val maxReplyInFlight = transport.ucxShuffleConf.maxReplyInFlight.max(1)
   private[this] val shuffleClients = new ConcurrentHashMap[UcxWorkerId, ExternalUcxEndpoint]
   private[ucx] val executor = new UcxWorkerThread(
     worker, transport.ucxShuffleConf.useWakeup)
@@ -310,6 +310,7 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
   def handleFetchBlockStream(clientWorker: UcxWorkerId, replyTag: Int,
                              blockInfo: (FileChannel, Long, Long),
                              amId: Int = ExternalAmId.REPLY_STREAM): Unit = {
+    val sem = new Semaphore(maxReplyInFlight)
     // tag: Int + unsent replies: Int + total length: Long + offset now: Long
     val headerSize = UnsafeUtils.INT_SIZE + UnsafeUtils.INT_SIZE +
                      UnsafeUtils.LONG_SIZE + UnsafeUtils.LONG_SIZE
@@ -321,8 +322,7 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
       blockSlice(blockSlice.size - 1) = mid
     }
 
-    def send(workerWrapper: ExternalUcxServerWorker, currentId: Int,
-             sendLatch: CountDownLatch): Unit = try {
+    def send(workerWrapper: ExternalUcxServerWorker, currentId: Int): Unit = try {
       val hashNext = (currentId + 1 != blockSlice.size)
       val nextOffset = if (hashNext) blockSlice(currentId + 1) else blockSize
       val currentOffset = blockSlice(currentId)
@@ -331,7 +331,6 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
       val msgSize = headerSize + currentSize.toInt
       val mem = memPool.get(msgSize).asInstanceOf[UcxLinkedMemBlock]
       val buffer = mem.toByteBuffer()
-      val latchCount = if (outOfOrderReply) 0 else 1
 
       buffer.limit(msgSize)
       buffer.putInt(replyTag)
@@ -340,14 +339,13 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
       buffer.putLong(currentOffset)
       blockCh.read(buffer, blockOffset + currentOffset)
 
-      val nextLatch = new CountDownLatch(latchCount)
       val ep = workerWrapper.awaitConnection(clientWorker)
-      sendLatch.await()
+      sem.acquire(1)
       workerWrapper.executor.post(new Runnable {
         override def run(): Unit = {
           if (ep.closed) {
             mem.close()
-            nextLatch.countDown()
+            sem.release(1)
             return
           }
 
@@ -357,13 +355,13 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
             UcpConstants.UCP_AM_SEND_FLAG_RNDV, new UcxCallback {
               override def onSuccess(request: UcpRequest): Unit = {
                 mem.close()
-                nextLatch.countDown()
+                sem.release(1)
                 logTrace(s"${workerId.workerId} Sent to ${clientWorker} size $currentSize tag $replyTag seg " +
                   s"$currentId in ${System.nanoTime() - startTime} ns.")
               }
               override def onError(ucsStatus: Int, errorMsg: String): Unit = {
                 mem.close()
-                nextLatch.countDown()
+                sem.release(1)
                 logError(s"${workerId.workerId} Failed to reply stream $clientWorker tag $replyTag $currentId $errorMsg.")
               }
             }, new UcpRequestParams()
@@ -373,13 +371,13 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
       })
       logTrace(s"${workerId.workerId} Sending to $clientWorker tag $replyTag $currentId mem $mem size $msgSize.")
       if (hashNext) {
-        transport.submit(() => send(this, currentId + 1, nextLatch))
+        transport.submit(() => send(this, currentId + 1))
       }
     } catch {
       case ex: Throwable =>
         logError(s"${workerId.workerId} Failed to reply stream $clientWorker tag $replyTag $currentId $ex.")
     }
 
-    send(this, 0, new CountDownLatch(0))
+    send(this, 0)
   }
 }
