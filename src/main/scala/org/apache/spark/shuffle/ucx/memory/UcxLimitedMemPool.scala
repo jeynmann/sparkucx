@@ -172,7 +172,9 @@ case class UcxLimitedMemPool(ucxContext: UcpContext)
   private[memory] var maxRegistrationSize: Long = 16L * 1024 * 1024 * 1024
 
   def get(size: Long): MemoryBlock = {
-    allocatorMap.get(roundUpToTheNextPowerOf2(size)).allocate()
+    val a = allocatorMap.get(roundUpToTheNextPowerOf2(size))
+    assert(a != null, s"mem pool has no buffer for $size. Allocators $allocatorMap")
+    a.allocate()
   }
 
   def report(): Unit = {
