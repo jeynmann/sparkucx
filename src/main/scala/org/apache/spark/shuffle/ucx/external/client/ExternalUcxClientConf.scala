@@ -131,6 +131,13 @@ class ExternalUcxClientConf(val sparkConf: SparkConf) extends SparkConf with Ext
 
   override lazy val maxReplySize: Long = sparkConf.getSizeAsBytes(MAX_REPLY_SIZE.key, MAX_REPLY_SIZE.defaultValue.get)
 
+  private lazy val MAX_REPLY_IN_FLIGHT = ConfigBuilder(ExternalUcxConf.MAX_REPLY_IN_FLIGHT_KEY)
+    .doc("Max number of replies in flight for a block.")
+    .intConf
+    .createWithDefault(ExternalUcxConf.MAX_REPLY_IN_FLIGHT_DEFAULT)
+
+  override lazy val maxReplyInFlight: Int = sparkConf.getInt(MAX_REPLY_IN_FLIGHT.key, MAX_REPLY_IN_FLIGHT.defaultValue.get)
+
   override lazy val ucxServerPort: Int = sparkConf.getInt(
     ExternalUcxConf.SPARK_UCX_SHUFFLE_SERVICE_PORT_KEY,
     ExternalUcxConf.SPARK_UCX_SHUFFLE_SERVICE_PORT_DEFAULT)
