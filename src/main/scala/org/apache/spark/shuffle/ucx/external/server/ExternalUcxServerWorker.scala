@@ -279,7 +279,7 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
     val ep = awaitConnection(clientWorker)
     executor.post(new Runnable {
       override def run(): Unit = {
-        if (ep.closed) {
+        if ((ep == null) || (ep.closed)) {
           resultMemory.close()
           return
         }
@@ -340,7 +340,7 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
       val ep = workerWrapper.awaitConnection(clientWorker)
       workerWrapper.executor.post(new Runnable {
         override def run(): Unit = {
-          if (ep.closed) {
+        if ((ep == null) || (ep.closed)) {
             mem.close()
             return
           }
