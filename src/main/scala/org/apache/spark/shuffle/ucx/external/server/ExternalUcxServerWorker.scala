@@ -259,6 +259,7 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
   def handleFetchBlockChunks(
     clientWorker: UcxWorkerId, replyTag: Int,
     blockInfos: Seq[(FileChannel, Long, Long)], blockSize: Long): Unit = {
+    val ep = awaitConnection(clientWorker)
     val tagAndSizes = UnsafeUtils.INT_SIZE + UnsafeUtils.INT_SIZE * blockInfos.length
     val msgSize = tagAndSizes + blockSize
     val resultMemory = memPool.get(msgSize).asInstanceOf[UcxLinkedMemBlock]
@@ -277,7 +278,6 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
       blockCh.read(resultBuffer, blockOffset)
     }
 
-    val ep = awaitConnection(clientWorker)
     executor.post(new Runnable {
       override def run(): Unit = {
         if ((ep == null) || (ep.closed)) {
@@ -323,6 +323,7 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
     }
 
     def send(workerWrapper: ExternalUcxServerWorker, currentId: Int): Unit = try {
+      val ep = workerWrapper.awaitConnection(clientWorker)
       val hashNext = (currentId + 1 != blockSlice.size)
       val nextOffset = if (hashNext) blockSlice(currentId + 1) else blockSize
       val currentOffset = blockSlice(currentId)
@@ -339,7 +340,6 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
       buffer.putLong(currentOffset)
       blockCh.read(buffer, blockOffset + currentOffset)
 
-      val ep = workerWrapper.awaitConnection(clientWorker)
       sem.acquire(1)
       workerWrapper.executor.post(new Runnable {
         override def run(): Unit = {
