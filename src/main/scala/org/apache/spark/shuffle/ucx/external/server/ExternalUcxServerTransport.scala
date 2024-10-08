@@ -51,12 +51,12 @@ class ExternalUcxServerTransport(
 
     logInfo(s"Allocating global worker")
     val worker = ucxContext.newWorker(ucpWorkerParams)
-    globalWorker = new ExternalUcxServerWorker(
-      worker, this, new UcxWorkerId("Listener", 0, 0), serverConf.ucxServerPort)
-
     val maxAmHeaderSize = worker.getMaxAmHeaderSize
     maxReplySize = serverConf.maxReplySize.min(serverConf.maxBufferSize -
                                                maxAmHeaderSize)
+
+    globalWorker = new ExternalUcxServerWorker(
+      worker, this, new UcxWorkerId("Listener", 0, 0), serverConf.ucxServerPort)
 
     logInfo(s"Allocating ${serverConf.numWorkers} server workers")
 
