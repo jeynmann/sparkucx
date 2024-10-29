@@ -191,8 +191,10 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
           .setErrorHandler(new UcpEndpointErrorHandler {
             override def onError(ucpEndpoint: UcpEndpoint, errorCode: Int, errorString: String): Unit = {
               logInfo(s"Connection to $shuffleClient closed: $errorString")
-              shuffleClients.remove(shuffleClient)
-              ucpEndpoint.close()
+              Option(shuffleClients.remove(shuffleClient)).foreach(ep => {
+                ep.ucpEp.close()
+                ep.closed = true
+              })
             }
           })
           .setName(s"Server to $shuffleClient")
@@ -264,6 +266,7 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
     val msgSize = tagAndSizes + blockSize
     val resultMemory = memPool.get(msgSize).asInstanceOf[UcxLinkedMemBlock]
     assert(resultMemory != null)
+    try {
     val resultBuffer = UcxUtils.getByteBufferView(resultMemory.address, msgSize)
 
     resultBuffer.putInt(replyTag)
@@ -278,6 +281,12 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
       blockCh.read(resultBuffer, blockOffset)
     }
 
+    } catch {
+      case e: Throwable => {
+        resultMemory.close()
+        throw e
+      }
+    }
     executor.post(new Runnable {
       override def run(): Unit = {
         if ((ep == null) || (ep.closed)) {
@@ -331,6 +340,7 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
       val unsent = blockSlice.length - currentId - 1
       val msgSize = headerSize + currentSize.toInt
       val mem = memPool.get(msgSize).asInstanceOf[UcxLinkedMemBlock]
+      try {
       val buffer = mem.toByteBuffer()
 
       buffer.limit(msgSize)
@@ -340,6 +350,12 @@ case class ExternalUcxServerWorker(val worker: UcpWorker,
       buffer.putLong(currentOffset)
       blockCh.read(buffer, blockOffset + currentOffset)
 
+      } catch {
+        case e: Throwable => {
+          mem.close()
+          throw e
+        }
+      }
       sem.acquire(1)
       workerWrapper.executor.post(new Runnable {
         override def run(): Unit = {

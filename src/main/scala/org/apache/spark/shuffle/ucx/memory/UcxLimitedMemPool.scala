@@ -55,6 +55,7 @@ trait UcxMemoryAllocator extends Closeable {
     (0 until numBuffers).map(x => allocate()).foreach(_.close())
   }
   def totalSize(): Long
+  def freeSize(): Long
 }
 
 abstract class UcxBaseMemAllocator extends UcxMemoryAllocator with UcxLogging {
@@ -149,6 +150,7 @@ case class UcxLinkedMemAllocator(length: Long, minRegistrationSize: Long,
   }
 
   override def totalSize(): Long = registrationSize * numAllocs.get()
+  override def freeSize(): Long = length * stack.size()
 
   def acquireLimit() = if (limit != null) {
     limit.acquire(1)
@@ -178,9 +180,11 @@ case class UcxLimitedMemPool(ucxContext: UcpContext)
   def report(): Unit = {
     val memInfo = allocatorMap.asScala.map(allocator =>
       allocator._1 -> allocator._2.totalSize).filter(_._2 != 0)
+    val freeInfo = allocatorMap.asScala.map(allocator =>
+      allocator._1 -> allocator._2.freeSize).filter(_._2 != 0)
 
     if (memInfo.nonEmpty) {
-      logInfo(s"Memory pool use: $memInfo")
+      logInfo(s"Memory pool\n  use:$memInfo\n  free:$freeInfo")
     }
   }
 
